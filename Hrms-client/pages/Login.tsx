@@ -239,7 +239,7 @@ export const Login: React.FC = () => {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-              placeholder="Any password works for demo"
+              placeholder="password"
             />
           </div>
           
@@ -259,7 +259,7 @@ export const Login: React.FC = () => {
           </button>
 
           <div className="text-xs text-center text-gray-400 mt-4">
-            Demo: <b>admin, hr, emp</b>. New User test: <b>emp2</b>
+            Have a Good Day
           </div>
         </form>
       </Card>
