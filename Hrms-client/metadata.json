@@ -1,0 +1,5 @@
+{
+  "name": "KriraAI HRMS",
+  "description": "A lightweight internal Human Resource Management System for KriraAI featuring attendance tracking, leave management, and role-based dashboards for Employees, HR, and Admins.",
+  "requestFramePermissions": []
+}
