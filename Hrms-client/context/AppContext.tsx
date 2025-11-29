@@ -30,6 +30,7 @@ interface AppContextType {
   requestLeave: (req: Omit<LeaveRequest, 'id' | 'userId' | 'userName' | 'status' | 'createdAt'>) => Promise<void>;
   updateLeaveStatus: (id: string, status: LeaveStatus, comment?: string) => Promise<void>;
   createUser: (user: Omit<User, 'id' | 'password' | 'isFirstLogin'>) => Promise<void>;
+  updateUser: (id: string, updates: { paidLeaveAllocation?: number | null }) => Promise<void>;
   
   // Admin/HR Actions
   adminUpdateAttendance: (recordId: string, updates: Partial<Attendance>, breakDurationMinutes?: number) => Promise<void>;
@@ -53,7 +54,9 @@ const transformUser = (apiUser: any): User => ({
   department: apiUser.department,
   isActive: apiUser.isActive,
   isFirstLogin: apiUser.isFirstLogin,
-  lastLogin: apiUser.lastLogin
+  lastLogin: apiUser.lastLogin,
+  paidLeaveAllocation: apiUser.paidLeaveAllocation !== undefined ? apiUser.paidLeaveAllocation : null,
+  paidLeaveLastAllocatedDate: apiUser.paidLeaveLastAllocatedDate ? new Date(apiUser.paidLeaveLastAllocatedDate).toISOString() : undefined
 });
 
 // Helper to transform API attendance to frontend Attendance type
@@ -104,7 +107,10 @@ const transformAuditLog = (apiLog: any): AuditLog => ({
 const transformHoliday = (apiHoliday: any): CompanyHoliday => ({
   id: apiHoliday.id || apiHoliday._id,
   date: apiHoliday.date,
-  description: apiHoliday.description
+  description: apiHoliday.description,
+  createdBy: apiHoliday.createdBy?.id || apiHoliday.createdBy?._id || apiHoliday.createdBy,
+  createdByName: apiHoliday.createdByName || apiHoliday.createdBy?.name,
+  createdByRole: apiHoliday.createdByRole || apiHoliday.createdBy?.role
 });
 
 // Helper to transform API notification
@@ -155,7 +161,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         api.settingsAPI.getSettings().catch(() => ({ timezone: 'Asia/Kolkata' }))
       ]);
 
-      setUsers(usersData.map(transformUser));
+      const transformedUsers = usersData.map(transformUser);
+      setUsers(transformedUsers);
+      
+      // Update current user from the refreshed users list
+      if (auth.user) {
+        const updatedCurrentUser = transformedUsers.find(u => u.id === auth.user?.id);
+        if (updatedCurrentUser) {
+          setAuth(prev => ({
+            ...prev,
+            user: updatedCurrentUser
+          }));
+        }
+      }
       
       // Merge today's attendance with history
       const allAttendance = attendanceHistory.map(transformAttendance);
@@ -356,6 +374,29 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const updateUser = async (id: string, updates: { paidLeaveAllocation?: number | null }): Promise<void> => {
+    try {
+      const { user } = await api.userAPI.updateUser(id, updates);
+      const transformedUser = transformUser(user);
+      
+      // Update users list
+      setUsers(prev => prev.map(u => u.id === id ? transformedUser : u));
+      
+      // If the updated user is the currently logged-in user, update auth.user as well
+      if (auth.user && auth.user.id === id) {
+        setAuth(prev => ({
+          ...prev,
+          user: transformedUser
+        }));
+      }
+      
+      await refreshData(); // Refresh to get updated data
+    } catch (error) {
+      console.error('Update user error:', error);
+      throw error;
+    }
+  };
+
   const adminUpdateAttendance = async (recordId: string, updates: Partial<Attendance>, breakDurationMinutes?: number): Promise<void> => {
     try {
       const updateData: any = { ...updates };
@@ -433,6 +474,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       requestLeave,
       updateLeaveStatus,
       createUser,
+      updateUser,
       adminUpdateAttendance,
       addCompanyHoliday,
       exportReports,
