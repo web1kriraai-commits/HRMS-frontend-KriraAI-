@@ -199,6 +199,19 @@ export const userAPI = {
     });
   },
 
+  updateUser: async (id: string, updates: { paidLeaveAllocation?: number | null }) => {
+    return apiRequest(`/users/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+  },
+
+  resetAllPaidLeaveAllocation: async () => {
+    return apiRequest('/users/reset-paid-leave', {
+      method: 'POST',
+    });
+  },
+
   deleteUser: async (id: string) => {
     return apiRequest(`/users/${id}`, {
       method: 'DELETE',
