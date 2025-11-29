@@ -11,10 +11,10 @@ export enum LeaveStatus {
 }
 
 export enum LeaveCategory {
-  SICK = 'Sick Leave',
-  CASUAL = 'Casual Leave',
   PAID = 'Paid Leave',
-  HALF_DAY = 'Half Day',
+  UNPAID = 'Unpaid Leave',
+  HALF_DAY = 'Half Day Leave',
+  EXTRA_TIME = 'Extra Time Leave',
 }
 
 export enum BreakType {
@@ -33,6 +33,8 @@ export interface User {
   password?: string; // Simulated hashed password
   isFirstLogin: boolean;
   lastLogin?: string; // ISO String
+  paidLeaveAllocation?: number | null; // Custom paid leave allocation (null = use default)
+  paidLeaveLastAllocatedDate?: string; // ISO string - Last date when paid leave was allocated
 }
 
 export interface Break {
@@ -89,6 +91,9 @@ export interface CompanyHoliday {
   id: string;
   date: string;
   description: string;
+  createdBy?: string;
+  createdByName?: string;
+  createdByRole?: string;
 }
 
 export interface Notification {
