@@ -1,18 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { Role } from '../types';
-import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2 } from 'lucide-react';
+import { Role, LeaveCategory, LeaveStatus, User } from '../types';
+import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, AlertCircle } from 'lucide-react';
 import { formatDate, getTodayStr, formatDuration } from '../services/utils';
 import { attendanceAPI, notificationAPI, userAPI } from '../services/api';
 
 export const AdminDashboard: React.FC = () => {
-  const { auth, users, auditLogs, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, notifications, leaveRequests } = useApp();
+  const { auth, users, auditLogs, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, notifications, leaveRequests, updateUser } = useApp();
   const [activeTab, setActiveTab] = useState<'summary' | 'users' | 'audit' | 'reports' | 'settings'>('summary');
   
   // User management states
   const [newUser, setNewUser] = useState({ name: '', username: '', email: '', department: '', role: 'Employee' });
+  const [paidLeaveAllocation, setPaidLeaveAllocation] = useState({ userId: '', allocation: '' });
   
   const [newHoliday, setNewHoliday] = useState({ date: '', description: '' });
   const [correction, setCorrection] = useState({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '' });
@@ -69,6 +70,153 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const monthlyLeaves = getMonthlyLeaves();
+  const [leaveStatusFilter, setLeaveStatusFilter] = useState<'All' | 'Approved' | 'Rejected' | 'Pending'>('All');
+  const [leaveFilterDate, setLeaveFilterDate] = useState('');
+  const [leaveFilterMonth, setLeaveFilterMonth] = useState('');
+
+  // Calculate working days (excluding Sundays and holidays) between two dates
+  const calculateLeaveDays = (startDateStr: string, endDateStr: string) => {
+    if (!startDateStr || !endDateStr) return 0;
+
+    const start = new Date(startDateStr);
+    const end = new Date(endDateStr);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
+
+    // Ensure start <= end
+    if (start > end) return 0;
+
+    // Create a Set of holiday dates for quick lookup (format: YYYY-MM-DD)
+    const holidayDates = new Set(
+      companyHolidays.map(holiday => {
+        const holidayDate = new Date(holiday.date);
+        return holidayDate.toISOString().split('T')[0];
+      })
+    );
+
+    let days = 0;
+    const current = new Date(start);
+
+    while (current <= end) {
+      const dayOfWeek = current.getDay(); // 0 = Sunday
+      const dateStr = current.toISOString().split('T')[0];
+      
+      // Exclude Sundays and holidays
+      if (dayOfWeek !== 0 && !holidayDates.has(dateStr)) {
+        days += 1;
+      }
+      current.setDate(current.getDate() + 1);
+    }
+
+    return days;
+  };
+
+  // Get total paid leaves for a user (only admin allocated)
+  const getTotalPaidLeaves = (user: User) => {
+    // Only show admin allocated paid leaves (no default)
+    return user.paidLeaveAllocation || 0;
+  };
+
+  // Calculate paid leave usage for all users
+  const paidLeaveData = users
+    .filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR)
+    .map(user => {
+      const userLeaves = leaveRequests.filter(l => l.userId === user.id);
+      const usedPaidLeaves = userLeaves
+        .filter(leave => {
+          const status = (leave.status || '').trim();
+          return (status === 'Approved' || status === LeaveStatus.APPROVED) && 
+                 leave.category === LeaveCategory.PAID;
+        })
+        .reduce((sum, leave) => {
+          return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+        }, 0);
+      
+      const totalAllocated = getTotalPaidLeaves(user);
+      const remaining = totalAllocated - usedPaidLeaves;
+      
+      return {
+        user,
+        allocated: totalAllocated,
+        used: usedPaidLeaves,
+        remaining: Math.max(0, remaining)
+      };
+    })
+    .sort((a, b) => a.user.name.localeCompare(b.user.name));
+
+  const filteredMonthlyLeaves = monthlyLeaves.filter(leave => {
+    // Status filter
+    if (leaveStatusFilter !== 'All') {
+      const status = (leave.status || '').trim();
+      if (status !== leaveStatusFilter) return false;
+    }
+
+    // Date filter - check if leave overlaps with the selected date
+    if (leaveFilterDate) {
+      const filterDate = new Date(leaveFilterDate);
+      const leaveStart = new Date(leave.startDate);
+      const leaveEnd = new Date(leave.endDate);
+      // Check if filter date falls within leave range
+      if (filterDate < leaveStart || filterDate > leaveEnd) {
+        return false;
+      }
+    }
+
+    // Month filter - check if leave overlaps with the selected month
+    if (leaveFilterMonth) {
+      const [year, month] = leaveFilterMonth.split('-').map(Number);
+      const monthStart = new Date(year, month - 1, 1);
+      const monthEnd = new Date(year, month, 0, 23, 59, 59);
+      const leaveStart = new Date(leave.startDate);
+      const leaveEnd = new Date(leave.endDate);
+      // Check if leave overlaps with selected month
+      if (leaveEnd < monthStart || leaveStart > monthEnd) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  const totalLeaveDays = filteredMonthlyLeaves.reduce((sum, leave) => {
+    return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+  }, 0);
+
+  const [showNotificationsPopup, setShowNotificationsPopup] = useState(false);
+
+  // Show notifications popup only once per admin user per latest notification batch
+  useEffect(() => {
+    const currentUser = auth.user;
+    if (!currentUser || notifications.length === 0) return;
+
+    const storageKey = `admin_notif_popup_last_seen_${currentUser.id}`;
+    const lastSeenStr = typeof window !== 'undefined' ? window.localStorage.getItem(storageKey) : null;
+    const lastSeen = lastSeenStr ? new Date(lastSeenStr).getTime() : 0;
+
+    const latestCreatedAt = notifications.reduce((max, n: any) => {
+      if (!n.createdAt) return max;
+      const t = new Date(n.createdAt).getTime();
+      return t > max ? t : max;
+    }, 0);
+
+    if (latestCreatedAt > lastSeen) {
+      setShowNotificationsPopup(true);
+    }
+  }, [notifications, auth.user?.id]);
+
+  const handleCloseNotificationsPopup = () => {
+    const currentUser = auth.user;
+    if (currentUser && notifications.length > 0 && typeof window !== 'undefined') {
+      const latestCreatedAt = notifications.reduce((max, n: any) => {
+        if (!n.createdAt) return max;
+        const t = new Date(n.createdAt).getTime();
+        return t > max ? t : max;
+      }, 0);
+      if (latestCreatedAt > 0) {
+        window.localStorage.setItem(`admin_notif_popup_last_seen_${currentUser.id}`, new Date(latestCreatedAt).toISOString());
+      }
+    }
+    setShowNotificationsPopup(false);
+  };
 
   // Helper to calculate break seconds from breaks array
   const getBreakSeconds = (breaks: any[]) => {
@@ -90,7 +238,9 @@ export const AdminDashboard: React.FC = () => {
     let totalLowTimeSeconds = 0;
     let totalExtraTimeSeconds = 0;
     
-    const STANDARD_DAY_SECONDS = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
+    // Normal time: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+    const MIN_NORMAL_SECONDS = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
+    const MAX_NORMAL_SECONDS = 8 * 3600 + 30 * 60; // 8h 30m = 30600 seconds
 
     monthlyAttendance.forEach(record => {
       if (record.checkIn && record.checkOut) {
@@ -106,13 +256,13 @@ export const AdminDashboard: React.FC = () => {
         totalWorkedSeconds += netWorkedSeconds;
         totalBreakSeconds += breakSeconds;
         
-        // Only flag as low/extra if NOT exactly on standard time
-        if (netWorkedSeconds < STANDARD_DAY_SECONDS) {
-          totalLowTimeSeconds += STANDARD_DAY_SECONDS - netWorkedSeconds;
-        } else if (netWorkedSeconds > STANDARD_DAY_SECONDS) {
-          totalExtraTimeSeconds += netWorkedSeconds - STANDARD_DAY_SECONDS;
+        // Normal: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+        if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
+          totalLowTimeSeconds += MIN_NORMAL_SECONDS - netWorkedSeconds;
+        } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
+          totalExtraTimeSeconds += netWorkedSeconds - MAX_NORMAL_SECONDS;
         }
-        // If netWorkedSeconds === STANDARD_DAY_SECONDS, it's exactly on time (no low/extra)
+        // If netWorkedSeconds is between 8:15 and 8:30, it's normal (no low/extra)
       }
     });
 
@@ -200,43 +350,65 @@ export const AdminDashboard: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Notifications Section */}
-      {notifications.length > 0 && (
-        <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-2xl border border-amber-200 p-5">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="h-10 w-10 rounded-xl bg-amber-100 flex items-center justify-center">
-              <Bell className="h-5 w-5 text-amber-600" />
-            </div>
-            <div>
-              <h3 className="font-bold text-gray-800">Notifications</h3>
-              <p className="text-xs text-gray-500">Auto-removed after 24 hours</p>
-            </div>
-            <span className="ml-auto bg-amber-500 text-white text-xs font-bold px-2.5 py-1 rounded-full">{notifications.length}</span>
-          </div>
-          <div className="space-y-2 max-h-60 overflow-y-auto">
-            {notifications.map(n => (
-              <div key={n.id} className="bg-white rounded-xl p-3 border border-amber-100 flex items-start gap-3">
-                <div className={`h-2 w-2 rounded-full mt-2 ${n.read ? 'bg-gray-300' : 'bg-amber-500'}`}></div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-700">{n.message}</p>
-                  <p className="text-xs text-gray-400 mt-1">{formatNotificationTime(n.createdAt)}</p>
+      {/* Notifications Popup */}
+      {showNotificationsPopup && notifications.length > 0 && (
+        <>
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/30 z-40"
+            onClick={handleCloseNotificationsPopup}
+          />
+
+          {/* Popup Panel */}
+          <div className="fixed inset-0 z-50 flex items-start justify-end px-4 pt-20 sm:pt-24 pointer-events-none">
+            <div className="w-full max-w-md ml-auto pointer-events-auto">
+              <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-2xl border border-amber-200 p-5 shadow-xl">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-10 w-10 rounded-xl bg-amber-100 flex items-center justify-center">
+                    <Bell className="h-5 w-5 text-amber-600" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-800">Notifications</h3>
+                    <p className="text-xs text-gray-500">Auto-removed after 24 hours</p>
+                  </div>
+                  <span className="ml-auto mr-2 bg-amber-500 text-white text-xs font-bold px-2.5 py-1 rounded-full">
+                    {notifications.length}
+                  </span>
+                  <button
+                    onClick={handleCloseNotificationsPopup}
+                    className="text-gray-500 hover:text-gray-700 transition-colors"
+                    title="Close"
+                  >
+                    <X size={18} />
+                  </button>
                 </div>
-                <button 
-                  onClick={async () => {
-                    try {
-                      await notificationAPI.deleteNotification(n.id);
-                      await refreshData();
-                    } catch (e) {}
-                  }}
-                  className="text-gray-400 hover:text-red-500 transition-colors p-1"
-                  title="Dismiss"
-                >
-                  <X size={16} />
-                </button>
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {notifications.map(n => (
+                    <div key={n.id} className="bg-white rounded-xl p-3 border border-amber-100 flex items-start gap-3">
+                      <div className={`h-2 w-2 rounded-full mt-2 ${n.read ? 'bg-gray-300' : 'bg-amber-500'}`}></div>
+                      <div className="flex-1">
+                        <p className="text-sm text-gray-700">{n.message}</p>
+                        <p className="text-xs text-gray-400 mt-1">{formatNotificationTime(n.createdAt)}</p>
+                      </div>
+                      <button 
+                        onClick={async () => {
+                          try {
+                            await notificationAPI.deleteNotification(n.id);
+                            await refreshData();
+                          } catch (e) {}
+                        }}
+                        className="text-gray-400 hover:text-red-500 transition-colors p-1"
+                        title="Dismiss"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       {/* Tabs */}
@@ -422,50 +594,110 @@ export const AdminDashboard: React.FC = () => {
               {monthlyLeaves.length > 0 && (
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
                   <div className="px-6 py-4 border-b border-gray-100 bg-purple-50">
-                    <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                      <Calendar className="h-5 w-5 text-purple-600" /> Leave Records
-                    </h3>
-                    <p className="text-gray-500 text-sm">{getMonthName()} • {monthlyLeaves.length} leave(s)</p>
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-3">
+                      <div>
+                        <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                          <Calendar className="h-5 w-5 text-purple-600" /> Leave Records
+                        </h3>
+                        <p className="text-gray-500 text-sm">
+                          {getMonthName()} • {filteredMonthlyLeaves.length} leave request(s) •{' '}
+                          <span className="font-semibold text-purple-700">
+                            Total Leave: {totalLeaveDays} {totalLeaveDays === 1 ? 'day' : 'days'}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs text-gray-500 uppercase font-semibold">Filters:</span>
+                      <select
+                        className="text-xs bg-white border border-purple-200 text-gray-700 px-3 py-1.5 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-200"
+                        value={leaveStatusFilter}
+                        onChange={e => setLeaveStatusFilter(e.target.value as any)}
+                      >
+                        <option value="All">All Status</option>
+                        <option value="Approved">Approved</option>
+                        <option value="Rejected">Rejected</option>
+                        <option value="Pending">Pending</option>
+                      </select>
+                      <input
+                        type="date"
+                        className="text-xs bg-white border border-purple-200 text-gray-700 px-3 py-1.5 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-200"
+                        value={leaveFilterDate}
+                        onChange={e => setLeaveFilterDate(e.target.value)}
+                        placeholder="Filter by date"
+                      />
+                      <input
+                        type="month"
+                        className="text-xs bg-white border border-purple-200 text-gray-700 px-3 py-1.5 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-200"
+                        value={leaveFilterMonth}
+                        onChange={e => setLeaveFilterMonth(e.target.value)}
+                        placeholder="Filter by month"
+                      />
+                      {(leaveFilterDate || leaveFilterMonth) && (
+                        <button
+                          onClick={() => {
+                            setLeaveFilterDate('');
+                            setLeaveFilterMonth('');
+                          }}
+                          className="text-xs text-purple-600 hover:text-purple-800 underline"
+                        >
+                          Clear Date/Month
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full">
-                      <thead>
-                        <tr className="bg-purple-50/50">
-                          <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Date</th>
-                          <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Category</th>
-                          <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Reason</th>
-                          <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100">
-                        {monthlyLeaves.map(leave => (
-                          <tr key={leave.id} className="hover:bg-gray-50">
-                            <td className="px-6 py-4">
-                              <div className="font-semibold text-gray-800">{formatDate(leave.startDate)}</div>
-                              {leave.startDate !== leave.endDate && (
-                                <div className="text-xs text-gray-400">to {formatDate(leave.endDate)}</div>
-                              )}
-                            </td>
-                            <td className="px-6 py-4">
-                              <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-purple-100 text-purple-700">
-                                {leave.category}
-                              </span>
-                            </td>
-                            <td className="px-6 py-4 text-gray-600 text-sm max-w-xs truncate">{leave.reason}</td>
-                            <td className="px-6 py-4">
-                              <span className={`px-3 py-1 rounded-lg text-xs font-semibold ${
-                                leave.status === 'Approved' ? 'bg-emerald-100 text-emerald-700' :
-                                leave.status === 'Rejected' ? 'bg-rose-100 text-rose-700' :
-                                'bg-amber-100 text-amber-700'
-                              }`}>
-                                {leave.status}
-                              </span>
-                            </td>
+                  {filteredMonthlyLeaves.length === 0 ? (
+                    <div className="px-6 py-8 text-center text-gray-400 text-sm">
+                      No leaves match the selected filters.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="bg-purple-50/50">
+                            <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Date</th>
+                            <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Category</th>
+                            <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Reason</th>
+                            <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Days</th>
+                            <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Status</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {filteredMonthlyLeaves.map(leave => {
+                            const days = calculateLeaveDays(leave.startDate, leave.endDate);
+                            return (
+                              <tr key={leave.id} className="hover:bg-gray-50">
+                                <td className="px-6 py-4">
+                                  <div className="font-semibold text-gray-800">{formatDate(leave.startDate)}</div>
+                                  {leave.startDate !== leave.endDate && (
+                                    <div className="text-xs text-gray-400">to {formatDate(leave.endDate)}</div>
+                                  )}
+                                </td>
+                                <td className="px-6 py-4">
+                                  <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-purple-100 text-purple-700">
+                                    {leave.category}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4 text-gray-600 text-sm max-w-xs truncate">{leave.reason}</td>
+                                <td className="px-6 py-4 text-sm font-semibold text-gray-800">
+                                  {days} {days === 1 ? 'day' : 'days'}
+                                </td>
+                                <td className="px-6 py-4">
+                                  <span className={`px-3 py-1 rounded-lg text-xs font-semibold ${
+                                    leave.status === 'Approved' ? 'bg-emerald-100 text-emerald-700' :
+                                    leave.status === 'Rejected' ? 'bg-rose-100 text-rose-700' :
+                                    'bg-amber-100 text-amber-700'
+                                  }`}>
+                                    {leave.status}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -502,7 +734,9 @@ export const AdminDashboard: React.FC = () => {
                         </tr>
                       ) : (
                         monthlyAttendance.map((record, idx) => {
-                          const STANDARD_DAY_SECONDS = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
+                          // Normal time: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+                          const MIN_NORMAL_SECONDS_LOCAL = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
+                          const MAX_NORMAL_SECONDS_LOCAL = 8 * 3600 + 30 * 60; // 8h 30m = 30600 seconds
                           
                           // Get break seconds from breaks array or totalBreakDuration
                           const breakSeconds = getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
@@ -515,9 +749,9 @@ export const AdminDashboard: React.FC = () => {
                             netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
                           }
                           
-                          // Only flag as low/extra if NOT exactly on standard time
-                          const isLowTime = netWorkedSeconds > 0 && netWorkedSeconds < STANDARD_DAY_SECONDS;
-                          const isExtraTime = netWorkedSeconds > STANDARD_DAY_SECONDS;
+                          // Normal: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+                          const isLowTime = netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
+                          const isExtraTime = netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL;
 
                           return (
                             <tr key={record.id} className={`hover:bg-gray-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
@@ -705,6 +939,189 @@ export const AdminDashboard: React.FC = () => {
               </Button>
             </form>
           </Card>
+
+          {/* Paid Leave Allocation Section */}
+          <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6">
+            {/* Add Paid Leave Form */}
+            <Card className="h-fit">
+              <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-100">
+                <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center shadow-sm">
+                  <Calendar className="h-6 w-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-800 text-lg">Add Paid Leave</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">Allocate paid leaves to employees</p>
+                </div>
+              </div>
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                if (!paidLeaveAllocation.userId) {
+                  alert("Please select a user");
+                  return;
+                }
+                if (!paidLeaveAllocation.allocation || paidLeaveAllocation.allocation === '') {
+                  alert("Please enter a number to add");
+                  return;
+                }
+                try {
+                  const allocation = parseInt(paidLeaveAllocation.allocation);
+                  if (isNaN(allocation) || allocation < 0) {
+                    alert("Please enter a valid positive number");
+                    return;
+                  }
+                  await updateUser(paidLeaveAllocation.userId, { paidLeaveAllocation: allocation });
+                  alert(`Added ${allocation} paid leave(s) successfully.`);
+                  setPaidLeaveAllocation({ userId: '', allocation: '' });
+                  await refreshData();
+                } catch (error: any) {
+                  alert(error.message || "Failed to update paid leave allocation");
+                }
+              }} className="space-y-5">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Select Employee *</label>
+                  <select 
+                    className="w-full p-3 border-2 border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all bg-white" 
+                    value={paidLeaveAllocation.userId} 
+                    onChange={e => {
+                      setPaidLeaveAllocation({
+                        userId: e.target.value,
+                        allocation: ''
+                      });
+                    }} 
+                    required
+                  >
+                    <option value="">Choose an employee...</option>
+                    {users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).map(u => (
+                      <option key={u.id} value={u.id}>
+                        {u.name} - {u.department}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Number of Paid Leaves</label>
+                  <input 
+                    type="number" 
+                    placeholder="e.g., 12" 
+                    className="w-full p-3 border-2 border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all" 
+                    value={paidLeaveAllocation.allocation} 
+                    onChange={e => setPaidLeaveAllocation({...paidLeaveAllocation, allocation: e.target.value})} 
+                    min="1"
+                    required
+                  />
+                  <div className="mt-2 p-3 bg-blue-50 border border-blue-100 rounded-lg">
+                    <p className="text-xs text-blue-700 leading-relaxed">
+                      <span className="font-semibold">Note:</span> This will be added to the existing allocation. 
+                      For example, if an employee has 5 remaining and you add 12, the total becomes 17.
+                    </p>
+                  </div>
+                </div>
+                <Button type="submit" className="w-full bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 shadow-md">
+                  <Calendar size={18} className="mr-2" /> Add Paid Leave Allocation
+                </Button>
+              </form>
+              <div className="mt-6 pt-6 border-t border-gray-200">
+                <Button 
+                  type="button"
+                  onClick={async () => {
+                    if (!confirm('Are you sure you want to reset all employees\' paid leave allocation to 0? This will set all additional allocations to 0.')) {
+                      return;
+                    }
+                    try {
+                      await userAPI.resetAllPaidLeaveAllocation();
+                      alert('All paid leave allocations have been reset to 0 successfully.');
+                      await refreshData();
+                    } catch (error: any) {
+                      alert(error.message || "Failed to reset paid leave allocations");
+                    }
+                  }}
+                  className="w-full bg-red-500 hover:bg-red-600 shadow-md"
+                >
+                  <Trash2 size={18} className="mr-2" /> Reset All Allocations to 0
+                </Button>
+              </div>
+            </Card>
+
+            {/* Yearly Paid Leave Summary Table */}
+            <Card className="h-fit">
+              <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-100">
+                <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm">
+                  <FileText className="h-6 w-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-800 text-lg">Yearly Summary</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">Current year paid leave overview</p>
+                </div>
+              </div>
+              <div className="overflow-x-auto -mx-6 px-6">
+                <table className="w-full text-sm min-w-[600px]">
+                  <thead>
+                    <tr className="bg-gradient-to-r from-gray-50 to-gray-100 border-b-2 border-gray-200">
+                      <th className="px-4 py-3 text-left text-xs font-bold text-gray-700 uppercase tracking-wider w-[200px]">Employee</th>
+                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Allocated</th>
+                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Used</th>
+                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Remaining</th>
+                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[120px]">Last Allocated</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {paidLeaveData.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-8 text-center">
+                          <div className="flex flex-col items-center justify-center text-gray-400">
+                            <Users className="h-12 w-12 mb-2 opacity-50" />
+                            <p className="text-sm">No employees found</p>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      paidLeaveData.map(({ user, allocated, used, remaining }) => (
+                        <tr key={user.id} className="hover:bg-gray-50 transition-colors">
+                          <td className="px-4 py-4 w-[200px]">
+                            <div className="flex items-center gap-3">
+                              <div className="h-10 w-10 rounded-lg flex items-center justify-center text-white font-bold text-sm bg-gradient-to-br from-emerald-500 to-emerald-600 shadow-sm flex-shrink-0">
+                                {user.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="font-semibold text-gray-800 truncate">{user.name}</p>
+                                <p className="text-xs text-gray-500 mt-0.5 truncate">{user.department}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-4 text-center w-[100px]">
+                            <span className="inline-flex items-center justify-center px-3 py-1 rounded-full bg-gray-100 text-gray-800 font-bold text-sm whitespace-nowrap">
+                              {allocated}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4 text-center w-[100px]">
+                            <span className="inline-flex items-center justify-center px-3 py-1 rounded-full bg-orange-100 text-orange-700 font-semibold text-sm whitespace-nowrap">
+                              {used}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4 text-center w-[100px]">
+                            <span className={`inline-flex items-center justify-center px-3 py-1 rounded-full font-bold text-sm whitespace-nowrap ${
+                              remaining > 0 
+                                ? 'bg-green-100 text-green-700' 
+                                : 'bg-red-100 text-red-700'
+                            }`}>
+                              {remaining}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4 text-center w-[120px]">
+                            <span className="text-xs text-gray-600 font-medium whitespace-nowrap">
+                              {user.paidLeaveLastAllocatedDate 
+                                ? formatDate(user.paidLeaveLastAllocatedDate)
+                                : <span className="text-gray-400 italic">Never</span>}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
 
           {/* Users List */}
           <div className="lg:col-span-2">
@@ -913,12 +1330,113 @@ export const AdminDashboard: React.FC = () => {
                                 </div>
                             ))
                         }
-                    </div>
-                </Card>
-            </div>
+              </div>
+            </Card>
           </div>
+
+          {/* Paid Leave Allocation Table */}
+          <div className="lg:col-span-3 mt-6">
+            <Card>
+              <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                    <Calendar className="h-5 w-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-800">Paid Leave Allocation Summary</h3>
+                    <p className="text-xs text-gray-500">View all employees' paid leave allocation, usage, and remaining</p>
+                  </div>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
+                    <tr>
+                      <th className="px-5 py-3 text-left">Employee</th>
+                      <th className="px-5 py-3 text-left">Department</th>
+                      <th className="px-5 py-3 text-center">Allocated</th>
+                      <th className="px-5 py-3 text-center">Used</th>
+                      <th className="px-5 py-3 text-center">Remaining</th>
+                      <th className="px-5 py-3 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {paidLeaveData.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-5 py-8 text-center text-gray-400">
+                          No employees found
+                        </td>
+                      </tr>
+                    ) : (
+                      paidLeaveData.map(({ user, allocated, used, remaining }) => (
+                        <tr key={user.id} className="hover:bg-gray-50">
+                          <td className="px-5 py-4">
+                            <div className="flex items-center gap-3">
+                              <div className="h-9 w-9 rounded-lg flex items-center justify-center text-white font-bold text-sm bg-emerald-500">
+                                {user.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <p className="font-semibold text-gray-800">{user.name}</p>
+                                <p className="text-xs text-gray-400">{user.email}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-5 py-4 text-gray-600">{user.department}</td>
+                          <td className="px-5 py-4 text-center">
+                            <span className="font-bold text-gray-800">{allocated}</span>
+                            <p className="text-xs text-gray-500 mt-1">
+                              Admin Allocated
+                            </p>
+                          </td>
+                          <td className="px-5 py-4 text-center">
+                            <span className="font-semibold text-orange-600">{used}</span>
+                          </td>
+                          <td className="px-5 py-4 text-center">
+                            <span className={`font-bold ${remaining > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                              {remaining}
+                            </span>
+                          </td>
+                          <td className="px-5 py-4 text-center">
+                            {remaining > 0 ? (
+                              <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-100 text-green-700">
+                                Available
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-100 text-red-700">
+                                Exhausted
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                  {paidLeaveData.length > 0 && (
+                    <tfoot className="bg-gray-50 border-t-2 border-gray-200">
+                      <tr>
+                        <td colSpan={2} className="px-5 py-3 text-right font-bold text-gray-800">
+                          Total:
+                        </td>
+                        <td className="px-5 py-3 text-center font-bold text-gray-800">
+                          {paidLeaveData.reduce((sum, d) => sum + d.allocated, 0)}
+                        </td>
+                        <td className="px-5 py-3 text-center font-bold text-orange-600">
+                          {paidLeaveData.reduce((sum, d) => sum + d.used, 0)}
+                        </td>
+                        <td className="px-5 py-3 text-center font-bold text-green-600">
+                          {paidLeaveData.reduce((sum, d) => sum + d.remaining, 0)}
+                        </td>
+                        <td className="px-5 py-3"></td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            </Card>
+          </div>
+        </div>
       )}
-      
+
       {/* SETTINGS TAB */}
       {activeTab === 'settings' && (
           <Card title="Global System Settings">
