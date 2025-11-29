@@ -2,7 +2,7 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Role } from '../types';
-import { LayoutDashboard, Users, Settings, LogOut, CheckSquare, Calendar } from 'lucide-react';
+import { LayoutDashboard, Users, Settings, LogOut, CheckSquare, Calendar, CalendarDays } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
   const { auth, logout } = useApp();
@@ -23,6 +23,11 @@ export const Sidebar: React.FC = () => {
         <NavLink to="/" className={({isActive}) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
           <LayoutDashboard size={18} />
           Dashboard
+        </NavLink>
+
+        <NavLink to="/holidays" className={({isActive}) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+          <CalendarDays size={18} />
+          Holidays
         </NavLink>
 
         {user.role !== Role.EMPLOYEE && (
