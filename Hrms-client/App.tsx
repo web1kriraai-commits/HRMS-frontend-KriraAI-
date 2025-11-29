@@ -6,6 +6,7 @@ import { EmployeeDashboard } from './pages/EmployeeDashboard';
 import { HRDashboard } from './pages/HRDashboard';
 import { AdminDashboard } from './pages/AdminDashboard';
 import { TodayAttendance } from './pages/TodayAttendance';
+import { Holidays } from './pages/Holidays';
 import { Sidebar } from './components/Sidebar';
 import { Role } from './types';
 
@@ -86,6 +87,14 @@ const AppRoutes = () => {
         <PrivateRoute roles={[Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/holidays" element={
+        <PrivateRoute>
+          <AppLayout>
+            <Holidays />
           </AppLayout>
         </PrivateRoute>
       } />
