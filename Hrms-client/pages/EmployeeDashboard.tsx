@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { BreakType, LeaveCategory, LeaveStatus } from '../types';
+import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
 import { getTodayStr, formatDuration, formatTime, formatDate } from '../services/utils';
 import { Clock, Coffee, AlertCircle, Bell, Calendar, X } from 'lucide-react';
 import { notificationAPI } from '../services/api';
