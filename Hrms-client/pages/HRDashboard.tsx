@@ -3,9 +3,20 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { LeaveStatus, Role, LeaveCategory } from '../types';
-import { formatDate, formatDuration, getTodayStr } from '../services/utils';
-import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, LogIn, LogOut, Users, FileText } from 'lucide-react';
-import { attendanceAPI } from '../services/api';
+import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD } from '../services/utils';
+import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight } from 'lucide-react';
+import { attendanceAPI, holidayAPI } from '../services/api';
+
+// Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
+const formatHoursToHoursMinutes = (hours: number) => {
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  
+  if (h === 0 && m === 0) return '0m';
+  if (h === 0) return `${m}m`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}m`;
+};
 
 // Normal time: 8:15 to 8:30, Low < 8:15, Extra > 8:30
 const MIN_NORMAL_SECONDS = (8 * 3600) + (15 * 60); // 8h 15m = 29700 seconds
@@ -15,7 +26,7 @@ export const HRDashboard: React.FC = () => {
   const { auth, leaveRequests, updateLeaveStatus, users, attendanceRecords, companyHolidays, addCompanyHoliday, createUser, updateUser, refreshData } = useApp();
   
   const [newHoliday, setNewHoliday] = useState({ date: '', description: '' });
-  const [newUser, setNewUser] = useState({ name: '', username: '', email: '', department: '' });
+  const [newUser, setNewUser] = useState({ name: '', username: '', email: '', department: '', joiningDate: '' });
   const [correction, setCorrection] = useState({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '' });
   const [paidLeaveAllocation, setPaidLeaveAllocation] = useState({ userId: '', allocation: '' });
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
@@ -136,6 +147,82 @@ export const HRDashboard: React.FC = () => {
       return true;
   });
   
+  // Helper function to calculate extra time leave balance and carryover
+  const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[]) => {
+    // Calculate extra time leave hours taken
+    const extraTimeLeaveHours = monthLeaves
+      .filter(leave => {
+        const status = (leave.status || '').trim();
+        if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+        
+        if (leave.category === LeaveCategory.EXTRA_TIME) return true;
+        
+        if (leave.category === LeaveCategory.HALF_DAY) {
+          const reason = leave.reason || '';
+          return reason.includes('[Extra Time Leave]');
+        }
+        
+        return false;
+      })
+      .reduce((sum, leave) => {
+        if (leave.category === LeaveCategory.EXTRA_TIME) {
+          return sum + (calculateLeaveDays(leave.startDate, leave.endDate) * 8.25);
+        } else if (leave.category === LeaveCategory.HALF_DAY) {
+          return sum + 4;
+        }
+        return sum;
+      }, 0);
+
+    // Calculate low time and extra time from attendance
+    let totalLowTimeSeconds = 0;
+    let totalExtraTimeSeconds = 0;
+
+    monthRecords.forEach(r => {
+      if (r.checkIn && r.checkOut) {
+        const checkIn = new Date(r.checkIn).getTime();
+        const checkOut = new Date(r.checkOut).getTime();
+        const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
+        const breakSeconds = getBreakSeconds(r.breaks) || 0;
+        const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        
+        if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
+          totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
+        } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
+          totalExtraTimeSeconds += (netWorkedSeconds - MAX_NORMAL_SECONDS);
+        }
+      }
+    });
+
+    // Calculate final time difference
+    const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds;
+    const extraTimeWorkedHours = finalTimeDifference / 3600;
+
+    // Remaining extra time leave balance
+    const remainingExtraTimeLeaveHours = Math.max(0, extraTimeLeaveHours - Math.max(0, extraTimeWorkedHours));
+
+    // Calculate carryover from previous month
+    // At month end, if balance is not covered, it carries over to next month
+    const now = new Date();
+    const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    
+    // Extra Time Leave Balance: If remaining > 0 at month end, it carries over
+    const carryoverExtraTimeLeave = isMonthEnd && remainingExtraTimeLeaveHours > 0 ? remainingExtraTimeLeaveHours : 0;
+    
+    // Low Time: If there's low time that's not compensated by extra time, it carries over
+    // Only carry over if final difference is negative (more low time than extra time)
+    const carryoverLowTime = isMonthEnd && finalTimeDifference < 0 ? Math.abs(finalTimeDifference) : 0;
+
+    return {
+      extraTimeLeaveHours,
+      totalLowTimeSeconds,
+      totalExtraTimeSeconds,
+      remainingExtraTimeLeaveHours,
+      carryoverExtraTimeLeave,
+      carryoverLowTime,
+      finalTimeDifference
+    };
+  };
+
   const employeeStats = users.filter(u => u.role === Role.EMPLOYEE).map(user => {
       const records = attendanceRecords.filter(r => r.userId === user.id);
       const presentDays = records.filter(r => r.checkIn && r.checkOut).length;
@@ -169,7 +256,10 @@ export const HRDashboard: React.FC = () => {
       });
 
       const leaves = leaveRequests.filter(l => l.userId === user.id && l.status === LeaveStatus.APPROVED);
-      const allLeaves = leaveRequests.filter(l => l.userId === user.id); 
+      const allLeaves = leaveRequests.filter(l => l.userId === user.id);
+      
+      // Calculate balance with carryover
+      const balance = calculateEmployeeBalance(user.id, records, leaves);
       
       const sumDaysForCategory = (leavesArr: any[], category: LeaveCategory) => {
         return leavesArr
@@ -195,7 +285,8 @@ export const HRDashboard: React.FC = () => {
           totalExtraTimeSeconds,
           paid, unpaid, half, extraTime, totalLeaves,
           records, 
-          allLeaves
+          allLeaves,
+          balance // Add balance information
       };
   });
 
@@ -211,8 +302,8 @@ export const HRDashboard: React.FC = () => {
     e.preventDefault();
     if(newUser.name && newUser.username && newUser.email && newUser.department) {
         try {
-          await createUser({ ...newUser, role: Role.EMPLOYEE, isActive: true });
-          setNewUser({ name: '', username: '', email: '', department: '' });
+          await createUser({ ...newUser, role: Role.EMPLOYEE, isActive: true, joiningDate: newUser.joiningDate ? convertToDDMMYYYY(newUser.joiningDate) : undefined });
+          setNewUser({ name: '', username: '', email: '', department: '', joiningDate: '' });
           alert("Employee created successfully! Temporary password: tempPassword123");
         } catch (error: any) {
           alert(error.message || "Failed to create user");
@@ -453,6 +544,57 @@ export const HRDashboard: React.FC = () => {
         </div>
       </section>
 
+      {/* Weekly Balance Report */}
+      <section>
+        <h2 className="text-xl font-bold text-gray-800 mb-4">Weekly Balance Report</h2>
+        <Card>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left text-gray-500">
+              <thead className="text-xs text-gray-700 uppercase bg-gray-50 border-b">
+                <tr>
+                  <th className="px-4 py-3">Employee</th>
+                  <th className="px-4 py-3 text-center">Extra Time Leave Taken</th>
+                  <th className="px-4 py-3 text-center">Extra Time Worked</th>
+                  <th className="px-4 py-3 text-center text-orange-600">Remaining Balance</th>
+                  <th className="px-4 py-3 text-center text-red-600">Low Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {employeeStats.map(stat => {
+                  const balance = stat.balance || calculateEmployeeBalance(stat.user.id, stat.records, leaveRequests.filter(l => l.userId === stat.user.id && l.status === LeaveStatus.APPROVED));
+                  const now = new Date();
+                  const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                  
+                  return (
+                    <tr key={stat.user.id} className="bg-white border-b hover:bg-gray-50">
+                      <td className="px-4 py-3 font-medium text-gray-900">{stat.user.name}</td>
+                      <td className="px-4 py-3 text-center">
+                        {balance.extraTimeLeaveHours > 0 ? formatHoursToHoursMinutes(balance.extraTimeLeaveHours) : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {balance.finalTimeDifference > 0 ? `+${formatDuration(balance.finalTimeDifference)}` : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className={`font-bold ${
+                          balance.remainingExtraTimeLeaveHours > 0 ? 'text-orange-600' : 'text-green-600'
+                        }`}>
+                          {balance.remainingExtraTimeLeaveHours > 0 
+                            ? formatHoursToHoursMinutes(balance.remainingExtraTimeLeaveHours)
+                            : '0h'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-center text-red-600">
+                        {balance.totalLowTimeSeconds > 0 ? formatDuration(balance.totalLowTimeSeconds) : '-'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </section>
+
       {/* Employee Monthly Summary Table */}
       <section>
         <h2 className="text-xl font-bold text-gray-800 mb-4">Employee Monthly Summary</h2>
@@ -464,7 +606,8 @@ export const HRDashboard: React.FC = () => {
                             <th rowSpan={2} className="px-4 py-3 bg-gray-100 border-r w-10"></th>
                             <th rowSpan={2} className="px-6 py-3 bg-gray-100 border-r">Employee</th>
                             <th colSpan={5} className="px-6 py-2 text-center bg-blue-50 border-b border-r text-blue-800">Attendance</th>
-                            <th colSpan={5} className="px-6 py-2 text-center bg-orange-50 border-b text-orange-800">Leave Breakdown (Approved)</th>
+                            <th colSpan={5} className="px-6 py-2 text-center bg-orange-50 border-b border-r text-orange-800">Leave Breakdown (Approved)</th>
+                            <th className="px-6 py-2 text-center bg-purple-50 border-b text-purple-800">Balance</th>
                         </tr>
                         <tr>
                             <th className="px-4 py-2 text-center border-r">Present</th>
@@ -473,11 +616,13 @@ export const HRDashboard: React.FC = () => {
                             <th className="px-4 py-2 text-center border-r text-red-600">Low Time</th>
                             <th className="px-4 py-2 text-center border-r text-green-600">Extra Time</th>
                             
-                            <th className="px-2 py-2 text-center">Paid</th>
-                            <th className="px-2 py-2 text-center">Unpaid</th>
-                            <th className="px-2 py-2 text-center">Half Day</th>
-                            <th className="px-2 py-2 text-center">Extra Time</th>
-                            <th className="px-2 py-2 text-center font-bold border-l">Total</th>
+                            <th className="px-2 py-2 text-center border-r">Paid</th>
+                            <th className="px-2 py-2 text-center border-r">Unpaid</th>
+                            <th className="px-2 py-2 text-center border-r">Half Day</th>
+                            <th className="px-2 py-2 text-center border-r">Extra Time</th>
+                            <th className="px-2 py-2 text-center font-bold border-l border-r">Total</th>
+                            
+                            <th className="px-2 py-2 text-center text-orange-600">Extra Time Leave Balance</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -519,11 +664,25 @@ export const HRDashboard: React.FC = () => {
                                         )}
                                     </td>
                                     
-                                    <td className="px-2 py-4 text-center">{stat.paid || '-'}</td>
-                                    <td className="px-2 py-4 text-center">{stat.unpaid || '-'}</td>
-                                    <td className="px-2 py-4 text-center">{stat.half || '-'}</td>
-                                    <td className="px-2 py-4 text-center">{stat.extraTime || '-'}</td>
-                                    <td className="px-2 py-4 text-center font-bold border-l bg-gray-50">{stat.totalLeaves}</td>
+                                    <td className="px-2 py-4 text-center border-r">{stat.paid || '-'}</td>
+                                    <td className="px-2 py-4 text-center border-r">{stat.unpaid || '-'}</td>
+                                    <td className="px-2 py-4 text-center border-r">{stat.half || '-'}</td>
+                                    <td className="px-2 py-4 text-center border-r">{stat.extraTime || '-'}</td>
+                                    <td className="px-2 py-4 text-center font-bold border-l border-r bg-gray-50">{stat.totalLeaves}</td>
+                                    
+                                    <td className="px-2 py-4 text-center">
+                                        {stat.balance ? (
+                                            <div className="flex flex-col items-center gap-1">
+                                                <span className={`text-xs font-bold ${
+                                                    stat.balance.remainingExtraTimeLeaveHours > 0 ? 'text-orange-600' : 'text-green-600'
+                                                }`}>
+                                                    {stat.balance.remainingExtraTimeLeaveHours > 0 
+                                                        ? formatHoursToHoursMinutes(stat.balance.remainingExtraTimeLeaveHours)
+                                                        : '0h'}
+                                                </span>
+                                            </div>
+                                        ) : '-'}
+                                    </td>
                                 </tr>
                                 {expandedUser === stat.user.id && (
                                     <tr className="bg-gray-50">
@@ -1128,8 +1287,12 @@ export const HRDashboard: React.FC = () => {
                       <div>
                           <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Department</label>
                           <input type="text" className="w-full p-2 border rounded text-sm" value={newUser.department} onChange={e => setNewUser({...newUser, department: e.target.value})} required />
-                          <p className="text-xs text-gray-500 mt-1">Employee will receive temporary password: tempPassword123</p>
                       </div>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Joining Date</label>
+                          <input type="date" className="w-full p-2 border rounded text-sm" value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''} onChange={e => setNewUser({...newUser, joiningDate: e.target.value})} />
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">Employee will receive temporary password: tempPassword123</p>
                       <Button type="submit" className="w-full" variant="primary">
                           <UserPlus size={16} className="mr-2" /> Create Account
                       </Button>
@@ -1191,6 +1354,27 @@ export const HRDashboard: React.FC = () => {
                           <Plus size={16} className="mr-2" /> Post Holiday
                       </Button>
                   </form>
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                      <Button 
+                          type="button"
+                          onClick={async () => {
+                              if (!confirm('This will add all Sundays for the current month as holidays. Continue?')) {
+                                  return;
+                              }
+                              try {
+                                  const result: any = await holidayAPI.autoAddSundays();
+                                  alert(result.message || `Successfully added ${result.added || 0} Sunday(s) as holidays`);
+                                  await refreshData();
+                              } catch (error: any) {
+                                  alert(error.message || 'Failed to add Sundays');
+                              }
+                          }}
+                          className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700"
+                      >
+                          <Calendar size={16} className="mr-2" /> Auto Add All Sundays (Current Month)
+                      </Button>
+                      <p className="text-xs text-gray-500 mt-2 text-center">Adds all Sundays of the current month as holidays</p>
+                  </div>
               </Card>
 
               {/* Paid Leave Allocation Section */}
@@ -1373,6 +1557,145 @@ export const HRDashboard: React.FC = () => {
                   </Card>
               </div>
           </div>
+      </section>
+
+      {/* Guidance Section */}
+      <section>
+        <Card>
+          <div className="flex items-center gap-3 mb-6">
+            <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-sm">
+              <BookOpen className="h-6 w-6 text-white" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-gray-800">HRMS System Guide</h2>
+              <p className="text-sm text-gray-500">Complete guide to using the HRMS system</p>
+            </div>
+          </div>
+
+          <div className="space-y-8">
+            {/* Leave Management Section */}
+            <section className="border-l-4 border-blue-500 pl-6">
+              <div className="flex items-center gap-3 mb-4">
+                <Calendar className="h-5 w-5 text-blue-600" />
+                <h3 className="text-xl font-bold text-gray-800">Leave Management</h3>
+              </div>
+              <div className="space-y-3 text-gray-700">
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-blue-500 mt-1 flex-shrink-0" />
+                  <span><strong>Pending Requests:</strong> Review and approve/reject leave requests from employees. Add optional HR comments when approving or rejecting.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-blue-500 mt-1 flex-shrink-0" />
+                  <span><strong>Filter Leaves:</strong> Filter leave requests by status (All, Approved, Rejected, Pending), date, or month to find specific requests.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-blue-500 mt-1 flex-shrink-0" />
+                  <span><strong>Leave Categories:</strong> Handle Paid Leave, Unpaid Leave, Half Day Leave, and Extra Time Leave requests.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-blue-500 mt-1 flex-shrink-0" />
+                  <span><strong>View All Leaves:</strong> See all leave requests with their status, dates, and employee information in a comprehensive table.</span>
+                </p>
+              </div>
+            </section>
+
+            {/* Employee Management Section */}
+            <section className="border-l-4 border-purple-500 pl-6">
+              <div className="flex items-center gap-3 mb-4">
+                <Users className="h-5 w-5 text-purple-600" />
+                <h3 className="text-xl font-bold text-gray-800">Employee Management</h3>
+              </div>
+              <div className="space-y-3 text-gray-700">
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                  <span><strong>Create Employees:</strong> Add new employee accounts. Fill in name, username, email, department, and optional joining date. Employees receive temporary password: <code className="bg-gray-100 px-1 rounded">tempPassword123</code></span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                  <span><strong>View Employees:</strong> See all employees with their attendance statistics, leave balances, and performance metrics.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                  <span><strong>Paid Leave Allocation:</strong> Add paid leaves to employees. The number you enter will be added to their existing allocation.</span>
+                </p>
+              </div>
+            </section>
+
+            {/* Attendance Management Section */}
+            <section className="border-l-4 border-green-500 pl-6">
+              <div className="flex items-center gap-3 mb-4">
+                <Clock className="h-5 w-5 text-green-600" />
+                <h3 className="text-xl font-bold text-gray-800">Attendance Management</h3>
+              </div>
+              <div className="space-y-3 text-gray-700">
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-green-500 mt-1 flex-shrink-0" />
+                  <span><strong>Today's Attendance:</strong> View all employees' attendance for today, including check-in/check-out times and break durations.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-green-500 mt-1 flex-shrink-0" />
+                  <span><strong>Attendance Correction:</strong> Manually create or update attendance records for any employee. Enter check-in, check-out times, break duration, and notes.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-green-500 mt-1 flex-shrink-0" />
+                  <span><strong>Monthly Summary:</strong> View monthly attendance statistics for employees including present days, worked hours, and flags.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-green-500 mt-1 flex-shrink-0" />
+                  <span><strong>Performance Flags:</strong> Low time flag (less than 8h 15m) and extra time flag (more than 8h 30m) help track employee performance.</span>
+                </p>
+              </div>
+            </section>
+
+            {/* Company Holidays Section */}
+            <section className="border-l-4 border-orange-500 pl-6">
+              <div className="flex items-center gap-3 mb-4">
+                <Calendar className="h-5 w-5 text-orange-600" />
+                <h3 className="text-xl font-bold text-gray-800">Company Holidays</h3>
+              </div>
+              <div className="space-y-3 text-gray-700">
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-orange-500 mt-1 flex-shrink-0" />
+                  <span><strong>Add Holidays:</strong> Add company holidays that will be automatically marked for all employees. Holidays are shown in the attendance calendar.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-orange-500 mt-1 flex-shrink-0" />
+                  <span><strong>Delete Holidays:</strong> Remove holidays if needed. This will update the attendance calendar for all employees.</span>
+                </p>
+              </div>
+            </section>
+
+            {/* Quick Tips */}
+            <section className="bg-gradient-to-r from-blue-50 to-indigo-50 p-6 rounded-xl border border-blue-100">
+              <div className="flex items-center gap-3 mb-4">
+                <HelpCircle className="h-5 w-5 text-blue-600" />
+                <h3 className="text-xl font-bold text-gray-800">Quick Tips</h3>
+              </div>
+              <ul className="space-y-2 text-gray-700">
+                <li className="flex items-start gap-2">
+                  <span className="text-blue-500 font-bold">•</span>
+                  <span>Always review leave requests carefully and add comments explaining your decision.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-blue-500 font-bold">•</span>
+                  <span>When creating employees, they will receive temporary password <code className="bg-white px-1 rounded">tempPassword123</code> and must change it on first login.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-blue-500 font-bold">•</span>
+                  <span>Paid leave allocation is cumulative - adding 5 to an employee with 10 remaining gives them 15 total.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-blue-500 font-bold">•</span>
+                  <span>Use attendance correction to fix any discrepancies in employee attendance records.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-blue-500 font-bold">•</span>
+                  <span>Filter leave requests by status, date, or month to quickly find what you're looking for.</span>
+                </li>
+              </ul>
+            </section>
+          </div>
+        </Card>
       </section>
     </div>
   );
