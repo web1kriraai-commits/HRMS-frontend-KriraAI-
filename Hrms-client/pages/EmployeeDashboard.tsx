@@ -68,7 +68,7 @@ export const EmployeeDashboard: React.FC = () => {
   }, [todayRecord]);
 
   // Leave Form State
-  const [leaveForm, setLeaveForm] = useState({ start: '', end: '', type: LeaveCategory.PAID, reason: '', halfDayTime: 'morning' });
+  const [leaveForm, setLeaveForm] = useState({ start: '', end: '', type: LeaveCategory.PAID, reason: '', halfDayTime: 'morning', halfDayLeaveType: 'paid' });
 
   const isOnBreak = todayRecord?.breaks.some(b => !b.end);
   const isCheckedIn = !!todayRecord?.checkIn;
@@ -207,14 +207,31 @@ export const EmployeeDashboard: React.FC = () => {
   }, 0);
 
   // Calculate used paid leaves (only approved ones)
+  // Includes full paid leaves and half-day leaves marked as paid
   const usedPaidLeaves = myLeaves
     .filter(leave => {
       const status = (leave.status || '').trim();
-      return (status === 'Approved' || status === LeaveStatus.APPROVED) && 
-             leave.category === LeaveCategory.PAID;
+      if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+      
+      // Full paid leaves
+      if (leave.category === LeaveCategory.PAID) return true;
+      
+      // Half-day leaves marked as paid leave
+      if (leave.category === LeaveCategory.HALF_DAY) {
+        const reason = leave.reason || '';
+        return reason.includes('[Paid Leave]');
+      }
+      
+      return false;
     })
     .reduce((sum, leave) => {
-      return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+      if (leave.category === LeaveCategory.PAID) {
+        return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+      } else if (leave.category === LeaveCategory.HALF_DAY) {
+        // Half-day leaves count as 0.5 days
+        return sum + 0.5;
+      }
+      return sum;
     }, 0);
 
   // Get total paid leaves allocation (custom or default)
@@ -304,19 +321,60 @@ export const EmployeeDashboard: React.FC = () => {
   
   // Calculate Extra Time Leave tracking
   // Calculate approved Extra Time Leave days (only approved ones)
+  // Includes full extra time leaves and half-day leaves marked as extra time
   const extraTimeLeaveDays = myLeaves
     .filter(leave => {
       const status = (leave.status || '').trim();
-      return (status === 'Approved' || status === LeaveStatus.APPROVED) && 
-             leave.category === LeaveCategory.EXTRA_TIME;
+      if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+      
+      // Full extra time leaves
+      if (leave.category === LeaveCategory.EXTRA_TIME) return true;
+      
+      // Half-day leaves marked as extra time leave
+      if (leave.category === LeaveCategory.HALF_DAY) {
+        const reason = leave.reason || '';
+        return reason.includes('[Extra Time Leave]');
+      }
+      
+      return false;
     })
     .reduce((sum, leave) => {
-      return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+      if (leave.category === LeaveCategory.EXTRA_TIME) {
+        return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+      } else if (leave.category === LeaveCategory.HALF_DAY) {
+        // Half-day leaves count as 0.5 days for calculation
+        return sum + 0.5;
+      }
+      return sum;
     }, 0);
 
-  // Convert Extra Time Leave to hours (1 day = 8 hours 15 minutes = 8.25 hours)
-  // Example: 1 day = 8.25 hours (8 hours 15 minutes)
-  const extraTimeLeaveHours = extraTimeLeaveDays * 8.25;
+  // Convert Extra Time Leave to hours
+  // Full days: 1 day = 8 hours 15 minutes = 8.25 hours
+  // Half-days: 0.5 day = 4 hours (as per requirement)
+  const extraTimeLeaveHours = myLeaves
+    .filter(leave => {
+      const status = (leave.status || '').trim();
+      if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+      
+      if (leave.category === LeaveCategory.EXTRA_TIME) return true;
+      
+      if (leave.category === LeaveCategory.HALF_DAY) {
+        const reason = leave.reason || '';
+        return reason.includes('[Extra Time Leave]');
+      }
+      
+      return false;
+    })
+    .reduce((sum, leave) => {
+      if (leave.category === LeaveCategory.EXTRA_TIME) {
+        // Full extra time leave: 1 day = 8.25 hours
+        return sum + (calculateLeaveDays(leave.startDate, leave.endDate) * 8.25);
+      } else if (leave.category === LeaveCategory.HALF_DAY) {
+        // Half-day extra time leave: 4 hours
+        return sum + 4;
+      }
+      return sum;
+    }, 0);
   
   // Calculate Final Time (net difference between extra time and low time)
   const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds;
@@ -588,6 +646,14 @@ export const EmployeeDashboard: React.FC = () => {
                     }
                 }
 
+                // Check half-day leave with paid leave selection
+                if (leaveForm.type === LeaveCategory.HALF_DAY && leaveForm.halfDayLeaveType === 'paid') {
+                    if (availablePaidLeaves < 0.5) {
+                        alert(`You need at least 0.5 paid leave(s) remaining for half-day leave. You only have ${availablePaidLeaves} paid leave(s) remaining.`);
+                        return;
+                    }
+                }
+
                 const leaveData: any = {
                     startDate: leaveForm.start,
                     endDate: leaveForm.start, // For half-day, start and end are same
@@ -598,8 +664,9 @@ export const EmployeeDashboard: React.FC = () => {
                 if (leaveForm.type !== LeaveCategory.HALF_DAY) {
                     leaveData.endDate = leaveForm.end;
                 } else {
-                    // Add half day time info to reason
-                    leaveData.reason = `[${leaveForm.halfDayTime === 'morning' ? 'Morning' : 'Afternoon'}] ${leaveForm.reason}`;
+                    // Add half day time and leave type info to reason
+                    const halfDayTypeLabel = leaveForm.halfDayLeaveType === 'paid' ? 'Paid Leave' : 'Extra Time Leave';
+                    leaveData.reason = `[${leaveForm.halfDayTime === 'morning' ? 'Morning' : 'Afternoon'}] [${halfDayTypeLabel}] ${leaveForm.reason}`;
                 }
                 requestLeave(leaveData);
                 // Reset form but keep the selected leave type (don't force change to Paid Leave)
@@ -608,7 +675,8 @@ export const EmployeeDashboard: React.FC = () => {
                     end: '', 
                     type: leaveForm.type, // Keep the selected type
                     reason: '', 
-                    halfDayTime: 'morning' 
+                    halfDayTime: 'morning',
+                    halfDayLeaveType: 'paid' // Reset to default
                 }); 
             }} className="space-y-4">
                 <div className={`grid gap-4 ${leaveForm.type === LeaveCategory.HALF_DAY ? 'grid-cols-1' : 'grid-cols-2'}`}>
@@ -662,6 +730,7 @@ export const EmployeeDashboard: React.FC = () => {
                 )}
                 </div>
                 {leaveForm.type === LeaveCategory.HALF_DAY && (
+                <>
                 <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">Half Day Time</label>
                 <select className="w-full p-2 border rounded text-sm" value={leaveForm.halfDayTime} onChange={(e) => setLeaveForm({...leaveForm, halfDayTime: e.target.value})}>
@@ -669,6 +738,40 @@ export const EmployeeDashboard: React.FC = () => {
                     <option value="afternoon">Afternoon (Second Half)</option>
                 </select>
                 </div>
+                <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Deduct From</label>
+                <select 
+                    className="w-full p-2 border rounded text-sm" 
+                    value={leaveForm.halfDayLeaveType} 
+                    onChange={(e) => {
+                        const selectedType = e.target.value;
+                        if (selectedType === 'paid' && availablePaidLeaves < 0.5) {
+                            alert(`You need at least 0.5 paid leave(s) remaining. You only have ${availablePaidLeaves} paid leave(s) remaining.`);
+                            return;
+                        }
+                        setLeaveForm({...leaveForm, halfDayLeaveType: selectedType});
+                    }}
+                >
+                    <option value="paid">Paid Leave (0.5 days)</option>
+                    <option value="extraTime">Extra Time Leave (4 hours)</option>
+                </select>
+                {leaveForm.halfDayLeaveType === 'paid' && availablePaidLeaves < 0.5 && (
+                    <p className="text-xs text-red-600 mt-1 font-semibold">
+                        ⚠️ You need at least 0.5 paid leave(s) remaining. Available: {availablePaidLeaves}
+                    </p>
+                )}
+                {leaveForm.halfDayLeaveType === 'paid' && availablePaidLeaves >= 0.5 && (
+                    <p className="text-xs text-blue-600 mt-1">
+                        Will deduct 0.5 days from paid leave. Available: {availablePaidLeaves} paid leave(s)
+                    </p>
+                )}
+                {leaveForm.halfDayLeaveType === 'extraTime' && (
+                    <p className="text-xs text-orange-600 mt-1">
+                        Will add 4 hours to Extra Time Leave taken
+                    </p>
+                )}
+                </div>
+                </>
                 )}
                 <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">Reason</label>
@@ -877,19 +980,23 @@ export const EmployeeDashboard: React.FC = () => {
                 {/* Upcoming Holidays */}
                 <Card title="Upcoming Holidays">
                     <div className="space-y-2 max-h-[200px] overflow-y-auto pr-2">
-                        {companyHolidays.length === 0 ? (
-                            <p className="text-gray-400 text-center py-4 text-sm">No upcoming holidays.</p>
-                        ) : (
-                            companyHolidays.map(h => (
-                                <div key={h.id} className="flex items-center gap-3 p-2 bg-blue-50 rounded border border-blue-100">
-                                    <Calendar size={16} className="text-blue-500" />
-                                    <div>
-                                        <p className="text-sm font-bold text-gray-800">{h.description}</p>
-                                        <p className="text-xs text-gray-500">{formatDate(h.date)}</p>
+                        {(() => {
+                            // Filter out past holidays - only show upcoming ones
+                            const upcomingHolidays = companyHolidays.filter(h => h.status !== 'past');
+                            return upcomingHolidays.length === 0 ? (
+                                <p className="text-gray-400 text-center py-4 text-sm">No upcoming holidays.</p>
+                            ) : (
+                                upcomingHolidays.map(h => (
+                                    <div key={h.id} className="flex items-center gap-3 p-2 bg-blue-50 rounded border border-blue-100">
+                                        <Calendar size={16} className="text-blue-500" />
+                                        <div>
+                                            <p className="text-sm font-bold text-gray-800">{h.description}</p>
+                                            <p className="text-xs text-gray-500">{formatDate(h.date)}</p>
+                                        </div>
                                     </div>
-                                </div>
-                            ))
-                        )}
+                                ))
+                            );
+                        })()}
                     </div>
                 </Card>
             </div>
