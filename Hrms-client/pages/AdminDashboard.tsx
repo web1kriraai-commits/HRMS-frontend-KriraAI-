@@ -3,17 +3,29 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Role, LeaveCategory, LeaveStatus, User } from '../types';
-import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, AlertCircle } from 'lucide-react';
-import { formatDate, getTodayStr, formatDuration } from '../services/utils';
-import { attendanceAPI, notificationAPI, userAPI } from '../services/api';
+import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight } from 'lucide-react';
+import { formatDate, getTodayStr, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD } from '../services/utils';
+import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI } from '../services/api';
+
+// Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
+const formatHoursToHoursMinutes = (hours: number) => {
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  
+  if (h === 0 && m === 0) return '0m';
+  if (h === 0) return `${m}m`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}m`;
+};
 
 export const AdminDashboard: React.FC = () => {
   const { auth, users, auditLogs, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, notifications, leaveRequests, updateUser } = useApp();
-  const [activeTab, setActiveTab] = useState<'summary' | 'users' | 'audit' | 'reports' | 'settings'>('summary');
+  const [activeTab, setActiveTab] = useState<'summary' | 'users' | 'audit' | 'reports' | 'settings' | 'guidance'>('summary');
   
   // User management states
-  const [newUser, setNewUser] = useState({ name: '', username: '', email: '', department: '', role: 'Employee' });
+  const [newUser, setNewUser] = useState({ name: '', username: '', email: '', department: '', role: 'Employee', joiningDate: '' });
   const [paidLeaveAllocation, setPaidLeaveAllocation] = useState({ userId: '', allocation: '' });
+  const [forgetPassword, setForgetPassword] = useState({ username: '', newPassword: '' });
   
   const [newHoliday, setNewHoliday] = useState({ date: '', description: '' });
   const [correction, setCorrection] = useState({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '' });
@@ -230,6 +242,87 @@ export const AdminDashboard: React.FC = () => {
     }, 0);
   };
 
+  // Helper function to calculate extra time leave balance and carryover
+  const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[]) => {
+    // Calculate extra time leave hours taken
+    const extraTimeLeaveHours = monthLeaves
+      .filter(leave => {
+        const status = (leave.status || '').trim();
+        if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+        
+        if (leave.category === LeaveCategory.EXTRA_TIME) return true;
+        
+        if (leave.category === LeaveCategory.HALF_DAY) {
+          const reason = leave.reason || '';
+          return reason.includes('[Extra Time Leave]');
+        }
+        
+        return false;
+      })
+      .reduce((sum, leave) => {
+        if (leave.category === LeaveCategory.EXTRA_TIME) {
+          const start = new Date(leave.startDate);
+          const end = new Date(leave.endDate);
+          const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+          return sum + (days * 8.25);
+        } else if (leave.category === LeaveCategory.HALF_DAY) {
+          return sum + 4;
+        }
+        return sum;
+      }, 0);
+
+    // Calculate low time and extra time from attendance
+    let totalLowTimeSeconds = 0;
+    let totalExtraTimeSeconds = 0;
+    const MIN_NORMAL_SECONDS = 8 * 3600 + 15 * 60;
+    const MAX_NORMAL_SECONDS = 8 * 3600 + 30 * 60;
+
+    monthRecords.forEach(r => {
+      if (r.checkIn && r.checkOut) {
+        const checkIn = new Date(r.checkIn).getTime();
+        const checkOut = new Date(r.checkOut).getTime();
+        const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
+        const breakSeconds = getBreakSeconds(r.breaks) || 0;
+        const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        
+        if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
+          totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
+        } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
+          totalExtraTimeSeconds += (netWorkedSeconds - MAX_NORMAL_SECONDS);
+        }
+      }
+    });
+
+    // Calculate final time difference
+    const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds;
+    const extraTimeWorkedHours = finalTimeDifference / 3600;
+
+    // Remaining extra time leave balance
+    const remainingExtraTimeLeaveHours = Math.max(0, extraTimeLeaveHours - Math.max(0, extraTimeWorkedHours));
+
+    // Calculate carryover from previous month
+    // At month end, if balance is not covered, it carries over to next month
+    const now = new Date();
+    const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    
+    // Extra Time Leave Balance: If remaining > 0 at month end, it carries over
+    const carryoverExtraTimeLeave = isMonthEnd && remainingExtraTimeLeaveHours > 0 ? remainingExtraTimeLeaveHours : 0;
+    
+    // Low Time: If there's low time that's not compensated by extra time, it carries over
+    // Only carry over if final difference is negative (more low time than extra time)
+    const carryoverLowTime = isMonthEnd && finalTimeDifference < 0 ? Math.abs(finalTimeDifference) : 0;
+
+    return {
+      extraTimeLeaveHours,
+      totalLowTimeSeconds,
+      totalExtraTimeSeconds,
+      remainingExtraTimeLeaveHours,
+      carryoverExtraTimeLeave,
+      carryoverLowTime,
+      finalTimeDifference
+    };
+  };
+
   // Calculate monthly stats
   const calculateMonthlyStats = () => {
     let totalWorkedSeconds = 0;
@@ -266,17 +359,53 @@ export const AdminDashboard: React.FC = () => {
       }
     });
 
+    // Calculate Extra Time Leave hours for selected month
+    const approvedLeaves = filteredMonthlyLeaves.filter(l => {
+      const status = (l.status || '').trim();
+      return status === 'Approved' || status === LeaveStatus.APPROVED;
+    });
+    
+    const extraTimeLeaveHours = approvedLeaves
+      .filter(leave => {
+        if (leave.category === LeaveCategory.EXTRA_TIME) return true;
+        if (leave.category === LeaveCategory.HALF_DAY) {
+          const reason = leave.reason || '';
+          return reason.includes('[Extra Time Leave]');
+        }
+        return false;
+      })
+      .reduce((sum, leave) => {
+        if (leave.category === LeaveCategory.EXTRA_TIME) {
+          return sum + (calculateLeaveDays(leave.startDate, leave.endDate) * 8.25);
+        } else if (leave.category === LeaveCategory.HALF_DAY) {
+          return sum + 4;
+        }
+        return sum;
+      }, 0);
+
+    // Convert extra time leave hours to seconds
+    const extraTimeLeaveSeconds = extraTimeLeaveHours * 3600;
+
+    // Net Time Balance = Extra Time - (Extra Time Leave + Low Time)
+    const finalDifference = totalExtraTimeSeconds - (extraTimeLeaveSeconds + totalLowTimeSeconds);
+
     return {
       totalWorkedSeconds,
       totalBreakSeconds,
       daysPresent,
       totalLowTimeSeconds,
       totalExtraTimeSeconds,
-      finalDifference: totalExtraTimeSeconds - totalLowTimeSeconds
+      extraTimeLeaveSeconds,
+      finalDifference
     };
   };
 
   const stats = calculateMonthlyStats();
+  
+  // Calculate balance for selected user
+  const selectedUserBalance = selectedUserId && selectedUser 
+    ? calculateEmployeeBalance(selectedUserId, monthlyAttendance, filteredMonthlyLeaves)
+    : null;
 
   const handleAddHoliday = (e: React.FormEvent) => {
     e.preventDefault();
@@ -428,6 +557,9 @@ export const AdminDashboard: React.FC = () => {
           <button onClick={() => setActiveTab('settings')} className={`flex items-center px-5 py-2.5 text-sm font-semibold rounded-xl whitespace-nowrap transition-all ${activeTab === 'settings' ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-200' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
             <Globe size={16} className="mr-2"/> Settings
           </button>
+          <button onClick={() => setActiveTab('guidance')} className={`flex items-center px-5 py-2.5 text-sm font-semibold rounded-xl whitespace-nowrap transition-all ${activeTab === 'guidance' ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-200' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
+            <BookOpen size={16} className="mr-2"/> Guidance
+          </button>
       </div>
 
       {/* MONTHLY SUMMARY TAB */}
@@ -558,37 +690,88 @@ export const AdminDashboard: React.FC = () => {
               {/* Net Time Balance Card */}
               <div className={`rounded-xl p-6 border ${
                 stats.finalDifference >= 0 
-                  ? 'bg-emerald-50 border-emerald-200' 
-                  : 'bg-orange-50 border-orange-200'
+                  ? 'bg-green-50 border-green-200' 
+                  : 'bg-red-50 border-red-200'
               }`}>
                 <div className="flex flex-col md:flex-row items-center justify-between gap-4">
                   <div className="flex items-center gap-4">
                     <div className={`h-14 w-14 rounded-xl flex items-center justify-center ${
-                      stats.finalDifference >= 0 ? 'bg-emerald-100' : 'bg-orange-100'
+                      stats.finalDifference >= 0 ? 'bg-green-100' : 'bg-red-100'
                     }`}>
                       {stats.finalDifference >= 0 ? (
-                        <TrendingUp className={`h-7 w-7 text-emerald-600`} />
+                        <TrendingUp className={`h-7 w-7 text-green-600`} />
                       ) : (
-                        <TrendingDown className="h-7 w-7 text-orange-600" />
+                        <TrendingDown className="h-7 w-7 text-red-600" />
                       )}
                     </div>
                     <div>
-                      <p className={`text-sm font-semibold ${stats.finalDifference >= 0 ? 'text-emerald-700' : 'text-orange-700'}`}>
+                      <p className={`text-sm font-semibold ${stats.finalDifference >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                         Net Time Balance
                       </p>
-                      <p className="text-gray-500 text-xs">(Extra Time - Low Time)</p>
+                      <p className="text-gray-500 text-xs">Extra Time - (Extra Time Leave + Low Time)</p>
                     </div>
                   </div>
                   <div className="text-center md:text-right">
-                    <p className={`text-4xl font-bold ${stats.finalDifference >= 0 ? 'text-emerald-600' : 'text-orange-600'}`}>
+                    <p className={`text-4xl font-bold ${stats.finalDifference >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                       {stats.finalDifference >= 0 ? '+' : '-'}{formatDuration(Math.abs(stats.finalDifference))}
                     </p>
-                    <p className="text-gray-500 text-sm mt-1">
+                    <p className={`text-sm mt-1 ${stats.finalDifference >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                       {stats.finalDifference >= 0 ? '✅ Good Performance' : '⚠️ Needs Improvement'}
                     </p>
                   </div>
                 </div>
               </div>
+
+              {/* Balance & Carryover Card */}
+              {selectedUserBalance && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="rounded-xl p-6 border bg-orange-50 border-orange-200">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="h-10 w-10 rounded-lg bg-orange-100 flex items-center justify-center">
+                        <Timer className="h-5 w-5 text-orange-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-orange-700">Extra Time Leave Balance</p>
+                        <p className="text-xs text-orange-600">Remaining to be worked</p>
+                      </div>
+                    </div>
+                    <p className={`text-3xl font-bold ${
+                      selectedUserBalance.remainingExtraTimeLeaveHours > 0 ? 'text-orange-600' : 'text-green-600'
+                    }`}>
+                      {selectedUserBalance.remainingExtraTimeLeaveHours > 0 
+                        ? formatHoursToHoursMinutes(selectedUserBalance.remainingExtraTimeLeaveHours)
+                        : '0h'}
+                    </p>
+                    {(() => {
+                      const now = new Date();
+                      const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                      if (isMonthEnd && selectedUserBalance.carryoverExtraTimeLeave > 0) {
+                        return (
+                          <p className="text-xs text-orange-600 mt-2 font-semibold">
+                            → {formatHoursToHoursMinutes(selectedUserBalance.carryoverExtraTimeLeave)} will carry over to next month
+                          </p>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
+
+                  <div className="rounded-xl p-6 border bg-red-50 border-red-200">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="h-10 w-10 rounded-lg bg-red-100 flex items-center justify-center">
+                        <TrendingDown className="h-5 w-5 text-red-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-red-700">Low Time</p>
+                        <p className="text-xs text-red-600">Total deficit (auto-carries over if not covered)</p>
+                      </div>
+                    </div>
+                    <p className="text-3xl font-bold text-red-600">
+                      {formatDuration(selectedUserBalance.totalLowTimeSeconds)}
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* Leave Records */}
               {monthlyLeaves.length > 0 && (
@@ -876,9 +1059,11 @@ export const AdminDashboard: React.FC = () => {
 
       {/* USER MANAGEMENT TAB */}
       {activeTab === 'users' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Create User Form */}
-          <Card className="lg:col-span-1">
+        <div className="space-y-6">
+          {/* Top Row: Create User Form and All Users Table */}
+          <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6">
+            {/* Create User Form */}
+            <Card className="lg:col-span-1">
             <div className="flex items-center gap-3 mb-6">
               <div className="h-10 w-10 rounded-xl bg-indigo-100 flex items-center justify-center">
                 <UserPlus className="h-5 w-5 text-indigo-600" />
@@ -900,10 +1085,11 @@ export const AdminDashboard: React.FC = () => {
                   username: newUser.username,
                   email: newUser.email,
                   department: newUser.department,
-                  role: newUser.role
+                  role: newUser.role,
+                  joiningDate: newUser.joiningDate ? convertToDDMMYYYY(newUser.joiningDate) : undefined
                 });
                 alert('User created successfully! Temporary password: tempPassword123');
-                setNewUser({ name: '', username: '', email: '', department: '', role: 'Employee' });
+                setNewUser({ name: '', username: '', email: '', department: '', role: 'Employee', joiningDate: '' });
                 await refreshData();
               } catch (error: any) {
                 alert(error.message || 'Failed to create user');
@@ -933,15 +1119,118 @@ export const AdminDashboard: React.FC = () => {
                   <option value="Admin">Admin</option>
                 </select>
               </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Joining Date</label>
+                <input type="date" className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400" value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''} onChange={e => setNewUser({...newUser, joiningDate: e.target.value})} />
+              </div>
               <p className="text-xs text-gray-500 bg-gray-50 p-2 rounded-lg">User will receive temporary password: <span className="font-mono font-bold">tempPassword123</span></p>
               <Button type="submit" className="w-full">
                 <UserPlus size={16} className="mr-2" /> Create User
               </Button>
-            </form>
+              </form>
           </Card>
 
+            {/* All Users Table */}
+            <Card className="lg:col-span-1 overflow-hidden p-0">
+              <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
+                    <Users className="h-5 w-5 text-emerald-600" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-800">All Users</h3>
+                    <p className="text-xs text-gray-500">{users.length} users</p>
+                  </div>
+                </div>
+              </div>
+              <div className="overflow-x-auto max-h-[600px]">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-xs text-gray-500 uppercase sticky top-0">
+                    <tr>
+                      <th className="px-5 py-3 text-left">User</th>
+                      <th className="px-5 py-3 text-left">Role</th>
+                      <th className="px-5 py-3 text-left">Department</th>
+                      <th className="px-5 py-3 text-left">Joining Date</th>
+                      <th className="px-5 py-3 text-center">Status</th>
+                      <th className="px-5 py-3 text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {users.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-5 py-8 text-center text-gray-400">
+                          No users found
+                        </td>
+                      </tr>
+                    ) : (
+                      users.map(user => (
+                        <tr key={user.id} className="hover:bg-gray-50">
+                          <td className="px-5 py-4">
+                            <div className="flex items-center gap-3">
+                              <div className={`h-9 w-9 rounded-lg flex items-center justify-center text-white font-bold text-sm ${
+                                user.role === Role.ADMIN ? 'bg-purple-500' : 
+                                user.role === Role.HR ? 'bg-blue-500' : 'bg-emerald-500'
+                              }`}>
+                                {user.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <p className="font-semibold text-gray-800">{user.name}</p>
+                                <p className="text-xs text-gray-400">{user.email}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-5 py-4">
+                            <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                              user.role === Role.ADMIN ? 'bg-purple-100 text-purple-700' :
+                              user.role === Role.HR ? 'bg-blue-100 text-blue-700' :
+                              'bg-emerald-100 text-emerald-700'
+                            }`}>
+                              {user.role}
+                            </span>
+                          </td>
+                          <td className="px-5 py-4 text-gray-600">{user.department}</td>
+                          <td className="px-5 py-4 text-gray-600 text-xs">
+                            {user.joiningDate || '-'}
+                          </td>
+                          <td className="px-5 py-4 text-center">
+                            <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                              user.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                            }`}>
+                              {user.isActive ? 'Active' : 'Inactive'}
+                            </span>
+                          </td>
+                          <td className="px-5 py-4 text-center">
+                            {user.id !== auth.user?.id && (
+                              <button 
+                                onClick={async () => {
+                                  if (confirm(`Are you sure you want to delete ${user.name}?`)) {
+                                    try {
+                                      await userAPI.deleteUser(user.id);
+                                      alert(`User ${user.name} deleted successfully`);
+                                      await refreshData();
+                                    } catch (error: any) {
+                                      alert(error.message || 'Failed to delete user');
+                                    }
+                                  }
+                                }}
+                                className="text-gray-400 hover:text-red-500 transition-colors p-2 rounded-lg hover:bg-red-50"
+                                title="Delete User"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+
           {/* Paid Leave Allocation Section */}
-          <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6">
             {/* Add Paid Leave Form */}
             <Card className="h-fit">
               <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-100">
@@ -1123,82 +1412,67 @@ export const AdminDashboard: React.FC = () => {
             </Card>
           </div>
 
-          {/* Users List */}
-          <div className="lg:col-span-2">
-            <Card className="overflow-hidden p-0">
-              <div className="p-5 border-b border-gray-100 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
-                    <Users className="h-5 w-5 text-emerald-600" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-800">All Users</h3>
-                    <p className="text-xs text-gray-500">{users.length} users</p>
-                  </div>
+          {/* Forget Password Form - Bottom */}
+          <Card>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="h-10 w-10 rounded-xl bg-orange-100 flex items-center justify-center">
+                <Mail className="h-5 w-5 text-orange-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-800">Forget Password</h3>
+                <p className="text-xs text-gray-500">Reset user password by email</p>
+              </div>
+            </div>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              if (!forgetPassword.username || !forgetPassword.newPassword) {
+                alert('Please fill all required fields');
+                return;
+              }
+              if (forgetPassword.newPassword.length < 4) {
+                alert('Password must be at least 4 characters');
+                return;
+              }
+              try {
+                await authAPI.resetPassword(forgetPassword.username, forgetPassword.newPassword);
+                alert('Password reset successfully!');
+                setForgetPassword({ username: '', newPassword: '' });
+                await refreshData();
+              } catch (error: any) {
+                alert(error.message || 'Failed to reset password');
+              }
+            }} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Username *</label>
+                  <input 
+                    type="text" 
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-orange-200 focus:border-orange-400" 
+                    value={forgetPassword.username} 
+                    onChange={e => setForgetPassword({...forgetPassword, username: e.target.value})} 
+                    placeholder="username" 
+                    required 
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 uppercase mb-1">New Password *</label>
+                  <input 
+                    type="password" 
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-orange-200 focus:border-orange-400" 
+                    value={forgetPassword.newPassword} 
+                    onChange={e => setForgetPassword({...forgetPassword, newPassword: e.target.value})} 
+                    placeholder="Enter new password" 
+                    minLength={4}
+                    required 
+                  />
                 </div>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
-                    <tr>
-                      <th className="px-5 py-3 text-left">User</th>
-                      <th className="px-5 py-3 text-left">Role</th>
-                      <th className="px-5 py-3 text-left">Department</th>
-                      <th className="px-5 py-3 text-center">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {users.map(user => (
-                      <tr key={user.id} className="hover:bg-gray-50">
-                        <td className="px-5 py-4">
-                          <div className="flex items-center gap-3">
-                            <div className={`h-9 w-9 rounded-lg flex items-center justify-center text-white font-bold text-sm ${
-                              user.role === Role.ADMIN ? 'bg-purple-500' : 
-                              user.role === Role.HR ? 'bg-blue-500' : 'bg-emerald-500'
-                            }`}>
-                              {user.name.charAt(0).toUpperCase()}
-                            </div>
-                            <div>
-                              <p className="font-semibold text-gray-800">{user.name}</p>
-                              <p className="text-xs text-gray-400">{user.email}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-5 py-4">
-                          <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${
-                            user.role === Role.ADMIN ? 'bg-purple-100 text-purple-700' : 
-                            user.role === Role.HR ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'
-                          }`}>{user.role}</span>
-                        </td>
-                        <td className="px-5 py-4 text-gray-600">{user.department}</td>
-                        <td className="px-5 py-4 text-center">
-                          {user.id !== auth.user?.id && (
-                            <button 
-                              onClick={async () => {
-                                if (confirm(`Are you sure you want to delete ${user.name}?`)) {
-                                  try {
-                                    await userAPI.deleteUser(user.id);
-                                    alert(`User ${user.name} deleted successfully`);
-                                    await refreshData();
-                                  } catch (error: any) {
-                                    alert(error.message || 'Failed to delete user');
-                                  }
-                                }
-                              }}
-                              className="text-gray-400 hover:text-red-500 transition-colors p-2 rounded-lg hover:bg-red-50"
-                              title="Delete User"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </div>
+              <p className="text-xs text-gray-500 bg-orange-50 p-2 rounded-lg">Enter user's username to reset their password. Password must be at least 4 characters.</p>
+              <Button type="submit" className="w-full bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700">
+                <Mail size={16} className="mr-2" /> Reset Password
+              </Button>
+            </form>
+          </Card>
         </div>
       )}
 
@@ -1270,6 +1544,27 @@ export const AdminDashboard: React.FC = () => {
                             <Plus size={16} className="mr-2" /> Post Holiday
                         </Button>
                     </form>
+                    <div className="mt-4 pt-4 border-t border-gray-200">
+                        <Button 
+                            type="button"
+                            onClick={async () => {
+                                if (!confirm('This will add all Sundays for the current month as holidays. Continue?')) {
+                                    return;
+                                }
+                                try {
+                                    const result: any = await holidayAPI.autoAddSundays();
+                                    alert(result.message || `Successfully added ${result.added || 0} Sunday(s) as holidays`);
+                                    await refreshData();
+                                } catch (error: any) {
+                                    alert(error.message || 'Failed to add Sundays');
+                                }
+                            }}
+                            className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700"
+                        >
+                            <Calendar size={16} className="mr-2" /> Auto Add All Sundays (Current Month)
+                        </Button>
+                        <p className="text-xs text-gray-500 mt-2 text-center">Adds all Sundays of the current month as holidays</p>
+                    </div>
                 </Card>
 
                 {/* Correction */}
@@ -1317,16 +1612,31 @@ export const AdminDashboard: React.FC = () => {
                     <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
                         {companyHolidays.length === 0 ? <p className="text-gray-400 text-sm p-2">No holidays scheduled.</p> : 
                             companyHolidays.map(holiday => (
-                                <div key={holiday.id} className="flex items-center justify-between p-3 bg-gray-50 rounded border border-gray-100">
+                                <div key={holiday.id} className={`flex items-center justify-between p-3 rounded border ${
+                                    holiday.status === 'past' 
+                                        ? 'bg-gray-100 border-gray-200 opacity-60' 
+                                        : 'bg-gray-50 border-gray-100'
+                                }`}>
                                     <div className="flex items-center gap-3">
-                                        <div className="bg-purple-100 text-purple-600 p-2 rounded-lg">
+                                        <div className={`p-2 rounded-lg ${
+                                            holiday.status === 'past' 
+                                                ? 'bg-gray-200 text-gray-500' 
+                                                : 'bg-purple-100 text-purple-600'
+                                        }`}>
                                             <Calendar size={18} />
                                         </div>
                                         <div>
-                                            <p className="text-sm font-bold text-gray-800">{holiday.description}</p>
+                                            <p className={`text-sm font-bold ${
+                                                holiday.status === 'past' ? 'text-gray-500' : 'text-gray-800'
+                                            }`}>{holiday.description}</p>
                                             <p className="text-xs text-gray-500">{formatDate(holiday.date)}</p>
                                         </div>
                                     </div>
+                                    {holiday.status === 'past' && (
+                                        <span className="text-xs bg-gray-300 text-gray-600 px-2 py-1 rounded-full font-semibold">
+                                            Past
+                                        </span>
+                                    )}
                                 </div>
                             ))
                         }
@@ -1455,6 +1765,161 @@ export const AdminDashboard: React.FC = () => {
                  </div>
              </div>
           </Card>
+      )}
+
+      {/* GUIDANCE TAB */}
+      {activeTab === 'guidance' && (
+        <div className="space-y-6">
+          <Card>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-sm">
+                <BookOpen className="h-6 w-6 text-white" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold text-gray-800">HRMS System Guide</h2>
+                <p className="text-sm text-gray-500">Complete guide to using the HRMS system</p>
+              </div>
+            </div>
+
+            <div className="space-y-8">
+              {/* Monthly Summary Section */}
+              <section className="border-l-4 border-indigo-500 pl-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <Clock className="h-5 w-5 text-indigo-600" />
+                  <h3 className="text-xl font-bold text-gray-800">Monthly Summary</h3>
+                </div>
+                <div className="space-y-3 text-gray-700">
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-indigo-500 mt-1 flex-shrink-0" />
+                    <span><strong>View Attendance:</strong> Select an employee and month to view their attendance summary, including present days, worked hours, and leave statistics.</span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-indigo-500 mt-1 flex-shrink-0" />
+                    <span><strong>Performance Metrics:</strong> Track low time flags (less than 8h 15m) and extra time flags (more than 8h 30m) for each employee.</span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-indigo-500 mt-1 flex-shrink-0" />
+                    <span><strong>Leave Breakdown:</strong> View paid leaves, unpaid leaves, half-day leaves, and extra time leaves used by each employee.</span>
+                  </p>
+                </div>
+              </section>
+
+              {/* User Management Section */}
+              <section className="border-l-4 border-purple-500 pl-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <Users className="h-5 w-5 text-purple-600" />
+                  <h3 className="text-xl font-bold text-gray-800">User Management</h3>
+                </div>
+                <div className="space-y-3 text-gray-700">
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                    <span><strong>Create Users:</strong> Add new Admin, HR, or Employee accounts. Fill in name, username, email, department, role, and optional joining date. Users receive temporary password: <code className="bg-gray-100 px-1 rounded">tempPassword123</code></span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                    <span><strong>View All Users:</strong> See all active users with their roles, departments, joining dates, and status. Delete inactive users if needed.</span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                    <span><strong>Reset Password:</strong> Use the Forget Password form at the bottom. Enter username and new password (minimum 4 characters) to reset any user's password.</span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                    <span><strong>Paid Leave Allocation:</strong> Add paid leaves to employees. The number you enter will be added to their existing allocation. Use "Reset All Allocations" to set all to 0.</span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                    <span><strong>Yearly Summary:</strong> View yearly paid leave overview showing allocated, used, and remaining leaves for all employees.</span>
+                  </p>
+                </div>
+              </section>
+
+              {/* Audit Logs Section */}
+              <section className="border-l-4 border-green-500 pl-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <Activity className="h-5 w-5 text-green-600" />
+                  <h3 className="text-xl font-bold text-gray-800">Audit Logs</h3>
+                </div>
+                <div className="space-y-3 text-gray-700">
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-green-500 mt-1 flex-shrink-0" />
+                    <span><strong>Track Activities:</strong> Monitor all system activities including user creation, password changes, attendance updates, leave approvals, and more.</span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-green-500 mt-1 flex-shrink-0" />
+                    <span><strong>View Details:</strong> See who performed what action, when, and what changes were made (before/after data).</span>
+                  </p>
+                </div>
+              </section>
+
+              {/* System Management Section */}
+              <section className="border-l-4 border-orange-500 pl-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <FileText className="h-5 w-5 text-orange-600" />
+                  <h3 className="text-xl font-bold text-gray-800">System Management</h3>
+                </div>
+                <div className="space-y-3 text-gray-700">
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-orange-500 mt-1 flex-shrink-0" />
+                    <span><strong>Company Holidays:</strong> Add company holidays that will be automatically marked for all employees. Holidays are shown in the attendance calendar.</span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-orange-500 mt-1 flex-shrink-0" />
+                    <span><strong>Attendance Correction:</strong> Manually create or update attendance records for any employee. Enter check-in, check-out times, break duration, and notes.</span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-orange-500 mt-1 flex-shrink-0" />
+                    <span><strong>Export Reports:</strong> Generate and download attendance reports in CSV format. Filter by date range and department.</span>
+                  </p>
+                </div>
+              </section>
+
+              {/* Settings Section */}
+              <section className="border-l-4 border-blue-500 pl-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <Globe className="h-5 w-5 text-blue-600" />
+                  <h3 className="text-xl font-bold text-gray-800">Settings</h3>
+                </div>
+                <div className="space-y-3 text-gray-700">
+                  <p className="flex items-start gap-2">
+                    <ArrowRight className="h-4 w-4 text-blue-500 mt-1 flex-shrink-0" />
+                    <span><strong>Company Timezone:</strong> Set the global timezone for the organization. This affects how all timestamps are displayed across the system.</span>
+                  </p>
+                </div>
+              </section>
+
+              {/* Quick Tips */}
+              <section className="bg-gradient-to-r from-indigo-50 to-purple-50 p-6 rounded-xl border border-indigo-100">
+                <div className="flex items-center gap-3 mb-4">
+                  <HelpCircle className="h-5 w-5 text-indigo-600" />
+                  <h3 className="text-xl font-bold text-gray-800">Quick Tips</h3>
+                </div>
+                <ul className="space-y-2 text-gray-700">
+                  <li className="flex items-start gap-2">
+                    <span className="text-indigo-500 font-bold">•</span>
+                    <span>All users created without a password will receive <code className="bg-white px-1 rounded">tempPassword123</code> and must change it on first login.</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-indigo-500 font-bold">•</span>
+                    <span>Attendance records are automatically created when employees clock in/out.</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-indigo-500 font-bold">•</span>
+                    <span>Low time flag: Less than 8 hours 15 minutes worked. Extra time flag: More than 8 hours 30 minutes worked.</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-indigo-500 font-bold">•</span>
+                    <span>Paid leave allocation is cumulative - adding 5 to an employee with 10 remaining gives them 15 total.</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-indigo-500 font-bold">•</span>
+                    <span>You can delete users (soft delete - sets isActive to false) but cannot delete your own account.</span>
+                  </li>
+                </ul>
+              </section>
+            </div>
+          </Card>
+        </div>
       )}
 
     </div>
