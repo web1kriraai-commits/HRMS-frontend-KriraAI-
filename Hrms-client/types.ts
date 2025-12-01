@@ -35,6 +35,7 @@ export interface User {
   lastLogin?: string; // ISO String
   paidLeaveAllocation?: number | null; // Custom paid leave allocation (null = use default)
   paidLeaveLastAllocatedDate?: string; // ISO string - Last date when paid leave was allocated
+  joiningDate?: string; // ISO string - Employee joining date
 }
 
 export interface Break {
@@ -94,6 +95,7 @@ export interface CompanyHoliday {
   createdBy?: string;
   createdByName?: string;
   createdByRole?: string;
+  status?: 'past' | 'upcoming'; // Calculated based on current date
 }
 
 export interface Notification {
