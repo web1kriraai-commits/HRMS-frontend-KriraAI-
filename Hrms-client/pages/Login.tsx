@@ -16,7 +16,7 @@ export const Login: React.FC = () => {
   const [loading, setLoading] = useState(false);
   
   // Reset password states
-  const [resetEmail, setResetEmail] = useState('');
+  const [resetUsername, setResetUsername] = useState('');
   const [resetNewPassword, setResetNewPassword] = useState('');
   
   const { auth, checkingAuth, login, changePassword } = useApp();
@@ -89,8 +89,8 @@ export const Login: React.FC = () => {
     e.preventDefault();
     setError('');
     setSuccess('');
-    if (!resetEmail.trim()) {
-      setError('Please enter your email');
+    if (!resetUsername.trim()) {
+      setError('Please enter your username');
       return;
     }
     if (resetNewPassword.length < 4) {
@@ -99,11 +99,11 @@ export const Login: React.FC = () => {
     }
     setLoading(true);
     try {
-      await authAPI.resetPassword(resetEmail, resetNewPassword);
+      await authAPI.resetPassword(resetUsername, resetNewPassword);
       setSuccess('Password reset successfully! You can now login.');
       setTimeout(() => {
         setMode('login');
-        setResetEmail('');
+        setResetUsername('');
         setResetNewPassword('');
         setSuccess('');
       }, 1500);
@@ -169,13 +169,13 @@ export const Login: React.FC = () => {
           </div>
           <form onSubmit={handleResetPassword} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
               <input
-                type="email"
-                value={resetEmail}
-                onChange={(e) => setResetEmail(e.target.value)}
+                type="text"
+                value={resetUsername}
+                onChange={(e) => setResetUsername(e.target.value)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none"
-                placeholder="Enter your registered email"
+                placeholder="Enter your username"
                 autoFocus
                 required
               />
