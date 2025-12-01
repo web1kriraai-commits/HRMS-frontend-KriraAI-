@@ -118,7 +118,7 @@ export const Login: React.FC = () => {
     setMode('login');
     setError('');
     setSuccess('');
-    setResetEmail('');
+    setResetUsername('');
     setResetNewPassword('');
   };
 
