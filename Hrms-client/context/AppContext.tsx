@@ -56,7 +56,8 @@ const transformUser = (apiUser: any): User => ({
   isFirstLogin: apiUser.isFirstLogin,
   lastLogin: apiUser.lastLogin,
   paidLeaveAllocation: apiUser.paidLeaveAllocation !== undefined ? apiUser.paidLeaveAllocation : null,
-  paidLeaveLastAllocatedDate: apiUser.paidLeaveLastAllocatedDate ? new Date(apiUser.paidLeaveLastAllocatedDate).toISOString() : undefined
+  paidLeaveLastAllocatedDate: apiUser.paidLeaveLastAllocatedDate ? new Date(apiUser.paidLeaveLastAllocatedDate).toISOString() : undefined,
+  joiningDate: apiUser.joiningDate || undefined // Keep in dd-mm-yyyy format as stored
 });
 
 // Helper to transform API attendance to frontend Attendance type
@@ -104,14 +105,24 @@ const transformAuditLog = (apiLog: any): AuditLog => ({
 });
 
 // Helper to transform API holiday
-const transformHoliday = (apiHoliday: any): CompanyHoliday => ({
-  id: apiHoliday.id || apiHoliday._id,
-  date: apiHoliday.date,
-  description: apiHoliday.description,
-  createdBy: apiHoliday.createdBy?.id || apiHoliday.createdBy?._id || apiHoliday.createdBy,
-  createdByName: apiHoliday.createdByName || apiHoliday.createdBy?.name,
-  createdByRole: apiHoliday.createdByRole || apiHoliday.createdBy?.role
-});
+const transformHoliday = (apiHoliday: any): CompanyHoliday => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const holidayDate = new Date(apiHoliday.date);
+  holidayDate.setHours(0, 0, 0, 0);
+  
+  const status = holidayDate < today ? 'past' : 'upcoming';
+  
+  return {
+    id: apiHoliday.id || apiHoliday._id,
+    date: apiHoliday.date,
+    description: apiHoliday.description,
+    createdBy: apiHoliday.createdBy?.id || apiHoliday.createdBy?._id || apiHoliday.createdBy,
+    createdByName: apiHoliday.createdByName || apiHoliday.createdBy?.name,
+    createdByRole: apiHoliday.createdByRole || apiHoliday.createdBy?.role,
+    status
+  };
+};
 
 // Helper to transform API notification
 const transformNotification = (apiNotif: any): Notification => ({
