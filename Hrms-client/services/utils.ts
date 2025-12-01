@@ -76,6 +76,57 @@ export const formatTime = (isoStr?: string, timeZone: string = 'Asia/Kolkata'): 
 
 export const getTodayStr = () => new Date().toISOString().split('T')[0];
 
+// Convert date from yyyy-mm-dd (HTML date input) to dd-mm-yyyy format
+export const convertToDDMMYYYY = (dateStr: string): string => {
+  if (!dateStr) return '';
+  if (dateStr.match(/^\d{2}-\d{2}-\d{4}$/)) {
+    // Already in dd-mm-yyyy format
+    return dateStr;
+  }
+  if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    // Convert from yyyy-mm-dd to dd-mm-yyyy
+    const [year, month, day] = dateStr.split('-');
+    return `${day}-${month}-${year}`;
+  }
+  // Try to parse as Date
+  try {
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      return `${day}-${month}-${year}`;
+    }
+  } catch (e) {
+    // Ignore error
+  }
+  return dateStr;
+};
+
+// Convert date from dd-mm-yyyy to yyyy-mm-dd (for HTML date input)
+export const convertToYYYYMMDD = (dateStr: string): string => {
+  if (!dateStr) return '';
+  if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    // Already in yyyy-mm-dd format
+    return dateStr;
+  }
+  if (dateStr.match(/^\d{2}-\d{2}-\d{4}$/)) {
+    // Convert from dd-mm-yyyy to yyyy-mm-dd
+    const [day, month, year] = dateStr.split('-');
+    return `${year}-${month}-${day}`;
+  }
+  // Try to parse as Date
+  try {
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      return date.toISOString().split('T')[0];
+    }
+  } catch (e) {
+    // Ignore error
+  }
+  return dateStr;
+};
+
 export const downloadCSV = (filename: string, rows: any[]) => {
   if (!rows || !rows.length) return;
   const separator = ',';
