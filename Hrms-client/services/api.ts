@@ -75,10 +75,10 @@ export const authAPI = {
     return apiRequest<{ user: any }>('/auth/me');
   },
 
-  resetPassword: async (email: string, newPassword: string) => {
+  resetPassword: async (username: string, newPassword: string) => {
     return apiRequest<{ message: string }>('/auth/reset-password', {
       method: 'POST',
-      body: JSON.stringify({ email, newPassword }),
+      body: JSON.stringify({ username, newPassword }),
     });
   },
 };
@@ -239,6 +239,12 @@ export const holidayAPI = {
   deleteHoliday: async (id: string) => {
     return apiRequest(`/holidays/${id}`, {
       method: 'DELETE',
+    });
+  },
+
+  autoAddSundays: async () => {
+    return apiRequest('/holidays/auto-add-sundays', {
+      method: 'POST',
     });
   },
 };
