@@ -242,6 +242,46 @@ export const AdminDashboard: React.FC = () => {
     }, 0);
   };
 
+  // Helper function to calculate hours per day from start and end time
+  const calculateHoursPerDay = (startTime: string, endTime: string): number => {
+    if (!startTime || !endTime || startTime.trim() === '' || endTime.trim() === '') {
+      return 0;
+    }
+    
+    // Parse time strings (expecting HH:mm format)
+    const parseTime = (timeStr: string): { hours: number; minutes: number } | null => {
+      const trimmed = timeStr.trim();
+      const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+      if (match) {
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+          return { hours, minutes };
+        }
+      }
+      return null;
+    };
+    
+    const start = parseTime(startTime);
+    const end = parseTime(endTime);
+    
+    if (!start || !end) {
+      return 0;
+    }
+    
+    const startMinutes = start.hours * 60 + start.minutes;
+    const endMinutes = end.hours * 60 + end.minutes;
+    
+    // Calculate difference: end time - start time
+    let diffMinutes = endMinutes - startMinutes;
+    // Handle case where end time is next day (e.g., 22:00 to 02:00)
+    if (diffMinutes < 0) {
+      diffMinutes += 24 * 60; // Add 24 hours
+    }
+    
+    return diffMinutes / 60; // Convert to hours
+  };
+
   // Helper function to calculate extra time leave balance and carryover
   const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[]) => {
     // Calculate extra time leave hours taken
@@ -261,6 +301,25 @@ export const AdminDashboard: React.FC = () => {
       })
       .reduce((sum, leave) => {
         if (leave.category === LeaveCategory.EXTRA_TIME) {
+          // For extra time leave: (end time - start time) * number of days
+          const hasTimeFields = leave.startTime && leave.endTime && 
+                                leave.startTime.trim() !== '' && leave.endTime.trim() !== '';
+          
+          if (hasTimeFields) {
+            // Calculate hours per day: (end time - start time)
+            const hoursPerDay = calculateHoursPerDay(leave.startTime, leave.endTime);
+            
+            // Calculate number of days (excluding Sundays and holidays)
+            const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate);
+            
+            // Total hours = hours per day * number of days
+            const totalHours = hoursPerDay * numberOfDays;
+            
+            if (totalHours > 0) {
+              return sum + totalHours;
+            }
+          }
+          // Fallback to old calculation if time not available
           const start = new Date(leave.startDate);
           const end = new Date(leave.endDate);
           const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
@@ -376,6 +435,25 @@ export const AdminDashboard: React.FC = () => {
       })
       .reduce((sum, leave) => {
         if (leave.category === LeaveCategory.EXTRA_TIME) {
+          // For extra time leave: (end time - start time) * number of days
+          const hasTimeFields = leave.startTime && leave.endTime && 
+                                leave.startTime.trim() !== '' && leave.endTime.trim() !== '';
+          
+          if (hasTimeFields) {
+            // Calculate hours per day: (end time - start time)
+            const hoursPerDay = calculateHoursPerDay(leave.startTime, leave.endTime);
+            
+            // Calculate number of days (excluding Sundays and holidays)
+            const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate);
+            
+            // Total hours = hours per day * number of days
+            const totalHours = hoursPerDay * numberOfDays;
+            
+            if (totalHours > 0) {
+              return sum + totalHours;
+            }
+          }
+          // Fallback to old calculation if time not available
           return sum + (calculateLeaveDays(leave.startDate, leave.endDate) * 8.25);
         } else if (leave.category === LeaveCategory.HALF_DAY) {
           return sum + 4;
@@ -848,12 +926,21 @@ export const AdminDashboard: React.FC = () => {
                         <tbody className="divide-y divide-gray-100">
                           {filteredMonthlyLeaves.map(leave => {
                             const days = calculateLeaveDays(leave.startDate, leave.endDate);
+                            const isHalfDay = leave.category === LeaveCategory.HALF_DAY;
+                            const isExtraTime = leave.category === LeaveCategory.EXTRA_TIME;
+                            const showTime = (isHalfDay || isExtraTime) && leave.startTime;
                             return (
                               <tr key={leave.id} className="hover:bg-gray-50">
                                 <td className="px-6 py-4">
                                   <div className="font-semibold text-gray-800">{formatDate(leave.startDate)}</div>
                                   {leave.startDate !== leave.endDate && (
                                     <div className="text-xs text-gray-400">to {formatDate(leave.endDate)}</div>
+                                  )}
+                                  {showTime && (
+                                    <div className="text-xs text-purple-600 mt-1 font-semibold">
+                                      Start: {leave.startTime}
+                                      {leave.endTime && ` - End: ${leave.endTime}`}
+                                    </div>
                                   )}
                                 </td>
                                 <td className="px-6 py-4">
