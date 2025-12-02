@@ -68,7 +68,16 @@ export const EmployeeDashboard: React.FC = () => {
   }, [todayRecord]);
 
   // Leave Form State
-  const [leaveForm, setLeaveForm] = useState({ start: '', end: '', type: LeaveCategory.PAID, reason: '', halfDayTime: 'morning', halfDayLeaveType: 'paid' });
+  const [leaveForm, setLeaveForm] = useState({ 
+    start: '', 
+    end: '', 
+    type: LeaveCategory.PAID, 
+    reason: '', 
+    halfDayTime: 'morning', 
+    halfDayLeaveType: 'paid',
+    startTime: '', // For extra time leave and half day leave
+    endTime: '' // For extra time leave
+  });
 
   const isOnBreak = todayRecord?.breaks.some(b => !b.end);
   const isCheckedIn = !!todayRecord?.checkIn;
@@ -348,8 +357,50 @@ export const EmployeeDashboard: React.FC = () => {
       return sum;
     }, 0);
 
+  // Helper function to calculate hours per day from start and end time
+  const calculateHoursPerDay = (startTime: string, endTime: string): number => {
+    // Validate inputs
+    if (!startTime || !endTime || startTime.trim() === '' || endTime.trim() === '') {
+      return 0;
+    }
+    
+    // Parse time strings (expecting HH:mm format)
+    const parseTime = (timeStr: string): { hours: number; minutes: number } | null => {
+      const trimmed = timeStr.trim();
+      // Handle HH:mm format
+      const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+      if (match) {
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+          return { hours, minutes };
+        }
+      }
+      return null;
+    };
+    
+    const start = parseTime(startTime);
+    const end = parseTime(endTime);
+    
+    if (!start || !end) {
+      return 0;
+    }
+    
+    const startMinutes = start.hours * 60 + start.minutes;
+    const endMinutes = end.hours * 60 + end.minutes;
+    
+    // Calculate difference: end time - start time
+    let diffMinutes = endMinutes - startMinutes;
+    // Handle case where end time is next day (e.g., 22:00 to 02:00)
+    if (diffMinutes < 0) {
+      diffMinutes += 24 * 60; // Add 24 hours
+    }
+    
+    return diffMinutes / 60; // Convert to hours
+  };
+
   // Convert Extra Time Leave to hours
-  // Full days: 1 day = 8 hours 15 minutes = 8.25 hours
+  // For extra time leave: calculate actual hours from start and end time
   // Half-days: 0.5 day = 4 hours (as per requirement)
   const extraTimeLeaveHours = myLeaves
     .filter(leave => {
@@ -367,7 +418,25 @@ export const EmployeeDashboard: React.FC = () => {
     })
     .reduce((sum, leave) => {
       if (leave.category === LeaveCategory.EXTRA_TIME) {
-        // Full extra time leave: 1 day = 8.25 hours
+        // For extra time leave: (end time - start time) * number of days
+        const hasTimeFields = leave.startTime && leave.endTime && 
+                              leave.startTime.trim() !== '' && leave.endTime.trim() !== '';
+        
+        if (hasTimeFields) {
+          // Calculate hours per day: (end time - start time)
+          const hoursPerDay = calculateHoursPerDay(leave.startTime, leave.endTime);
+          
+          // Calculate number of days (excluding Sundays and holidays)
+          const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate);
+          
+          // Total hours = hours per day * number of days
+          const totalHours = hoursPerDay * numberOfDays;
+          
+          if (totalHours > 0) {
+            return sum + totalHours;
+          }
+        }
+        // Fallback to old calculation only if time fields are missing or invalid
         return sum + (calculateLeaveDays(leave.startDate, leave.endDate) * 8.25);
       } else if (leave.category === LeaveCategory.HALF_DAY) {
         // Half-day extra time leave: 4 hours
@@ -628,7 +697,9 @@ export const EmployeeDashboard: React.FC = () => {
           <Card title="Request Leave" className="h-full">
             <form onSubmit={(e) => {
                 e.preventDefault();
-                if(!leaveForm.start || !leaveForm.end || !leaveForm.reason) return;
+                if(!leaveForm.start || !leaveForm.reason) return;
+                // For non-half-day leaves, end date is required
+                if(leaveForm.type !== LeaveCategory.HALF_DAY && !leaveForm.end) return;
                 
                 // Prevent submitting Paid Leave if exhausted
                 if (leaveForm.type === LeaveCategory.PAID && isPaidLeaveExhausted) {
@@ -664,10 +735,31 @@ export const EmployeeDashboard: React.FC = () => {
                 if (leaveForm.type !== LeaveCategory.HALF_DAY) {
                     leaveData.endDate = leaveForm.end;
                 } else {
-                    // Add half day time and leave type info to reason
+                    // Add half day leave type info to reason
                     const halfDayTypeLabel = leaveForm.halfDayLeaveType === 'paid' ? 'Paid Leave' : 'Extra Time Leave';
-                    leaveData.reason = `[${leaveForm.halfDayTime === 'morning' ? 'Morning' : 'Afternoon'}] [${halfDayTypeLabel}] ${leaveForm.reason}`;
+                    leaveData.reason = `[${halfDayTypeLabel}] ${leaveForm.reason}`;
                 }
+                
+                // Add time fields for extra time leave and half day leave
+                if (leaveForm.type === LeaveCategory.EXTRA_TIME) {
+                    if (!leaveForm.startTime || !leaveForm.endTime) {
+                        alert('Please provide both start time and end time for Extra Time Leave');
+                        return;
+                    }
+                    leaveData.startTime = leaveForm.startTime;
+                    leaveData.endTime = leaveForm.endTime;
+                } else if (leaveForm.type === LeaveCategory.HALF_DAY) {
+                    if (!leaveForm.startTime) {
+                        alert('Please provide start time for Half Day Leave');
+                        return;
+                    }
+                    leaveData.startTime = leaveForm.startTime;
+                    // For half day, end time is optional or can be calculated
+                    if (leaveForm.endTime) {
+                        leaveData.endTime = leaveForm.endTime;
+                    }
+                }
+                
                 requestLeave(leaveData);
                 // Reset form but keep the selected leave type (don't force change to Paid Leave)
                 setLeaveForm({ 
@@ -676,7 +768,9 @@ export const EmployeeDashboard: React.FC = () => {
                     type: leaveForm.type, // Keep the selected type
                     reason: '', 
                     halfDayTime: 'morning',
-                    halfDayLeaveType: 'paid' // Reset to default
+                    halfDayLeaveType: 'paid', // Reset to default
+                    startTime: '',
+                    endTime: ''
                 }); 
             }} className="space-y-4">
                 <div className={`grid gap-4 ${leaveForm.type === LeaveCategory.HALF_DAY ? 'grid-cols-1' : 'grid-cols-2'}`}>
@@ -732,11 +826,14 @@ export const EmployeeDashboard: React.FC = () => {
                 {leaveForm.type === LeaveCategory.HALF_DAY && (
                 <>
                 <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Half Day Time</label>
-                <select className="w-full p-2 border rounded text-sm" value={leaveForm.halfDayTime} onChange={(e) => setLeaveForm({...leaveForm, halfDayTime: e.target.value})}>
-                    <option value="morning">Morning (First Half)</option>
-                    <option value="afternoon">Afternoon (Second Half)</option>
-                </select>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Start Time <span className="text-red-500">*</span></label>
+                <input 
+                    type="time" 
+                    className="w-full p-2 border rounded text-sm" 
+                    required
+                    value={leaveForm.startTime} 
+                    onChange={e => setLeaveForm({...leaveForm, startTime: e.target.value})} 
+                />
                 </div>
                 <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">Deduct From</label>
@@ -770,6 +867,30 @@ export const EmployeeDashboard: React.FC = () => {
                         Will add 4 hours to Extra Time Leave taken
                     </p>
                 )}
+                </div>
+                </>
+                )}
+                {leaveForm.type === LeaveCategory.EXTRA_TIME && (
+                <>
+                <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Start Time <span className="text-red-500">*</span></label>
+                <input 
+                    type="time" 
+                    className="w-full p-2 border rounded text-sm" 
+                    required
+                    value={leaveForm.startTime} 
+                    onChange={e => setLeaveForm({...leaveForm, startTime: e.target.value})} 
+                />
+                </div>
+                <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">End Time <span className="text-red-500">*</span></label>
+                <input 
+                    type="time" 
+                    className="w-full p-2 border rounded text-sm" 
+                    required
+                    value={leaveForm.endTime} 
+                    onChange={e => setLeaveForm({...leaveForm, endTime: e.target.value})} 
+                />
                 </div>
                 </>
                 )}
@@ -1020,20 +1141,39 @@ export const EmployeeDashboard: React.FC = () => {
                     {myAttendanceHistory.length === 0 ? (
                         <tr><td colSpan={6} className="text-center py-4">No records found.</td></tr>
                     ) : (
-                        myAttendanceHistory.map(r => (
-                            <tr key={r.id} className="bg-white border-b hover:bg-gray-50">
-                                <td className="px-4 py-3 font-medium text-gray-900">{formatDate(r.date)}</td>
-                                <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkIn, systemSettings.timezone)}</td>
-                                <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkOut, systemSettings.timezone)}</td>
-                                <td className="px-4 py-3 text-xs">{r.breaks.length} breaks</td>
-                                <td className="px-4 py-3 font-mono font-bold">{formatDuration(r.totalWorkedSeconds)}</td>
-                                <td className="px-4 py-3">
-                                    {r.lowTimeFlag && <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full">Low</span>}
-                                    {r.extraTimeFlag && <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">Extra</span>}
-                                    {!r.lowTimeFlag && !r.extraTimeFlag && <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Normal</span>}
-                                </td>
-                            </tr>
-                        ))
+                        myAttendanceHistory.map(r => {
+                            // Find if there's an approved half day leave for this date
+                            const halfDayLeave = myLeaves.find(l => {
+                                const status = String(l.status || '').trim();
+                                const isApproved = status === 'Approved' || status === LeaveStatus.APPROVED;
+                                if (!isApproved || l.category !== LeaveCategory.HALF_DAY) return false;
+                                const leaveDate = new Date(l.startDate).toISOString().split('T')[0];
+                                return leaveDate === r.date;
+                            });
+                            
+                            return (
+                                <tr key={r.id} className="bg-white border-b hover:bg-gray-50">
+                                    <td className="px-4 py-3 font-medium text-gray-900">
+                                        <div>{formatDate(r.date)}</div>
+                                        {halfDayLeave && halfDayLeave.startTime && (
+                                            <div className="text-xs text-purple-600 mt-1 font-semibold">
+                                                Half Day Leave: {halfDayLeave.startTime}
+                                                {halfDayLeave.endTime && ` - ${halfDayLeave.endTime}`}
+                                            </div>
+                                        )}
+                                    </td>
+                                    <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkIn, systemSettings.timezone)}</td>
+                                    <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkOut, systemSettings.timezone)}</td>
+                                    <td className="px-4 py-3 text-xs">{r.breaks.length} breaks</td>
+                                    <td className="px-4 py-3 font-mono font-bold">{formatDuration(r.totalWorkedSeconds)}</td>
+                                    <td className="px-4 py-3">
+                                        {r.lowTimeFlag && <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full">Low</span>}
+                                        {r.extraTimeFlag && <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">Extra</span>}
+                                        {!r.lowTimeFlag && !r.extraTimeFlag && <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Normal</span>}
+                                    </td>
+                                </tr>
+                            );
+                        })
                     )}
                 </tbody>
             </table>
@@ -1099,10 +1239,34 @@ export const EmployeeDashboard: React.FC = () => {
                   <tbody>
                     {statusFilteredLeaves.map(leave => {
                       const days = calculateLeaveDays(leave.startDate, leave.endDate);
+                      
+                      // Helper function to calculate end time for half day leave (add 4 hours)
+                      const calculateHalfDayEndTime = (startTime: string): string => {
+                        if (!startTime) return '';
+                        const [hours, minutes] = startTime.split(':').map(Number);
+                        const startMinutes = hours * 60 + minutes;
+                        const endMinutes = startMinutes + 240; // 4 hours = 240 minutes
+                        const endHours = Math.floor(endMinutes / 60) % 24;
+                        const endMins = endMinutes % 60;
+                        return `${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')}`;
+                      };
+                      
+                      // Get end time for half day leave
+                      const isHalfDay = leave.category === LeaveCategory.HALF_DAY;
+                      const isApproved = (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED);
+                      const halfDayEndTime = isHalfDay && isApproved && leave.startTime 
+                        ? (leave.endTime || calculateHalfDayEndTime(leave.startTime))
+                        : null;
+                      
                       return (
                         <tr key={leave.id} className="bg-white border-b hover:bg-gray-50">
                           <td className="px-4 py-3 font-medium text-gray-900">
-                            {formatDate(leave.startDate)} - {formatDate(leave.endDate)}
+                            <div>{formatDate(leave.startDate)} - {formatDate(leave.endDate)}</div>
+                            {isHalfDay && isApproved && leave.startTime && (
+                              <div className="text-xs text-gray-500 mt-1">
+                                Start Time: {leave.startTime} {halfDayEndTime && `- End Time: ${halfDayEndTime}`}
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3">{leave.category}</td>
                           <td className="px-4 py-3">
