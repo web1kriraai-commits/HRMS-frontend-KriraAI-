@@ -72,6 +72,8 @@ export interface LeaveRequest {
   attachmentUrl?: string;
   status: LeaveStatus;
   hrComment?: string;
+  startTime?: string; // HH:mm format for extra time leave and half day leave
+  endTime?: string; // HH:mm format for extra time leave
   createdAt: string;
 }
 
