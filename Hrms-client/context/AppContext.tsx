@@ -87,6 +87,8 @@ const transformLeave = (apiLeave: any): LeaveRequest => ({
   attachmentUrl: apiLeave.attachmentUrl,
   status: apiLeave.status as LeaveStatus,
   hrComment: apiLeave.hrComment,
+  startTime: apiLeave.startTime,
+  endTime: apiLeave.endTime,
   createdAt: apiLeave.createdAt || apiLeave.created_at
 });
 
@@ -170,9 +172,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         api.holidayAPI.getHolidays().catch(() => []),
         api.notificationAPI.getMyNotifications().catch(() => []),
         api.settingsAPI.getSettings().catch(() => ({ timezone: 'Asia/Kolkata' }))
-      ]);
+      ]) as [any[], any[], any, any[], any[], any[], any];
 
-      const transformedUsers = usersData.map(transformUser);
+      const transformedUsers = (Array.isArray(usersData) ? usersData : []).map(transformUser);
       setUsers(transformedUsers);
       
       // Update current user from the refreshed users list
@@ -187,7 +189,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       
       // Merge today's attendance with history
-      const allAttendance = attendanceHistory.map(transformAttendance);
+      const allAttendance = (Array.isArray(attendanceHistory) ? attendanceHistory : []).map(transformAttendance);
       if (todayAttendance) {
         const todayTransformed = transformAttendance(todayAttendance);
         const todayExists = allAttendance.find(a => a.date === todayTransformed.date && a.userId === todayTransformed.userId);
@@ -202,15 +204,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       setAttendanceRecords(allAttendance);
       
-      setLeaveRequests(leavesData.map(transformLeave));
-      setCompanyHolidays(holidaysData.map(transformHoliday));
-      setNotifications(notifsData.map(transformNotification));
-      setSystemSettings({ timezone: settingsData.timezone || 'Asia/Kolkata' });
+      setLeaveRequests((Array.isArray(leavesData) ? leavesData : []).map(transformLeave));
+      setCompanyHolidays((Array.isArray(holidaysData) ? holidaysData : []).map(transformHoliday));
+      setNotifications((Array.isArray(notifsData) ? notifsData : []).map(transformNotification));
+      setSystemSettings({ timezone: (settingsData as any)?.timezone || 'Asia/Kolkata' });
 
       // Load audit logs if admin
       if (auth.user?.role === Role.ADMIN) {
         api.auditAPI.getAuditLogs(100)
-          .then(logs => setAuditLogs(logs.map(transformAuditLog)))
+          .then((logs: any) => setAuditLogs(Array.isArray(logs) ? logs.map(transformAuditLog) : []))
           .catch(() => {});
       }
     } catch (error) {
