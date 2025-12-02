@@ -147,6 +147,46 @@ export const HRDashboard: React.FC = () => {
       return true;
   });
   
+  // Helper function to calculate hours per day from start and end time
+  const calculateHoursPerDay = (startTime: string, endTime: string): number => {
+    if (!startTime || !endTime || startTime.trim() === '' || endTime.trim() === '') {
+      return 0;
+    }
+    
+    // Parse time strings (expecting HH:mm format)
+    const parseTime = (timeStr: string): { hours: number; minutes: number } | null => {
+      const trimmed = timeStr.trim();
+      const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+      if (match) {
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+          return { hours, minutes };
+        }
+      }
+      return null;
+    };
+    
+    const start = parseTime(startTime);
+    const end = parseTime(endTime);
+    
+    if (!start || !end) {
+      return 0;
+    }
+    
+    const startMinutes = start.hours * 60 + start.minutes;
+    const endMinutes = end.hours * 60 + end.minutes;
+    
+    // Calculate difference: end time - start time
+    let diffMinutes = endMinutes - startMinutes;
+    // Handle case where end time is next day (e.g., 22:00 to 02:00)
+    if (diffMinutes < 0) {
+      diffMinutes += 24 * 60; // Add 24 hours
+    }
+    
+    return diffMinutes / 60; // Convert to hours
+  };
+
   // Helper function to calculate extra time leave balance and carryover
   const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[]) => {
     // Calculate extra time leave hours taken
@@ -166,6 +206,25 @@ export const HRDashboard: React.FC = () => {
       })
       .reduce((sum, leave) => {
         if (leave.category === LeaveCategory.EXTRA_TIME) {
+          // For extra time leave: (end time - start time) * number of days
+          const hasTimeFields = leave.startTime && leave.endTime && 
+                                leave.startTime.trim() !== '' && leave.endTime.trim() !== '';
+          
+          if (hasTimeFields) {
+            // Calculate hours per day: (end time - start time)
+            const hoursPerDay = calculateHoursPerDay(leave.startTime, leave.endTime);
+            
+            // Calculate number of days (excluding Sundays and holidays)
+            const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate);
+            
+            // Total hours = hours per day * number of days
+            const totalHours = hoursPerDay * numberOfDays;
+            
+            if (totalHours > 0) {
+              return sum + totalHours;
+            }
+          }
+          // Fallback to old calculation if time not available
           return sum + (calculateLeaveDays(leave.startDate, leave.endDate) * 8.25);
         } else if (leave.category === LeaveCategory.HALF_DAY) {
           return sum + 4;
@@ -273,6 +332,10 @@ export const HRDashboard: React.FC = () => {
       const extraTime = sumDaysForCategory(leaves, LeaveCategory.EXTRA_TIME);
       const totalLeaves = paid + unpaid + half + extraTime;
 
+      // Get half day and extra time leaves with their start times
+      const halfDayLeaves = leaves.filter(l => l.category === LeaveCategory.HALF_DAY);
+      const extraTimeLeaves = leaves.filter(l => l.category === LeaveCategory.EXTRA_TIME);
+
       return { 
           user, 
           presentDays, 
@@ -286,7 +349,9 @@ export const HRDashboard: React.FC = () => {
           paid, unpaid, half, extraTime, totalLeaves,
           records, 
           allLeaves,
-          balance // Add balance information
+          balance, // Add balance information
+          halfDayLeaves, // Add half day leaves with time info
+          extraTimeLeaves // Add extra time leaves with time info
       };
   });
 
@@ -666,8 +731,44 @@ export const HRDashboard: React.FC = () => {
                                     
                                     <td className="px-2 py-4 text-center border-r">{stat.paid || '-'}</td>
                                     <td className="px-2 py-4 text-center border-r">{stat.unpaid || '-'}</td>
-                                    <td className="px-2 py-4 text-center border-r">{stat.half || '-'}</td>
-                                    <td className="px-2 py-4 text-center border-r">{stat.extraTime || '-'}</td>
+                                    <td className="px-2 py-4 text-center border-r">
+                                        {stat.half ? (
+                                            <div className="flex flex-col items-center gap-1">
+                                                <span className="font-medium">{stat.half}</span>
+                                                {stat.halfDayLeaves && stat.halfDayLeaves.length > 0 && (
+                                                    <div className="text-[10px] text-gray-600 space-y-0.5">
+                                                        {stat.halfDayLeaves.slice(0, 2).map((l, idx) => (
+                                                            <div key={idx} className="text-purple-600">
+                                                                {l.startTime || '-'}
+                                                            </div>
+                                                        ))}
+                                                        {stat.halfDayLeaves.length > 2 && (
+                                                            <div className="text-gray-400">+{stat.halfDayLeaves.length - 2} more</div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : '-'}
+                                    </td>
+                                    <td className="px-2 py-4 text-center border-r">
+                                        {stat.extraTime ? (
+                                            <div className="flex flex-col items-center gap-1">
+                                                <span className="font-medium">{stat.extraTime}</span>
+                                                {stat.extraTimeLeaves && stat.extraTimeLeaves.length > 0 && (
+                                                    <div className="text-[10px] text-gray-600 space-y-0.5">
+                                                        {stat.extraTimeLeaves.slice(0, 2).map((l, idx) => (
+                                                            <div key={idx} className="text-orange-600">
+                                                                {l.startTime || '-'}
+                                                            </div>
+                                                        ))}
+                                                        {stat.extraTimeLeaves.length > 2 && (
+                                                            <div className="text-gray-400">+{stat.extraTimeLeaves.length - 2} more</div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : '-'}
+                                    </td>
                                     <td className="px-2 py-4 text-center font-bold border-l border-r bg-gray-50">{stat.totalLeaves}</td>
                                     
                                     <td className="px-2 py-4 text-center">
@@ -747,9 +848,20 @@ export const HRDashboard: React.FC = () => {
                                                                 <tbody>
                                                                     {filterLeavesForHR(stat.allLeaves, hrLeaveStatusFilter, hrLeaveFilterDate, hrLeaveFilterMonth).map(l => {
                                                                         const days = calculateLeaveDaysForCategory(l.startDate, l.endDate, l.category);
+                                                                        const isHalfDay = l.category === LeaveCategory.HALF_DAY;
+                                                                        const isExtraTime = l.category === LeaveCategory.EXTRA_TIME;
+                                                                        const showTime = (isHalfDay || isExtraTime) && l.startTime;
                                                                         return (
                                                                             <tr key={l.id} className="border-t hover:bg-gray-50">
-                                                                                <td className="px-3 py-2">{formatDate(l.startDate)}</td>
+                                                                                <td className="px-3 py-2">
+                                                                                    <div>{formatDate(l.startDate)}</div>
+                                                                                    {showTime && (
+                                                                                        <div className="text-[10px] text-purple-600 mt-0.5">
+                                                                                            Start: {l.startTime}
+                                                                                            {l.endTime && ` - End: ${l.endTime}`}
+                                                                                        </div>
+                                                                                    )}
+                                                                                </td>
                                                                                 <td className="px-3 py-2">{l.category}</td>
                                                                                 <td className="px-3 py-2">{days} {days === 1 ? 'day' : 'days'}</td>
                                                                                 <td className="px-3 py-2 text-right">
