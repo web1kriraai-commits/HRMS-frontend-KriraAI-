@@ -35,6 +35,16 @@ export interface User {
   lastLogin?: string; // ISO String
   paidLeaveAllocation?: number | null; // Custom paid leave allocation (null = use default)
   paidLeaveLastAllocatedDate?: string; // ISO string - Last date when paid leave was allocated
+  joiningDate?: string; // dd-mm-yyyy format - Employee joining date
+  bonds?: Bond[]; // Array of bonds
+}
+
+export interface Bond {
+  type: 'Internship' | 'Job' | 'Other';
+  periodMonths: number;
+  startDate: string; // dd-mm-yyyy format
+  order: number;
+  salary?: number; // Salary for Job bond or Stipend for Internship bond
 }
 
 export interface Break {
@@ -44,6 +54,7 @@ export interface Break {
   end?: string; // ISO string
   type: BreakType;
   durationSeconds?: number;
+  reason?: string; // Reason for extra break
 }
 
 export interface Attendance {
@@ -71,6 +82,8 @@ export interface LeaveRequest {
   attachmentUrl?: string;
   status: LeaveStatus;
   hrComment?: string;
+  startTime?: string; // HH:mm format for extra time leave and half day leave
+  endTime?: string; // HH:mm format for extra time leave
   createdAt: string;
 }
 
@@ -94,6 +107,7 @@ export interface CompanyHoliday {
   createdBy?: string;
   createdByName?: string;
   createdByRole?: string;
+  status?: 'past' | 'upcoming'; // Calculated based on current date
 }
 
 export interface Notification {

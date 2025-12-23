@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://hrms-kriraai.onrender.com/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
 
 // Helper to get auth token
 const getToken = (): string | null => {
@@ -13,6 +13,18 @@ const setToken = (token: string): void => {
 // Helper to remove auth token
 const removeToken = (): void => {
   localStorage.removeItem('token');
+  localStorage.removeItem('user');
+};
+
+// Helper to save user data
+const saveUser = (user: any): void => {
+  localStorage.setItem('user', JSON.stringify(user));
+};
+
+// Helper to get cached user data
+const getUser = (): any | null => {
+  const user = localStorage.getItem('user');
+  return user ? JSON.parse(user) : null;
 };
 
 // Generic fetch wrapper
@@ -36,8 +48,10 @@ const apiRequest = async <T>(
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: 'Request failed' }));
-    throw new Error(error.message || `HTTP error! status: ${response.status}`);
+    const errorData = await response.json().catch(() => ({ message: 'Request failed' }));
+    const error = new Error(errorData.message || `HTTP error! status: ${response.status}`) as any;
+    error.status = response.status;
+    throw error;
   }
 
   return response.json();
@@ -57,6 +71,9 @@ export const authAPI = {
     if (data.token) {
       setToken(data.token);
     }
+    if (data.user) {
+      saveUser(data.user);
+    }
     return data;
   },
 
@@ -72,13 +89,28 @@ export const authAPI = {
   },
 
   getCurrentUser: async () => {
-    return apiRequest<{ user: any }>('/auth/me');
+    const data = await apiRequest<{ user: any }>('/auth/me');
+    if (data.user) {
+      saveUser(data.user);
+    }
+    return data;
   },
 
-  resetPassword: async (email: string, newPassword: string) => {
+  getCachedUser: () => {
+    return getUser();
+  },
+
+  sendResetPasswordOTP: async (email: string, username: string, newPassword: string) => {
+    return apiRequest<{ message: string; email: string }>('/auth/reset-password/send-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email, username, newPassword }),
+    });
+  },
+
+  resetPassword: async (email: string, otp: string) => {
     return apiRequest<{ message: string }>('/auth/reset-password', {
       method: 'POST',
-      body: JSON.stringify({ email, newPassword }),
+      body: JSON.stringify({ email, otp }),
     });
   },
 };
@@ -98,10 +130,10 @@ export const attendanceAPI = {
     });
   },
 
-  startBreak: async (type: string) => {
+  startBreak: async (type: string, reason?: string) => {
     return apiRequest('/attendance/break/start', {
       method: 'POST',
-      body: JSON.stringify({ type }),
+      body: JSON.stringify({ type, reason }),
     });
   },
 
@@ -199,7 +231,14 @@ export const userAPI = {
     });
   },
 
-  updateUser: async (id: string, updates: { paidLeaveAllocation?: number | null }) => {
+  updateUser: async (id: string, updates: {
+    paidLeaveAllocation?: number | null;
+    joiningDate?: string;
+    bonds?: Array<{ type: string; periodMonths: number; startDate: string }>;
+    name?: string;
+    email?: string;
+    department?: string;
+  }) => {
     return apiRequest(`/users/${id}`, {
       method: 'PUT',
       body: JSON.stringify(updates),
@@ -239,6 +278,12 @@ export const holidayAPI = {
   deleteHoliday: async (id: string) => {
     return apiRequest(`/holidays/${id}`, {
       method: 'DELETE',
+    });
+  },
+
+  autoAddSundays: async () => {
+    return apiRequest('/holidays/auto-add-sundays', {
+      method: 'POST',
     });
   },
 };

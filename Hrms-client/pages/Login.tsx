@@ -17,7 +17,11 @@ export const Login: React.FC = () => {
   
   // Reset password states
   const [resetEmail, setResetEmail] = useState('');
+  const [resetUsername, setResetUsername] = useState('');
+  const [resetOTP, setResetOTP] = useState('');
   const [resetNewPassword, setResetNewPassword] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpEmail, setOtpEmail] = useState('');
   
   const { auth, checkingAuth, login, changePassword } = useApp();
   const navigate = useNavigate();
@@ -85,12 +89,16 @@ export const Login: React.FC = () => {
     }
   };
 
-  const handleResetPassword = async (e: React.FormEvent) => {
+  const handleSendOTP = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccess('');
     if (!resetEmail.trim()) {
-      setError('Please enter your email');
+      setError('Please enter admin email');
+      return;
+    }
+    if (!resetUsername.trim()) {
+      setError('Please enter username');
       return;
     }
     if (resetNewPassword.length < 4) {
@@ -99,12 +107,37 @@ export const Login: React.FC = () => {
     }
     setLoading(true);
     try {
-      await authAPI.resetPassword(resetEmail, resetNewPassword);
+      const result = await authAPI.sendResetPasswordOTP(resetEmail.trim(), resetUsername.trim(), resetNewPassword);
+      setSuccess(result.message || 'OTP sent successfully!');
+      setOtpSent(true);
+      setOtpEmail(result.email || resetEmail.trim());
+    } catch (error: any) {
+      setError(error.message || 'Failed to send OTP. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+    if (!resetOTP.trim()) {
+      setError('Please enter OTP');
+      return;
+    }
+    setLoading(true);
+    try {
+      await authAPI.resetPassword(otpEmail || resetEmail.trim(), resetOTP.trim());
       setSuccess('Password reset successfully! You can now login.');
       setTimeout(() => {
         setMode('login');
         setResetEmail('');
+        setResetUsername('');
+        setResetOTP('');
         setResetNewPassword('');
+        setOtpSent(false);
+        setOtpEmail('');
         setSuccess('');
       }, 1500);
     } catch (error: any) {
@@ -119,7 +152,11 @@ export const Login: React.FC = () => {
     setError('');
     setSuccess('');
     setResetEmail('');
+    setResetUsername('');
+    setResetOTP('');
     setResetNewPassword('');
+    setOtpSent(false);
+    setOtpEmail('');
   };
 
   if (mode === 'change_password') {
@@ -155,7 +192,7 @@ export const Login: React.FC = () => {
       );
   }
 
-  // Reset Password - Enter Email and New Password
+  // Reset Password - OTP Flow
   if (mode === 'reset_password') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-100 to-blue-50 flex items-center justify-center p-4">
@@ -165,45 +202,105 @@ export const Login: React.FC = () => {
               <Key className="text-white" size={32} />
             </div>
             <h1 className="text-2xl font-bold text-gray-900">Reset Password</h1>
-            <p className="text-gray-500 mt-2">Enter your registered email and new password</p>
+            <p className="text-gray-500 mt-2">
+              {otpSent ? 'Enter OTP to verify and reset password' : 'Enter admin email, username, and new password to receive OTP'}
+            </p>
           </div>
-          <form onSubmit={handleResetPassword} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-              <input
-                type="email"
-                value={resetEmail}
-                onChange={(e) => setResetEmail(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none"
-                placeholder="Enter your registered email"
-                autoFocus
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
-              <input
-                type="password"
-                value={resetNewPassword}
-                onChange={(e) => setResetNewPassword(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none"
-                placeholder="Enter new password"
-                required
-              />
-            </div>
-            {error && <div className="text-red-500 text-sm bg-red-50 p-2 rounded">{error}</div>}
-            {success && <div className="text-green-600 text-sm bg-green-50 p-2 rounded">{success}</div>}
-            <Button type="submit" className="w-full bg-purple-600 hover:bg-purple-700" size="lg" disabled={loading}>
-              {loading ? 'Resetting...' : 'Reset Password'}
-            </Button>
-            <button
-              type="button"
-              onClick={goBackToLogin}
-              className="w-full flex items-center justify-center gap-2 text-gray-600 hover:text-gray-800 mt-2"
-            >
-              <ArrowLeft size={16} /> Back to Login
-            </button>
-          </form>
+          
+          {!otpSent ? (
+            <form onSubmit={handleSendOTP} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Admin Email *</label>
+                <input
+                  type="email"
+                  value={resetEmail}
+                  onChange={(e) => setResetEmail(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none"
+                  placeholder="Enter admin email"
+                  autoFocus
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-1">Email must belong to an Admin account (OTP will be sent here)</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Username *</label>
+                <input
+                  type="text"
+                  value={resetUsername}
+                  onChange={(e) => setResetUsername(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none"
+                  placeholder="Enter username to reset password"
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-1">Username of the user whose password needs to be reset</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">New Password *</label>
+                <input
+                  type="password"
+                  value={resetNewPassword}
+                  onChange={(e) => setResetNewPassword(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none"
+                  placeholder="Enter new password (min 4 characters)"
+                  required
+                />
+              </div>
+              {error && <div className="text-red-500 text-sm bg-red-50 p-2 rounded">{error}</div>}
+              {success && <div className="text-green-600 text-sm bg-green-50 p-2 rounded">{success}</div>}
+              <Button type="submit" className="w-full bg-purple-600 hover:bg-purple-700" size="lg" disabled={loading}>
+                {loading ? 'Sending...' : 'Send OTP'}
+              </Button>
+              <button
+                type="button"
+                onClick={goBackToLogin}
+                className="w-full flex items-center justify-center gap-2 text-gray-600 hover:text-gray-800 mt-2"
+              >
+                <ArrowLeft size={16} /> Back to Login
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleResetPassword} className="space-y-4">
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+                <p className="text-sm text-blue-800">
+                  <strong>OTP sent to:</strong> {otpEmail}
+                </p>
+                <p className="text-xs text-blue-600 mt-1">Please check your email for the 6-digit OTP code</p>
+                <p className="text-xs text-blue-600 mt-1">
+                  <strong>Resetting password for:</strong> {resetUsername}
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">OTP *</label>
+                <input
+                  type="text"
+                  value={resetOTP}
+                  onChange={(e) => setResetOTP(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none text-center text-2xl tracking-widest font-mono"
+                  placeholder="000000"
+                  maxLength={6}
+                  autoFocus
+                  required
+                />
+              </div>
+              {error && <div className="text-red-500 text-sm bg-red-50 p-2 rounded">{error}</div>}
+              {success && <div className="text-green-600 text-sm bg-green-50 p-2 rounded">{success}</div>}
+              <Button type="submit" className="w-full bg-purple-600 hover:bg-purple-700" size="lg" disabled={loading}>
+                {loading ? 'Resetting...' : 'Verify OTP & Reset Password'}
+              </Button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOtpSent(false);
+                  setResetOTP('');
+                  setError('');
+                  setSuccess('');
+                }}
+                className="w-full flex items-center justify-center gap-2 text-gray-600 hover:text-gray-800 mt-2"
+              >
+                <ArrowLeft size={16} /> Back to Send OTP
+              </button>
+            </form>
+          )}
         </Card>
       </div>
     );

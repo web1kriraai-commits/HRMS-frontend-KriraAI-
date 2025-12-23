@@ -8,7 +8,7 @@ interface AppContextType {
   login: (username: string, password?: string) => Promise<'success' | 'fail' | 'change_password'>;
   logout: () => void;
   changePassword: (newPass: string) => Promise<void>;
-  
+
   // Data
   users: User[];
   attendanceRecords: Attendance[];
@@ -17,27 +17,27 @@ interface AppContextType {
   companyHolidays: CompanyHoliday[];
   notifications: Notification[];
   systemSettings: SystemSettings;
-  
+
   // Loading states
   loading: boolean;
   checkingAuth: boolean;
-  
+
   // Actions
   clockIn: () => Promise<void>;
   clockOut: () => Promise<void>;
-  startBreak: (type: BreakType) => Promise<void>;
+  startBreak: (type: BreakType, reason?: string) => Promise<void>;
   endBreak: () => Promise<void>;
   requestLeave: (req: Omit<LeaveRequest, 'id' | 'userId' | 'userName' | 'status' | 'createdAt'>) => Promise<void>;
   updateLeaveStatus: (id: string, status: LeaveStatus, comment?: string) => Promise<void>;
   createUser: (user: Omit<User, 'id' | 'password' | 'isFirstLogin'>) => Promise<void>;
   updateUser: (id: string, updates: { paidLeaveAllocation?: number | null }) => Promise<void>;
-  
+
   // Admin/HR Actions
   adminUpdateAttendance: (recordId: string, updates: Partial<Attendance>, breakDurationMinutes?: number) => Promise<void>;
   addCompanyHoliday: (date: string, description: string) => Promise<void>;
   exportReports: (filters?: { start?: string; end?: string; department?: string }) => Promise<void>;
   updateSystemSettings: (settings: Partial<SystemSettings>) => Promise<void>;
-  
+
   // Refresh functions
   refreshData: () => Promise<void>;
 }
@@ -56,7 +56,15 @@ const transformUser = (apiUser: any): User => ({
   isFirstLogin: apiUser.isFirstLogin,
   lastLogin: apiUser.lastLogin,
   paidLeaveAllocation: apiUser.paidLeaveAllocation !== undefined ? apiUser.paidLeaveAllocation : null,
-  paidLeaveLastAllocatedDate: apiUser.paidLeaveLastAllocatedDate ? new Date(apiUser.paidLeaveLastAllocatedDate).toISOString() : undefined
+  paidLeaveLastAllocatedDate: apiUser.paidLeaveLastAllocatedDate ? new Date(apiUser.paidLeaveLastAllocatedDate).toISOString() : undefined,
+  joiningDate: apiUser.joiningDate || undefined, // Keep in dd-mm-yyyy format as stored
+  bonds: apiUser.bonds && Array.isArray(apiUser.bonds) ? apiUser.bonds.map((b: any) => ({
+    type: b.type || 'Job',
+    periodMonths: b.periodMonths || 0,
+    startDate: b.startDate || '',
+    order: b.order || 1,
+    salary: b.salary || 0
+  })) : undefined
 });
 
 // Helper to transform API attendance to frontend Attendance type
@@ -67,7 +75,15 @@ const transformAttendance = (apiAttendance: any): Attendance => ({
   checkIn: apiAttendance.checkIn,
   checkOut: apiAttendance.checkOut,
   location: apiAttendance.location,
-  breaks: apiAttendance.breaks || [],
+  breaks: (apiAttendance.breaks || []).map((b: any) => ({
+    id: b.id || b._id,
+    attendanceId: apiAttendance.id || apiAttendance._id,
+    start: b.start,
+    end: b.end,
+    type: b.type,
+    durationSeconds: b.durationSeconds,
+    reason: b.reason
+  })),
   totalWorkedSeconds: apiAttendance.totalWorkedSeconds || 0,
   lowTimeFlag: apiAttendance.lowTimeFlag || false,
   extraTimeFlag: apiAttendance.extraTimeFlag || false,
@@ -86,6 +102,8 @@ const transformLeave = (apiLeave: any): LeaveRequest => ({
   attachmentUrl: apiLeave.attachmentUrl,
   status: apiLeave.status as LeaveStatus,
   hrComment: apiLeave.hrComment,
+  startTime: apiLeave.startTime,
+  endTime: apiLeave.endTime,
   createdAt: apiLeave.createdAt || apiLeave.created_at
 });
 
@@ -104,14 +122,24 @@ const transformAuditLog = (apiLog: any): AuditLog => ({
 });
 
 // Helper to transform API holiday
-const transformHoliday = (apiHoliday: any): CompanyHoliday => ({
-  id: apiHoliday.id || apiHoliday._id,
-  date: apiHoliday.date,
-  description: apiHoliday.description,
-  createdBy: apiHoliday.createdBy?.id || apiHoliday.createdBy?._id || apiHoliday.createdBy,
-  createdByName: apiHoliday.createdByName || apiHoliday.createdBy?.name,
-  createdByRole: apiHoliday.createdByRole || apiHoliday.createdBy?.role
-});
+const transformHoliday = (apiHoliday: any): CompanyHoliday => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const holidayDate = new Date(apiHoliday.date);
+  holidayDate.setHours(0, 0, 0, 0);
+
+  const status = holidayDate < today ? 'past' : 'upcoming';
+
+  return {
+    id: apiHoliday.id || apiHoliday._id,
+    date: apiHoliday.date,
+    description: apiHoliday.description,
+    createdBy: apiHoliday.createdBy?.id || apiHoliday.createdBy?._id || apiHoliday.createdBy,
+    createdByName: apiHoliday.createdByName || apiHoliday.createdBy?.name,
+    createdByRole: apiHoliday.createdByRole || apiHoliday.createdBy?.role,
+    status
+  };
+};
 
 // Helper to transform API notification
 const transformNotification = (apiNotif: any): Notification => ({
@@ -137,17 +165,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Refresh all data
   const refreshData = async () => {
     if (!auth.isAuthenticated) return;
-    
+
     try {
       setLoading(true);
       // For HR/Admin, get all attendance records; for employees, get only their own
       const isHRorAdmin = auth.user?.role === Role.HR || auth.user?.role === Role.ADMIN;
-      const attendancePromise = isHRorAdmin 
+      const attendancePromise = isHRorAdmin
         ? api.attendanceAPI.getAll().catch(() => [])
         : api.attendanceAPI.getHistory().catch(() => []);
 
       // For employees, get leaves by userId; for HR/Admin, get all leaves
-      const leavesPromise = isHRorAdmin 
+      const leavesPromise = isHRorAdmin
         ? api.leaveAPI.getAllLeaves().catch(() => [])
         : (auth.user?.id ? api.leaveAPI.getLeavesByUserId(auth.user.id).catch(() => []) : Promise.resolve([]));
 
@@ -159,11 +187,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         api.holidayAPI.getHolidays().catch(() => []),
         api.notificationAPI.getMyNotifications().catch(() => []),
         api.settingsAPI.getSettings().catch(() => ({ timezone: 'Asia/Kolkata' }))
-      ]);
+      ]) as [any[], any[], any, any[], any[], any[], any];
 
-      const transformedUsers = usersData.map(transformUser);
+      const transformedUsers = (Array.isArray(usersData) ? usersData : []).map(transformUser);
       setUsers(transformedUsers);
-      
+
       // Update current user from the refreshed users list
       if (auth.user) {
         const updatedCurrentUser = transformedUsers.find(u => u.id === auth.user?.id);
@@ -174,9 +202,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           }));
         }
       }
-      
+
       // Merge today's attendance with history
-      const allAttendance = attendanceHistory.map(transformAttendance);
+      const allAttendance = (Array.isArray(attendanceHistory) ? attendanceHistory : []).map(transformAttendance);
       if (todayAttendance) {
         const todayTransformed = transformAttendance(todayAttendance);
         const todayExists = allAttendance.find(a => a.date === todayTransformed.date && a.userId === todayTransformed.userId);
@@ -190,17 +218,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }
       setAttendanceRecords(allAttendance);
-      
-      setLeaveRequests(leavesData.map(transformLeave));
-      setCompanyHolidays(holidaysData.map(transformHoliday));
-      setNotifications(notifsData.map(transformNotification));
-      setSystemSettings({ timezone: settingsData.timezone || 'Asia/Kolkata' });
+
+      setLeaveRequests((Array.isArray(leavesData) ? leavesData : []).map(transformLeave));
+      setCompanyHolidays((Array.isArray(holidaysData) ? holidaysData : []).map(transformHoliday));
+      setNotifications((Array.isArray(notifsData) ? notifsData : []).map(transformNotification));
+      setSystemSettings({ timezone: (settingsData as any)?.timezone || 'Asia/Kolkata' });
 
       // Load audit logs if admin
       if (auth.user?.role === Role.ADMIN) {
         api.auditAPI.getAuditLogs(100)
-          .then(logs => setAuditLogs(logs.map(transformAuditLog)))
-          .catch(() => {});
+          .then((logs: any) => setAuditLogs(Array.isArray(logs) ? logs.map(transformAuditLog) : []))
+          .catch(() => { });
       }
     } catch (error) {
       console.error('Error refreshing data:', error);
@@ -212,8 +240,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Check for existing token on mount
   useEffect(() => {
     const token = api.getToken();
+    const cachedUser = api.authAPI.getCachedUser();
+
     if (token) {
-      // Verify token and get user
+      if (cachedUser) {
+        // Immediately set auth state from cache to prevent flickering
+        setAuth({
+          user: transformUser(cachedUser),
+          isAuthenticated: true,
+          requiresPasswordChange: cachedUser.isFirstLogin || false
+        });
+      }
+
+      // Verify token and refresh user data in background
       api.authAPI.getCurrentUser()
         .then(({ user }) => {
           const transformedUser = transformUser(user);
@@ -224,9 +263,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           });
           setCheckingAuth(false);
         })
-        .catch(() => {
-          api.authAPI.logout();
-          setAuth({ user: null, isAuthenticated: false, requiresPasswordChange: false });
+        .catch((error) => {
+          console.error('Auth check error:', error);
+          // ONLY log out if the server explicitly says the token is invalid (401)
+          if (error.status === 401) {
+            console.log('Token expired or invalid, logging out...');
+            api.authAPI.logout();
+            setAuth({ user: null, isAuthenticated: false, requiresPasswordChange: false });
+          } else {
+            // For network errors or server issues, we keep the existing (potentially valid) auth state
+            // but we should still stop the checking state
+            console.log('Network error during auth check, keeping local session.');
+            if (!cachedUser) {
+              setAuth({ user: null, isAuthenticated: false, requiresPasswordChange: false });
+            }
+          }
           setCheckingAuth(false);
         });
     } else {
@@ -253,12 +304,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         isAuthenticated: true,
         requiresPasswordChange: requiresPasswordChange
       });
-      
+
       // Don't refresh data if password change is required
       if (!requiresPasswordChange) {
         await refreshData();
       }
-      
+
       return requiresPasswordChange ? 'change_password' : 'success';
     } catch (error: any) {
       console.error('Login error:', error);
@@ -295,7 +346,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const clockIn = async (): Promise<void> => {
     try {
-      const data = await api.attendanceAPI.clockIn();
+      const data = await api.attendanceAPI.clockIn() as any;
       setAttendanceRecords(prev => [...prev, transformAttendance(data)]);
     } catch (error) {
       console.error('Clock in error:', error);
@@ -305,8 +356,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const clockOut = async (): Promise<void> => {
     try {
-      const data = await api.attendanceAPI.clockOut();
-      setAttendanceRecords(prev => prev.map(r => 
+      const data = await api.attendanceAPI.clockOut() as any;
+      setAttendanceRecords(prev => prev.map(r =>
         r.id === data.id || r.id === data._id ? transformAttendance(data) : r
       ));
     } catch (error) {
@@ -315,10 +366,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const startBreak = async (type: BreakType): Promise<void> => {
+  const startBreak = async (type: BreakType, reason?: string): Promise<void> => {
     try {
-      const data = await api.attendanceAPI.startBreak(type);
-      setAttendanceRecords(prev => prev.map(r => 
+      const data = await api.attendanceAPI.startBreak(type, reason) as any;
+      setAttendanceRecords(prev => prev.map(r =>
         r.id === data.id || r.id === data._id ? transformAttendance(data) : r
       ));
     } catch (error) {
@@ -329,8 +380,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const endBreak = async (): Promise<void> => {
     try {
-      const data = await api.attendanceAPI.endBreak();
-      setAttendanceRecords(prev => prev.map(r => 
+      const data = await api.attendanceAPI.endBreak() as any;
+      setAttendanceRecords(prev => prev.map(r =>
         r.id === data.id || r.id === data._id ? transformAttendance(data) : r
       ));
     } catch (error) {
@@ -352,8 +403,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const updateLeaveStatus = async (id: string, status: LeaveStatus, comment?: string): Promise<void> => {
     try {
-      const data = await api.leaveAPI.updateLeaveStatus(id, status, comment);
-      setLeaveRequests(prev => prev.map(l => 
+      const data = await api.leaveAPI.updateLeaveStatus(id, status, comment) as any;
+      setLeaveRequests(prev => prev.map(l =>
         l.id === id ? transformLeave(data) : l
       ));
       await refreshData(); // Refresh to get notifications
@@ -366,7 +417,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const createUser = async (userData: Omit<User, 'id' | 'password' | 'isFirstLogin'>): Promise<void> => {
     try {
       // Use authenticated endpoint - password is optional (will use tempPassword123)
-      const { user } = await api.userAPI.createUser(userData);
+      const { user } = await api.userAPI.createUser(userData) as any;
       setUsers(prev => [...prev, transformUser(user)]);
     } catch (error) {
       console.error('Create user error:', error);
@@ -376,12 +427,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const updateUser = async (id: string, updates: { paidLeaveAllocation?: number | null }): Promise<void> => {
     try {
-      const { user } = await api.userAPI.updateUser(id, updates);
+      const { user } = await api.userAPI.updateUser(id, updates) as any;
       const transformedUser = transformUser(user);
-      
+
       // Update users list
       setUsers(prev => prev.map(u => u.id === id ? transformedUser : u));
-      
+
       // If the updated user is the currently logged-in user, update auth.user as well
       if (auth.user && auth.user.id === id) {
         setAuth(prev => ({
@@ -389,7 +440,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           user: transformedUser
         }));
       }
-      
+
       await refreshData(); // Refresh to get updated data
     } catch (error) {
       console.error('Update user error:', error);
@@ -404,7 +455,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         updateData.breakDurationMinutes = breakDurationMinutes;
       }
       const data = await api.attendanceAPI.updateAttendance(recordId, updateData);
-      setAttendanceRecords(prev => prev.map(r => 
+      setAttendanceRecords(prev => prev.map(r =>
         r.id === recordId ? transformAttendance(data) : r
       ));
       await refreshData(); // Refresh audit logs
@@ -417,7 +468,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const addCompanyHoliday = async (date: string, description: string): Promise<void> => {
     try {
       const data = await api.holidayAPI.addHoliday(date, description);
-      setCompanyHolidays(prev => [...prev, transformHoliday(data)].sort((a, b) => 
+      setCompanyHolidays(prev => [...prev, transformHoliday(data)].sort((a, b) =>
         new Date(a.date).getTime() - new Date(b.date).getTime()
       ));
       await refreshData(); // Refresh to get notifications
@@ -429,7 +480,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const updateSystemSettings = async (settings: Partial<SystemSettings>): Promise<void> => {
     try {
-      const data = await api.settingsAPI.updateSettings(settings);
+      const data = await api.settingsAPI.updateSettings(settings) as any;
       setSystemSettings({ timezone: data.timezone || 'Asia/Kolkata' });
       await refreshData(); // Refresh audit logs
     } catch (error) {
@@ -444,7 +495,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         startDate: filters?.start,
         endDate: filters?.end,
         department: filters?.department
-      });
+      }) as any;
       downloadCSV(`attendance_report_${getTodayStr()}.csv`, data);
     } catch (error) {
       console.error('Export report error:', error);

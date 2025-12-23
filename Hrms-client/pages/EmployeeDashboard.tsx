@@ -3,8 +3,8 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
-import { getTodayStr, formatDuration, formatTime, formatDate } from '../services/utils';
-import { Clock, Coffee, AlertCircle, Bell, Calendar, X } from 'lucide-react';
+import { getTodayStr, formatDuration, formatTime, formatDate, calculateBondRemaining, convertToDDMMYYYY } from '../services/utils';
+import { Clock, Coffee, AlertCircle, Bell, Calendar, X, FileText } from 'lucide-react';
 import { notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
@@ -42,37 +42,128 @@ export const EmployeeDashboard: React.FC = () => {
   
   // Real-time timer
   const [elapsed, setElapsed] = useState(0);
+  const [breakElapsed, setBreakElapsed] = useState(0); // Break duration timer
   const [todayRecord, setTodayRecord] = useState(attendanceRecords.find(r => r.userId === user?.id && r.date === getTodayStr()));
   const [showNotificationsPopup, setShowNotificationsPopup] = useState(false);
+  // Local state to track check-in time immediately when clicked
+  const [localCheckInTime, setLocalCheckInTime] = useState<Date | null>(null);
+  // Local state to track if break is active (to stop timer immediately)
+  const [localBreakStartTime, setLocalBreakStartTime] = useState<Date | null>(null);
+  // Confirmation popup state
+  const [confirmationPopup, setConfirmationPopup] = useState<{
+    show: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    onCancel: () => void;
+  } | null>(null);
+  // Bond details modal state
+  const [showBondModal, setShowBondModal] = useState(false);
+  // Extra break reason state
+  const [extraBreakReason, setExtraBreakReason] = useState('');
+  const [showExtraBreakReasonInput, setShowExtraBreakReasonInput] = useState(false);
 
   useEffect(() => {
     const record = attendanceRecords.find(r => r.userId === user?.id && r.date === getTodayStr());
     setTodayRecord(record);
+    // Sync local check-in time with record if it exists and we don't have a local one
+    if (record?.checkIn) {
+      const recordCheckIn = new Date(record.checkIn);
+      if (!localCheckInTime || Math.abs(recordCheckIn.getTime() - localCheckInTime.getTime()) > 2000) {
+        // Only update if local time is not set or differs significantly (more than 2 seconds)
+        setLocalCheckInTime(recordCheckIn);
+      }
+    }
+    // Sync local break state with record
+    const activeBreak = record?.breaks.find(b => !b.end);
+    if (activeBreak) {
+      const breakStart = new Date(activeBreak.start);
+      if (!localBreakStartTime || Math.abs(breakStart.getTime() - localBreakStartTime.getTime()) > 2000) {
+        setLocalBreakStartTime(breakStart);
+      }
+    } else if (!activeBreak && localBreakStartTime) {
+      // Only clear if break was actually ended (not just missing from record)
+      const endedBreak = record?.breaks.find(b => b.end && new Date(b.end).getTime() > localBreakStartTime.getTime() - 1000);
+      if (endedBreak || !record) {
+        setLocalBreakStartTime(null);
+      }
+    }
   }, [attendanceRecords, user?.id]);
 
   useEffect(() => {
     const timer = setInterval(() => {
-      if (todayRecord && todayRecord.checkIn && !todayRecord.checkOut) {
+      // Use local check-in time if available, otherwise use record
+      const checkInTime = localCheckInTime || (todayRecord?.checkIn ? new Date(todayRecord.checkIn) : null);
+      
+      if (checkInTime && !todayRecord?.checkOut) {
         const now = new Date().getTime();
-        const start = new Date(todayRecord.checkIn).getTime();
-        let breakTime = todayRecord.breaks.reduce((acc, b) => {
-           if(b.end) return acc + (new Date(b.end).getTime() - new Date(b.start).getTime());
-           return acc + (now - new Date(b.start).getTime()); // Ongoing break
-        }, 0);
-        setElapsed(Math.max(0, (now - start - breakTime) / 1000));
+        const start = checkInTime.getTime();
+        
+        // If break is active, show break timer
+        if (localBreakStartTime) {
+          const breakStart = localBreakStartTime.getTime();
+          // Calculate break duration
+          const breakDuration = Math.max(0, (now - breakStart) / 1000);
+          setBreakElapsed(breakDuration);
+          
+          // Calculate elapsed work time up to break start
+          const elapsedBeforeBreak = Math.max(0, (breakStart - start) / 1000);
+          // Subtract completed breaks before this break
+          let completedBreakTime = (todayRecord?.breaks || []).reduce((acc, b) => {
+            if (b.end && new Date(b.end).getTime() < breakStart) {
+              return acc + (new Date(b.end).getTime() - new Date(b.start).getTime());
+            }
+            return acc;
+          }, 0);
+          setElapsed(Math.max(0, elapsedBeforeBreak - (completedBreakTime / 1000)));
+        } else {
+          // Not on break - show work timer
+          setBreakElapsed(0);
+          
+          // Calculate break time from completed breaks
+          let breakTime = (todayRecord?.breaks || []).reduce((acc, b) => {
+            if (b.end) {
+              return acc + (new Date(b.end).getTime() - new Date(b.start).getTime());
+            }
+            return acc;
+          }, 0);
+          
+          // If there's an active break in the record but not in local state, use it
+          const activeBreak = todayRecord?.breaks.find(b => !b.end);
+          if (activeBreak && !localBreakStartTime) {
+            breakTime += (now - new Date(activeBreak.start).getTime());
+          }
+          
+          setElapsed(Math.max(0, (now - start - breakTime) / 1000));
+        }
       } else {
         setElapsed(todayRecord?.totalWorkedSeconds || 0);
+        setBreakElapsed(0);
       }
     }, 1000);
     return () => clearInterval(timer);
-  }, [todayRecord]);
+  }, [todayRecord, localCheckInTime, localBreakStartTime]);
 
   // Leave Form State
-  const [leaveForm, setLeaveForm] = useState({ start: '', end: '', type: LeaveCategory.PAID, reason: '', halfDayTime: 'morning' });
+  const [leaveForm, setLeaveForm] = useState({ 
+    start: '', 
+    end: '', 
+    type: LeaveCategory.PAID, 
+    reason: '', 
+    halfDayTime: 'morning', 
+    halfDayLeaveType: 'paid',
+    startTime: '', // For extra time leave and half day leave
+    endTime: '' // For extra time leave
+  });
 
-  const isOnBreak = todayRecord?.breaks.some(b => !b.end);
-  const isCheckedIn = !!todayRecord?.checkIn;
+  const isOnBreak = localBreakStartTime !== null || todayRecord?.breaks.some(b => !b.end);
+  const isCheckedIn = !!localCheckInTime || !!todayRecord?.checkIn;
   const isCheckedOut = !!todayRecord?.checkOut;
+  
+  // Check if standard break already taken today
+  const hasStandardBreak = todayRecord?.breaks.some(b => b.type === 'Standard' && b.end) || false;
+  const activeBreak = todayRecord?.breaks.find(b => !b.end);
+  const activeBreakStartTime = localBreakStartTime ? localBreakStartTime : (activeBreak ? new Date(activeBreak.start) : null);
 
   const myLeaves = leaveRequests.filter(l => l.userId === user?.id);
   
@@ -207,14 +298,31 @@ export const EmployeeDashboard: React.FC = () => {
   }, 0);
 
   // Calculate used paid leaves (only approved ones)
+  // Includes full paid leaves and half-day leaves marked as paid
   const usedPaidLeaves = myLeaves
     .filter(leave => {
       const status = (leave.status || '').trim();
-      return (status === 'Approved' || status === LeaveStatus.APPROVED) && 
-             leave.category === LeaveCategory.PAID;
+      if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+      
+      // Full paid leaves
+      if (leave.category === LeaveCategory.PAID) return true;
+      
+      // Half-day leaves marked as paid leave
+      if (leave.category === LeaveCategory.HALF_DAY) {
+        const reason = leave.reason || '';
+        return reason.includes('[Paid Leave]');
+      }
+      
+      return false;
     })
     .reduce((sum, leave) => {
-      return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+      if (leave.category === LeaveCategory.PAID) {
+        return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+      } else if (leave.category === LeaveCategory.HALF_DAY) {
+        // Half-day leaves count as 0.5 days
+        return sum + 0.5;
+      }
+      return sum;
     }, 0);
 
   // Get total paid leaves allocation (custom or default)
@@ -304,19 +412,120 @@ export const EmployeeDashboard: React.FC = () => {
   
   // Calculate Extra Time Leave tracking
   // Calculate approved Extra Time Leave days (only approved ones)
+  // Includes full extra time leaves and half-day leaves marked as extra time
   const extraTimeLeaveDays = myLeaves
     .filter(leave => {
       const status = (leave.status || '').trim();
-      return (status === 'Approved' || status === LeaveStatus.APPROVED) && 
-             leave.category === LeaveCategory.EXTRA_TIME;
+      if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+      
+      // Full extra time leaves
+      if (leave.category === LeaveCategory.EXTRA_TIME) return true;
+      
+      // Half-day leaves marked as extra time leave
+      if (leave.category === LeaveCategory.HALF_DAY) {
+        const reason = leave.reason || '';
+        return reason.includes('[Extra Time Leave]');
+      }
+      
+      return false;
     })
     .reduce((sum, leave) => {
-      return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+      if (leave.category === LeaveCategory.EXTRA_TIME) {
+        return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+      } else if (leave.category === LeaveCategory.HALF_DAY) {
+        // Half-day leaves count as 0.5 days for calculation
+        return sum + 0.5;
+      }
+      return sum;
     }, 0);
 
-  // Convert Extra Time Leave to hours (1 day = 8 hours 15 minutes = 8.25 hours)
-  // Example: 1 day = 8.25 hours (8 hours 15 minutes)
-  const extraTimeLeaveHours = extraTimeLeaveDays * 8.25;
+  // Helper function to calculate hours per day from start and end time
+  const calculateHoursPerDay = (startTime: string, endTime: string): number => {
+    // Validate inputs
+    if (!startTime || !endTime || startTime.trim() === '' || endTime.trim() === '') {
+      return 0;
+    }
+    
+    // Parse time strings (expecting HH:mm format)
+    const parseTime = (timeStr: string): { hours: number; minutes: number } | null => {
+      const trimmed = timeStr.trim();
+      // Handle HH:mm format
+      const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+      if (match) {
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+          return { hours, minutes };
+        }
+      }
+      return null;
+    };
+    
+    const start = parseTime(startTime);
+    const end = parseTime(endTime);
+    
+    if (!start || !end) {
+      return 0;
+    }
+    
+    const startMinutes = start.hours * 60 + start.minutes;
+    const endMinutes = end.hours * 60 + end.minutes;
+    
+    // Calculate difference: end time - start time
+    let diffMinutes = endMinutes - startMinutes;
+    // Handle case where end time is next day (e.g., 22:00 to 02:00)
+    if (diffMinutes < 0) {
+      diffMinutes += 24 * 60; // Add 24 hours
+    }
+    
+    return diffMinutes / 60; // Convert to hours
+  };
+
+  // Convert Extra Time Leave to hours
+  // For extra time leave: calculate actual hours from start and end time
+  // Half-days: 0.5 day = 4 hours (as per requirement)
+  const extraTimeLeaveHours = myLeaves
+    .filter(leave => {
+      const status = (leave.status || '').trim();
+      if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+      
+      if (leave.category === LeaveCategory.EXTRA_TIME) return true;
+      
+      if (leave.category === LeaveCategory.HALF_DAY) {
+        const reason = leave.reason || '';
+        return reason.includes('[Extra Time Leave]');
+      }
+      
+      return false;
+    })
+    .reduce((sum, leave) => {
+      if (leave.category === LeaveCategory.EXTRA_TIME) {
+        // For extra time leave: (end time - start time) * number of days
+        const hasTimeFields = leave.startTime && leave.endTime && 
+                              leave.startTime.trim() !== '' && leave.endTime.trim() !== '';
+        
+        if (hasTimeFields) {
+          // Calculate hours per day: (end time - start time)
+          const hoursPerDay = calculateHoursPerDay(leave.startTime, leave.endTime);
+          
+          // Calculate number of days (excluding Sundays and holidays)
+          const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate);
+          
+          // Total hours = hours per day * number of days
+          const totalHours = hoursPerDay * numberOfDays;
+          
+          if (totalHours > 0) {
+            return sum + totalHours;
+          }
+        }
+        // Fallback to old calculation only if time fields are missing or invalid
+        return sum + (calculateLeaveDays(leave.startDate, leave.endDate) * 8.25);
+      } else if (leave.category === LeaveCategory.HALF_DAY) {
+        // Half-day extra time leave: 4 hours
+        return sum + 4;
+      }
+      return sum;
+    }, 0);
   
   // Calculate Final Time (net difference between extra time and low time)
   const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds;
@@ -435,13 +644,17 @@ export const EmployeeDashboard: React.FC = () => {
           <>
           <div className="flex flex-col md:flex-row justify-between items-center gap-8">
             <div className="text-center md:text-left">
-              <p className="text-gray-500 text-sm font-medium uppercase tracking-wide">Work Timer</p>
+              <p className="text-gray-500 text-sm font-medium uppercase tracking-wide">
+                {isOnBreak ? 'Break Timer' : 'Work Timer'}
+              </p>
               <div className={`mt-2 ${isOnBreak ? 'text-amber-500' : 'text-blue-600'}`}>
                 <div className="flex items-center justify-center md:justify-start gap-1">
                   {(() => {
-                    const h = Math.floor(elapsed / 3600);
-                    const m = Math.floor((elapsed % 3600) / 60);
-                    const s = Math.floor(elapsed % 60);
+                    // Show break timer when on break, work timer when not
+                    const displayTime = isOnBreak ? breakElapsed : elapsed;
+                    const h = Math.floor(displayTime / 3600);
+                    const m = Math.floor((displayTime % 3600) / 60);
+                    const s = Math.floor(displayTime % 60);
                     return (
                       <>
                         <div className="text-center">
@@ -463,12 +676,41 @@ export const EmployeeDashboard: React.FC = () => {
                   })()}
                 </div>
               </div>
-              {isOnBreak && <span className="inline-block mt-2 px-3 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-semibold animate-pulse">ON BREAK</span>}
+              {isOnBreak && (
+                <div className="mt-2 space-y-1">
+                  <span className="inline-block px-3 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-semibold animate-pulse">ON BREAK</span>
+                  {activeBreakStartTime && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Break started at: {formatTime(activeBreakStartTime.toISOString(), systemSettings.timezone)}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col gap-3 w-full md:w-auto">
               {!isCheckedIn && !isCheckedOut && (
-                <Button size="lg" onClick={clockIn} className="w-full md:w-48 h-14 text-lg shadow-lg shadow-blue-200">
+                <Button size="lg" onClick={() => {
+                  setConfirmationPopup({
+                    show: true,
+                    title: 'Confirm Check In',
+                    message: 'Are you sure you want to check in?',
+                    onConfirm: async () => {
+                      const checkInTime = new Date();
+                      setLocalCheckInTime(checkInTime);
+                      try {
+                        await clockIn();
+                        setConfirmationPopup(null);
+                      } catch (error) {
+                        // Reset on error
+                        setLocalCheckInTime(null);
+                        setConfirmationPopup(null);
+                        throw error;
+                      }
+                    },
+                    onCancel: () => setConfirmationPopup(null)
+                  });
+                }} className="w-full md:w-48 h-14 text-lg shadow-lg shadow-blue-200">
                   <Clock className="mr-2" /> Check In
                 </Button>
               )}
@@ -478,16 +720,40 @@ export const EmployeeDashboard: React.FC = () => {
                   <div className="grid grid-cols-2 gap-2">
                     <Button 
                       variant="secondary" 
-                      disabled={isOnBreak} 
-                      onClick={() => startBreak(BreakType.STANDARD)}
+                      disabled={isOnBreak || hasStandardBreak} 
+                      onClick={() => {
+                        setConfirmationPopup({
+                          show: true,
+                          title: 'Confirm Break',
+                          message: 'Are you sure you want to start your break?',
+                          onConfirm: async () => {
+                            const breakStartTime = new Date();
+                            setLocalBreakStartTime(breakStartTime);
+                            try {
+                              await startBreak(BreakType.STANDARD);
+                              setConfirmationPopup(null);
+                            } catch (error) {
+                              // Reset on error
+                              setLocalBreakStartTime(null);
+                              setConfirmationPopup(null);
+                              throw error;
+                            }
+                          },
+                          onCancel: () => setConfirmationPopup(null)
+                        });
+                      }}
                       className="w-full"
+                      title={hasStandardBreak ? "Standard break already taken. Use Extra Break for additional breaks." : ""}
                     >
                       <Coffee className="mr-2 h-4 w-4" /> Break
+                      {hasStandardBreak && <span className="ml-1 text-xs">(Used)</span>}
                     </Button>
                     <Button 
                       variant="secondary" 
                       disabled={isOnBreak} 
-                      onClick={() => startBreak(BreakType.EXTRA)}
+                      onClick={() => {
+                        setShowExtraBreakReasonInput(true);
+                      }}
                       className="w-full"
                     >
                       <AlertCircle className="mr-2 h-4 w-4" /> Extra Break
@@ -495,9 +761,99 @@ export const EmployeeDashboard: React.FC = () => {
                   </div>
                   
                   {isOnBreak ? (
-                     <Button variant="success" onClick={endBreak} className="w-full animate-pulse">End Break</Button>
+                     <Button variant="success" onClick={async () => {
+                       setLocalBreakStartTime(null);
+                       try {
+                         await endBreak();
+                       } catch (error) {
+                         // Restore break state on error
+                         if (activeBreakStartTime) {
+                           setLocalBreakStartTime(activeBreakStartTime);
+                         }
+                         throw error;
+                       }
+                     }} className="w-full animate-pulse">End Break</Button>
                   ) : (
-                     <Button variant="danger" onClick={clockOut} className="w-full">Check Out</Button>
+                     <Button variant="danger" onClick={() => {
+                       setConfirmationPopup({
+                         show: true,
+                         title: 'Confirm Check Out',
+                         message: 'Are you sure you want to check out?',
+                         onConfirm: async () => {
+                           try {
+                             await clockOut();
+                             setConfirmationPopup(null);
+                           } catch (error) {
+                             setConfirmationPopup(null);
+                             throw error;
+                           }
+                         },
+                         onCancel: () => setConfirmationPopup(null)
+                       });
+                     }} className="w-full">Check Out</Button>
+                  )}
+                  
+                  {/* Extra Break Reason Input Modal */}
+                  {showExtraBreakReasonInput && (
+                    <>
+                      <div
+                        className="fixed inset-0 bg-black/50 z-50"
+                        onClick={() => {
+                          setShowExtraBreakReasonInput(false);
+                          setExtraBreakReason('');
+                        }}
+                      />
+                      <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+                        <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+                          <h3 className="text-xl font-bold text-gray-900 mb-2">Extra Break Reason</h3>
+                          <p className="text-gray-600 mb-4 text-sm">Please provide a reason for taking an extra break (required)</p>
+                          <textarea
+                            value={extraBreakReason}
+                            onChange={(e) => setExtraBreakReason(e.target.value)}
+                            placeholder="Enter reason for extra break..."
+                            className="w-full p-3 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+                            rows={4}
+                            required
+                          />
+                          <div className="flex gap-3 justify-end mt-4">
+                            <Button
+                              variant="secondary"
+                              onClick={() => {
+                                setShowExtraBreakReasonInput(false);
+                                setExtraBreakReason('');
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              variant="primary"
+                              onClick={async () => {
+                                if (!extraBreakReason.trim()) {
+                                  alert('Please provide a reason for the extra break');
+                                  return;
+                                }
+                                const breakStartTime = new Date();
+                                setLocalBreakStartTime(breakStartTime);
+                                try {
+                                  await startBreak(BreakType.EXTRA, extraBreakReason.trim());
+                                  setShowExtraBreakReasonInput(false);
+                                  setExtraBreakReason('');
+                                } catch (error) {
+                                  // Reset on error
+                                  setLocalBreakStartTime(null);
+                                  setShowExtraBreakReasonInput(false);
+                                  setExtraBreakReason('');
+                                  throw error;
+                                }
+                              }}
+                              disabled={!extraBreakReason.trim()}
+                            >
+                              Start Extra Break
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    </>
                   )}
                 </>
               )}
@@ -563,14 +919,229 @@ export const EmployeeDashboard: React.FC = () => {
             <span className="flex items-center"><div className="w-2 h-2 bg-green-600 rounded-full mr-1"></div> Extra</span>
           </div>
         </Card>
+
+        {/* Bond Period & Salary Card */}
+        <Card title="Bond Period" className="h-fit">
+          {(() => {
+            const bondInfo = calculateBondRemaining(user?.bonds, user?.joiningDate);
+            if (!bondInfo.currentBond && bondInfo.totalRemaining.display === '-') {
+              return (
+                <div className="text-center py-4">
+                  <p className="text-gray-400 text-sm">No bond information available</p>
+                </div>
+              );
+            }
+            return (
+              <div className="space-y-3">
+                {bondInfo.currentSalary > 0 && (
+                  <div className="bg-green-50 rounded-lg p-3 border border-green-200">
+                    <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-1">
+                      Current {bondInfo.currentBond?.type === 'Internship' ? 'Stipend' : 'Salary'}
+                    </p>
+                    <p className="text-lg font-bold text-green-900">₹{bondInfo.currentSalary.toLocaleString('en-IN')}</p>
+                  </div>
+                )}
+                <Button
+                  variant="outline"
+                  onClick={() => setShowBondModal(true)}
+                  className="w-full flex items-center justify-center gap-2"
+                >
+                  <FileText size={18} />
+                  View Bond Details
+                </Button>
+              </div>
+            );
+          })()}
+        </Card>
       </div>
+
+      {/* Confirmation Popup */}
+      {confirmationPopup && confirmationPopup.show && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/50 z-50"
+            onClick={confirmationPopup.onCancel}
+          />
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+              <h3 className="text-xl font-bold text-gray-900 mb-2">{confirmationPopup.title}</h3>
+              <p className="text-gray-600 mb-6">{confirmationPopup.message}</p>
+              <div className="flex gap-3 justify-end">
+                <Button
+                  variant="secondary"
+                  onClick={confirmationPopup.onCancel}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={confirmationPopup.onConfirm}
+                >
+                  Confirm
+                </Button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Bond Details Modal */}
+      {showBondModal && (() => {
+        const bondInfo = calculateBondRemaining(user?.bonds, user?.joiningDate);
+        if (!bondInfo.currentBond && bondInfo.totalRemaining.display === '-') {
+          return null;
+        }
+        
+        // Calculate total duration in months
+        const totalMonths = bondInfo.allBonds.reduce((sum, bond) => sum + bond.periodMonths, 0);
+        const totalYears = Math.floor(totalMonths / 12);
+        const remainingMonths = totalMonths % 12;
+        const totalDurationDisplay = totalYears > 0 
+          ? `${totalYears} year${totalYears > 1 ? 's' : ''} ${remainingMonths > 0 ? `${remainingMonths} month${remainingMonths > 1 ? 's' : ''}` : ''}`
+          : `${totalMonths} month${totalMonths > 1 ? 's' : ''}`;
+
+        return (
+          <>
+            <div
+              className="fixed inset-0 bg-black/50 z-50"
+              onClick={() => setShowBondModal(false)}
+            />
+            <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+              <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-2xl font-bold text-gray-900">Bond Details</h3>
+                  <button
+                    onClick={() => setShowBondModal(false)}
+                    className="text-gray-400 hover:text-gray-600 transition-colors"
+                  >
+                    <X size={24} />
+                  </button>
+                </div>
+                
+                <div className="space-y-6">
+                  {/* Joining Date */}
+                  {user?.joiningDate && (
+                    <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+                      <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-1">Joining Date</p>
+                      <p className="text-lg font-bold text-blue-900">{user.joiningDate}</p>
+                    </div>
+                  )}
+
+                  {/* Total Duration */}
+                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                    <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Total Bond Duration</p>
+                    <p className="text-xl font-bold text-gray-900">{totalDurationDisplay}</p>
+                  </div>
+
+                  {/* All Bonds */}
+                  {bondInfo.allBonds.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">
+                        All Bonds ({bondInfo.allBonds.length})
+                      </p>
+                      <div className="space-y-3">
+                        {bondInfo.allBonds.map((bond, index) => (
+                          <div key={index} className="bg-white border-2 border-gray-200 rounded-lg p-4">
+                            <div className="flex items-start justify-between mb-2">
+                              <div>
+                                <p className="font-bold text-gray-900 text-lg">{bond.type}</p>
+                                <p className="text-sm text-gray-600 mt-1">
+                                  Period: {bond.periodMonths} month{bond.periodMonths > 1 ? 's' : ''}
+                                </p>
+                              </div>
+                              <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                                bond.remaining.isExpired 
+                                  ? 'bg-red-100 text-red-700' 
+                                  : bond.remaining.isActive 
+                                  ? 'bg-green-100 text-green-700'
+                                  : 'bg-gray-100 text-gray-700'
+                              }`}>
+                                {bond.remaining.isExpired ? 'Expired' : bond.remaining.isActive ? 'Active' : 'Future'}
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3 mt-3 text-sm">
+                              <div>
+                                <p className="text-xs text-gray-500">Start Date</p>
+                                <p className="font-semibold text-gray-800">{bond.startDate || user?.joiningDate || '-'}</p>
+                              </div>
+                              <div>
+                                <p className="text-xs text-gray-500">End Date</p>
+                                <p className="font-semibold text-gray-800">
+                                  {bond.endDate ? convertToDDMMYYYY(bond.endDate.toISOString().split('T')[0]) : '-'}
+                                </p>
+                              </div>
+                            </div>
+                            {bond.salary && bond.salary > 0 && (
+                              <div className="mt-3 pt-3 border-t border-gray-200">
+                                <p className="text-xs text-gray-500">{bond.type === 'Internship' ? 'Stipend' : 'Salary'}</p>
+                                <p className="font-semibold text-green-600">₹{bond.salary.toLocaleString('en-IN')}</p>
+                              </div>
+                            )}
+                            {bond.remaining.isActive && (
+                              <div className="mt-3 pt-3 border-t border-gray-200">
+                                <p className="text-xs text-gray-500">Remaining</p>
+                                <p className="font-semibold text-blue-600">{bond.remaining.display}</p>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* First Completion Date */}
+                  {bondInfo.firstCompletionDate && (
+                    <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
+                      <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-1">
+                        {bondInfo.firstCompletionBondType} Bond Completion Date
+                      </p>
+                      <p className="text-xl font-bold text-purple-900">
+                        {convertToDDMMYYYY(bondInfo.firstCompletionDate.toISOString().split('T')[0])}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Current Bond Remaining */}
+                  <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
+                    <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">
+                      {bondInfo.currentBond ? `${bondInfo.currentBond.type} Bond Remaining` : 'Total Remaining'}
+                    </p>
+                    <p className="text-xl font-bold text-emerald-900">{bondInfo.currentBondRemaining?.display || bondInfo.totalRemaining.display}</p>
+                  </div>
+
+                  {/* Current Salary/Stipend */}
+                  {bondInfo.currentSalary > 0 && (
+                    <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+                      <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-1">
+                        Current {bondInfo.currentBond?.type === 'Internship' ? 'Stipend' : 'Salary'}
+                      </p>
+                      <p className="text-xl font-bold text-green-900">₹{bondInfo.currentSalary.toLocaleString('en-IN')}</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-6 flex justify-end">
+                  <Button
+                    variant="primary"
+                    onClick={() => setShowBondModal(false)}
+                  >
+                    Close
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {/* Leave Request Form */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <Card title="Request Leave" className="h-full">
             <form onSubmit={(e) => {
                 e.preventDefault();
-                if(!leaveForm.start || !leaveForm.end || !leaveForm.reason) return;
+                if(!leaveForm.start || !leaveForm.reason) return;
+                // For non-half-day leaves, end date is required
+                if(leaveForm.type !== LeaveCategory.HALF_DAY && !leaveForm.end) return;
                 
                 // Prevent submitting Paid Leave if exhausted
                 if (leaveForm.type === LeaveCategory.PAID && isPaidLeaveExhausted) {
@@ -588,6 +1159,14 @@ export const EmployeeDashboard: React.FC = () => {
                     }
                 }
 
+                // Check half-day leave with paid leave selection
+                if (leaveForm.type === LeaveCategory.HALF_DAY && leaveForm.halfDayLeaveType === 'paid') {
+                    if (availablePaidLeaves < 0.5) {
+                        alert(`You need at least 0.5 paid leave(s) remaining for half-day leave. You only have ${availablePaidLeaves} paid leave(s) remaining.`);
+                        return;
+                    }
+                }
+
                 const leaveData: any = {
                     startDate: leaveForm.start,
                     endDate: leaveForm.start, // For half-day, start and end are same
@@ -598,9 +1177,31 @@ export const EmployeeDashboard: React.FC = () => {
                 if (leaveForm.type !== LeaveCategory.HALF_DAY) {
                     leaveData.endDate = leaveForm.end;
                 } else {
-                    // Add half day time info to reason
-                    leaveData.reason = `[${leaveForm.halfDayTime === 'morning' ? 'Morning' : 'Afternoon'}] ${leaveForm.reason}`;
+                    // Add half day leave type info to reason
+                    const halfDayTypeLabel = leaveForm.halfDayLeaveType === 'paid' ? 'Paid Leave' : 'Extra Time Leave';
+                    leaveData.reason = `[${halfDayTypeLabel}] ${leaveForm.reason}`;
                 }
+                
+                // Add time fields for extra time leave and half day leave
+                if (leaveForm.type === LeaveCategory.EXTRA_TIME) {
+                    if (!leaveForm.startTime || !leaveForm.endTime) {
+                        alert('Please provide both start time and end time for Extra Time Leave');
+                        return;
+                    }
+                    leaveData.startTime = leaveForm.startTime;
+                    leaveData.endTime = leaveForm.endTime;
+                } else if (leaveForm.type === LeaveCategory.HALF_DAY) {
+                    if (!leaveForm.startTime) {
+                        alert('Please provide start time for Half Day Leave');
+                        return;
+                    }
+                    leaveData.startTime = leaveForm.startTime;
+                    // For half day, end time is optional or can be calculated
+                    if (leaveForm.endTime) {
+                        leaveData.endTime = leaveForm.endTime;
+                    }
+                }
+                
                 requestLeave(leaveData);
                 // Reset form but keep the selected leave type (don't force change to Paid Leave)
                 setLeaveForm({ 
@@ -608,7 +1209,10 @@ export const EmployeeDashboard: React.FC = () => {
                     end: '', 
                     type: leaveForm.type, // Keep the selected type
                     reason: '', 
-                    halfDayTime: 'morning' 
+                    halfDayTime: 'morning',
+                    halfDayLeaveType: 'paid', // Reset to default
+                    startTime: '',
+                    endTime: ''
                 }); 
             }} className="space-y-4">
                 <div className={`grid gap-4 ${leaveForm.type === LeaveCategory.HALF_DAY ? 'grid-cols-1' : 'grid-cols-2'}`}>
@@ -662,13 +1266,75 @@ export const EmployeeDashboard: React.FC = () => {
                 )}
                 </div>
                 {leaveForm.type === LeaveCategory.HALF_DAY && (
+                <>
                 <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Half Day Time</label>
-                <select className="w-full p-2 border rounded text-sm" value={leaveForm.halfDayTime} onChange={(e) => setLeaveForm({...leaveForm, halfDayTime: e.target.value})}>
-                    <option value="morning">Morning (First Half)</option>
-                    <option value="afternoon">Afternoon (Second Half)</option>
-                </select>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Start Time <span className="text-red-500">*</span></label>
+                <input 
+                    type="time" 
+                    className="w-full p-2 border rounded text-sm" 
+                    required
+                    value={leaveForm.startTime} 
+                    onChange={e => setLeaveForm({...leaveForm, startTime: e.target.value})} 
+                />
                 </div>
+                <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Deduct From</label>
+                <select 
+                    className="w-full p-2 border rounded text-sm" 
+                    value={leaveForm.halfDayLeaveType} 
+                    onChange={(e) => {
+                        const selectedType = e.target.value;
+                        if (selectedType === 'paid' && availablePaidLeaves < 0.5) {
+                            alert(`You need at least 0.5 paid leave(s) remaining. You only have ${availablePaidLeaves} paid leave(s) remaining.`);
+                            return;
+                        }
+                        setLeaveForm({...leaveForm, halfDayLeaveType: selectedType});
+                    }}
+                >
+                    <option value="paid">Paid Leave (0.5 days)</option>
+                    <option value="extraTime">Extra Time Leave (4 hours)</option>
+                </select>
+                {leaveForm.halfDayLeaveType === 'paid' && availablePaidLeaves < 0.5 && (
+                    <p className="text-xs text-red-600 mt-1 font-semibold">
+                        ⚠️ You need at least 0.5 paid leave(s) remaining. Available: {availablePaidLeaves}
+                    </p>
+                )}
+                {leaveForm.halfDayLeaveType === 'paid' && availablePaidLeaves >= 0.5 && (
+                    <p className="text-xs text-blue-600 mt-1">
+                        Will deduct 0.5 days from paid leave. Available: {availablePaidLeaves} paid leave(s)
+                    </p>
+                )}
+                {leaveForm.halfDayLeaveType === 'extraTime' && (
+                    <p className="text-xs text-orange-600 mt-1">
+                        Will add 4 hours to Extra Time Leave taken
+                    </p>
+                )}
+                </div>
+                </>
+                )}
+                {leaveForm.type === LeaveCategory.EXTRA_TIME && (
+                <>
+                <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Start Time <span className="text-red-500">*</span></label>
+                <input 
+                    type="time" 
+                    className="w-full p-2 border rounded text-sm" 
+                    required
+                    value={leaveForm.startTime} 
+                    onChange={e => setLeaveForm({...leaveForm, startTime: e.target.value})} 
+                />
+                </div>
+                <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">End Time <span className="text-red-500">*</span></label>
+                <input 
+                    type="time" 
+                    className="w-full p-2 border rounded text-sm" 
+                    required
+                    value={leaveForm.endTime} 
+                    onChange={e => setLeaveForm({...leaveForm, endTime: e.target.value})} 
+                />
+                </div>
+                </>
                 )}
                 <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">Reason</label>
@@ -877,19 +1543,23 @@ export const EmployeeDashboard: React.FC = () => {
                 {/* Upcoming Holidays */}
                 <Card title="Upcoming Holidays">
                     <div className="space-y-2 max-h-[200px] overflow-y-auto pr-2">
-                        {companyHolidays.length === 0 ? (
-                            <p className="text-gray-400 text-center py-4 text-sm">No upcoming holidays.</p>
-                        ) : (
-                            companyHolidays.map(h => (
-                                <div key={h.id} className="flex items-center gap-3 p-2 bg-blue-50 rounded border border-blue-100">
-                                    <Calendar size={16} className="text-blue-500" />
-                                    <div>
-                                        <p className="text-sm font-bold text-gray-800">{h.description}</p>
-                                        <p className="text-xs text-gray-500">{formatDate(h.date)}</p>
+                        {(() => {
+                            // Filter out past holidays - only show upcoming ones
+                            const upcomingHolidays = companyHolidays.filter(h => h.status !== 'past');
+                            return upcomingHolidays.length === 0 ? (
+                                <p className="text-gray-400 text-center py-4 text-sm">No upcoming holidays.</p>
+                            ) : (
+                                upcomingHolidays.map(h => (
+                                    <div key={h.id} className="flex items-center gap-3 p-2 bg-blue-50 rounded border border-blue-100">
+                                        <Calendar size={16} className="text-blue-500" />
+                                        <div>
+                                            <p className="text-sm font-bold text-gray-800">{h.description}</p>
+                                            <p className="text-xs text-gray-500">{formatDate(h.date)}</p>
+                                        </div>
                                     </div>
-                                </div>
-                            ))
-                        )}
+                                ))
+                            );
+                        })()}
                     </div>
                 </Card>
             </div>
@@ -913,20 +1583,39 @@ export const EmployeeDashboard: React.FC = () => {
                     {myAttendanceHistory.length === 0 ? (
                         <tr><td colSpan={6} className="text-center py-4">No records found.</td></tr>
                     ) : (
-                        myAttendanceHistory.map(r => (
-                            <tr key={r.id} className="bg-white border-b hover:bg-gray-50">
-                                <td className="px-4 py-3 font-medium text-gray-900">{formatDate(r.date)}</td>
-                                <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkIn, systemSettings.timezone)}</td>
-                                <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkOut, systemSettings.timezone)}</td>
-                                <td className="px-4 py-3 text-xs">{r.breaks.length} breaks</td>
-                                <td className="px-4 py-3 font-mono font-bold">{formatDuration(r.totalWorkedSeconds)}</td>
-                                <td className="px-4 py-3">
-                                    {r.lowTimeFlag && <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full">Low</span>}
-                                    {r.extraTimeFlag && <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">Extra</span>}
-                                    {!r.lowTimeFlag && !r.extraTimeFlag && <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Normal</span>}
-                                </td>
-                            </tr>
-                        ))
+                        myAttendanceHistory.map(r => {
+                            // Find if there's an approved half day leave for this date
+                            const halfDayLeave = myLeaves.find(l => {
+                                const status = String(l.status || '').trim();
+                                const isApproved = status === 'Approved' || status === LeaveStatus.APPROVED;
+                                if (!isApproved || l.category !== LeaveCategory.HALF_DAY) return false;
+                                const leaveDate = new Date(l.startDate).toISOString().split('T')[0];
+                                return leaveDate === r.date;
+                            });
+                            
+                            return (
+                                <tr key={r.id} className="bg-white border-b hover:bg-gray-50">
+                                    <td className="px-4 py-3 font-medium text-gray-900">
+                                        <div>{formatDate(r.date)}</div>
+                                        {halfDayLeave && halfDayLeave.startTime && (
+                                            <div className="text-xs text-purple-600 mt-1 font-semibold">
+                                                Half Day Leave: {halfDayLeave.startTime}
+                                                {halfDayLeave.endTime && ` - ${halfDayLeave.endTime}`}
+                                            </div>
+                                        )}
+                                    </td>
+                                    <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkIn, systemSettings.timezone)}</td>
+                                    <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkOut, systemSettings.timezone)}</td>
+                                    <td className="px-4 py-3 text-xs">{r.breaks.length} breaks</td>
+                                    <td className="px-4 py-3 font-mono font-bold">{formatDuration(r.totalWorkedSeconds)}</td>
+                                    <td className="px-4 py-3">
+                                        {r.lowTimeFlag && <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full">Low</span>}
+                                        {r.extraTimeFlag && <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">Extra</span>}
+                                        {!r.lowTimeFlag && !r.extraTimeFlag && <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Normal</span>}
+                                    </td>
+                                </tr>
+                            );
+                        })
                     )}
                 </tbody>
             </table>
@@ -992,10 +1681,34 @@ export const EmployeeDashboard: React.FC = () => {
                   <tbody>
                     {statusFilteredLeaves.map(leave => {
                       const days = calculateLeaveDays(leave.startDate, leave.endDate);
+                      
+                      // Helper function to calculate end time for half day leave (add 4 hours)
+                      const calculateHalfDayEndTime = (startTime: string): string => {
+                        if (!startTime) return '';
+                        const [hours, minutes] = startTime.split(':').map(Number);
+                        const startMinutes = hours * 60 + minutes;
+                        const endMinutes = startMinutes + 240; // 4 hours = 240 minutes
+                        const endHours = Math.floor(endMinutes / 60) % 24;
+                        const endMins = endMinutes % 60;
+                        return `${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')}`;
+                      };
+                      
+                      // Get end time for half day leave
+                      const isHalfDay = leave.category === LeaveCategory.HALF_DAY;
+                      const isApproved = (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED);
+                      const halfDayEndTime = isHalfDay && isApproved && leave.startTime 
+                        ? (leave.endTime || calculateHalfDayEndTime(leave.startTime))
+                        : null;
+                      
                       return (
                         <tr key={leave.id} className="bg-white border-b hover:bg-gray-50">
                           <td className="px-4 py-3 font-medium text-gray-900">
-                            {formatDate(leave.startDate)} - {formatDate(leave.endDate)}
+                            <div>{formatDate(leave.startDate)} - {formatDate(leave.endDate)}</div>
+                            {isHalfDay && isApproved && leave.startTime && (
+                              <div className="text-xs text-gray-500 mt-1">
+                                Start Time: {leave.startTime} {halfDayEndTime && `- End Time: ${halfDayEndTime}`}
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3">{leave.category}</td>
                           <td className="px-4 py-3">

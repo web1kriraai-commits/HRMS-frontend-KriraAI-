@@ -3,9 +3,20 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { LeaveStatus, Role, LeaveCategory } from '../types';
-import { formatDate, formatDuration, getTodayStr } from '../services/utils';
-import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, LogIn, LogOut, Users, FileText } from 'lucide-react';
-import { attendanceAPI } from '../services/api';
+import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY } from '../services/utils';
+import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2 } from 'lucide-react';
+import { attendanceAPI, holidayAPI, userAPI } from '../services/api';
+
+// Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
+const formatHoursToHoursMinutes = (hours: number) => {
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  
+  if (h === 0 && m === 0) return '0m';
+  if (h === 0) return `${m}m`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}m`;
+};
 
 // Normal time: 8:15 to 8:30, Low < 8:15, Extra > 8:30
 const MIN_NORMAL_SECONDS = (8 * 3600) + (15 * 60); // 8h 15m = 29700 seconds
@@ -15,7 +26,7 @@ export const HRDashboard: React.FC = () => {
   const { auth, leaveRequests, updateLeaveStatus, users, attendanceRecords, companyHolidays, addCompanyHoliday, createUser, updateUser, refreshData } = useApp();
   
   const [newHoliday, setNewHoliday] = useState({ date: '', description: '' });
-  const [newUser, setNewUser] = useState({ name: '', username: '', email: '', department: '' });
+  const [newUser, setNewUser] = useState({ name: '', username: '', email: '', department: '', joiningDate: '', bonds: [] as Array<{ type: string; periodMonths: string; startDate: string; salary: string }> });
   const [correction, setCorrection] = useState({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '' });
   const [paidLeaveAllocation, setPaidLeaveAllocation] = useState({ userId: '', allocation: '' });
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
@@ -33,6 +44,9 @@ export const HRDashboard: React.FC = () => {
   const [leaveStatusFilter, setLeaveStatusFilter] = useState<'All' | 'Approved' | 'Rejected' | 'Pending'>('All');
   const [leaveFilterDate, setLeaveFilterDate] = useState('');
   const [leaveFilterMonth, setLeaveFilterMonth] = useState('');
+  const [bondModalUser, setBondModalUser] = useState<User | null>(null);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editUserForm, setEditUserForm] = useState({ name: '', email: '', department: '', joiningDate: '', bonds: [] as Array<{ type: string; periodMonths: string; startDate: string; salary: string }> });
 
   // Helper to calculate break seconds from breaks array
   const getBreakSeconds = (breaks: any[]) => {
@@ -136,6 +150,141 @@ export const HRDashboard: React.FC = () => {
       return true;
   });
   
+  // Helper function to calculate hours per day from start and end time
+  const calculateHoursPerDay = (startTime: string, endTime: string): number => {
+    if (!startTime || !endTime || startTime.trim() === '' || endTime.trim() === '') {
+      return 0;
+    }
+    
+    // Parse time strings (expecting HH:mm format)
+    const parseTime = (timeStr: string): { hours: number; minutes: number } | null => {
+      const trimmed = timeStr.trim();
+      const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+      if (match) {
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+          return { hours, minutes };
+        }
+      }
+      return null;
+    };
+    
+    const start = parseTime(startTime);
+    const end = parseTime(endTime);
+    
+    if (!start || !end) {
+      return 0;
+    }
+    
+    const startMinutes = start.hours * 60 + start.minutes;
+    const endMinutes = end.hours * 60 + end.minutes;
+    
+    // Calculate difference: end time - start time
+    let diffMinutes = endMinutes - startMinutes;
+    // Handle case where end time is next day (e.g., 22:00 to 02:00)
+    if (diffMinutes < 0) {
+      diffMinutes += 24 * 60; // Add 24 hours
+    }
+    
+    return diffMinutes / 60; // Convert to hours
+  };
+
+  // Helper function to calculate extra time leave balance and carryover
+  const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[]) => {
+    // Calculate extra time leave hours taken
+    const extraTimeLeaveHours = monthLeaves
+      .filter(leave => {
+        const status = (leave.status || '').trim();
+        if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+        
+        if (leave.category === LeaveCategory.EXTRA_TIME) return true;
+        
+        if (leave.category === LeaveCategory.HALF_DAY) {
+          const reason = leave.reason || '';
+          return reason.includes('[Extra Time Leave]');
+        }
+        
+        return false;
+      })
+      .reduce((sum, leave) => {
+        if (leave.category === LeaveCategory.EXTRA_TIME) {
+          // For extra time leave: (end time - start time) * number of days
+          const hasTimeFields = leave.startTime && leave.endTime && 
+                                leave.startTime.trim() !== '' && leave.endTime.trim() !== '';
+          
+          if (hasTimeFields) {
+            // Calculate hours per day: (end time - start time)
+            const hoursPerDay = calculateHoursPerDay(leave.startTime, leave.endTime);
+            
+            // Calculate number of days (excluding Sundays and holidays)
+            const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate);
+            
+            // Total hours = hours per day * number of days
+            const totalHours = hoursPerDay * numberOfDays;
+            
+            if (totalHours > 0) {
+              return sum + totalHours;
+            }
+          }
+          // Fallback to old calculation if time not available
+          return sum + (calculateLeaveDays(leave.startDate, leave.endDate) * 8.25);
+        } else if (leave.category === LeaveCategory.HALF_DAY) {
+          return sum + 4;
+        }
+        return sum;
+      }, 0);
+
+    // Calculate low time and extra time from attendance
+    let totalLowTimeSeconds = 0;
+    let totalExtraTimeSeconds = 0;
+
+    monthRecords.forEach(r => {
+      if (r.checkIn && r.checkOut) {
+        const checkIn = new Date(r.checkIn).getTime();
+        const checkOut = new Date(r.checkOut).getTime();
+        const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
+        const breakSeconds = getBreakSeconds(r.breaks) || 0;
+        const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        
+        if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
+          totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
+        } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
+          totalExtraTimeSeconds += (netWorkedSeconds - MAX_NORMAL_SECONDS);
+        }
+      }
+    });
+
+    // Calculate final time difference
+    const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds;
+    const extraTimeWorkedHours = finalTimeDifference / 3600;
+
+    // Remaining extra time leave balance
+    const remainingExtraTimeLeaveHours = Math.max(0, extraTimeLeaveHours - Math.max(0, extraTimeWorkedHours));
+
+    // Calculate carryover from previous month
+    // At month end, if balance is not covered, it carries over to next month
+    const now = new Date();
+    const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    
+    // Extra Time Leave Balance: If remaining > 0 at month end, it carries over
+    const carryoverExtraTimeLeave = isMonthEnd && remainingExtraTimeLeaveHours > 0 ? remainingExtraTimeLeaveHours : 0;
+    
+    // Low Time: If there's low time that's not compensated by extra time, it carries over
+    // Only carry over if final difference is negative (more low time than extra time)
+    const carryoverLowTime = isMonthEnd && finalTimeDifference < 0 ? Math.abs(finalTimeDifference) : 0;
+
+    return {
+      extraTimeLeaveHours,
+      totalLowTimeSeconds,
+      totalExtraTimeSeconds,
+      remainingExtraTimeLeaveHours,
+      carryoverExtraTimeLeave,
+      carryoverLowTime,
+      finalTimeDifference
+    };
+  };
+
   const employeeStats = users.filter(u => u.role === Role.EMPLOYEE).map(user => {
       const records = attendanceRecords.filter(r => r.userId === user.id);
       const presentDays = records.filter(r => r.checkIn && r.checkOut).length;
@@ -169,7 +318,10 @@ export const HRDashboard: React.FC = () => {
       });
 
       const leaves = leaveRequests.filter(l => l.userId === user.id && l.status === LeaveStatus.APPROVED);
-      const allLeaves = leaveRequests.filter(l => l.userId === user.id); 
+      const allLeaves = leaveRequests.filter(l => l.userId === user.id);
+      
+      // Calculate balance with carryover
+      const balance = calculateEmployeeBalance(user.id, records, leaves);
       
       const sumDaysForCategory = (leavesArr: any[], category: LeaveCategory) => {
         return leavesArr
@@ -183,6 +335,10 @@ export const HRDashboard: React.FC = () => {
       const extraTime = sumDaysForCategory(leaves, LeaveCategory.EXTRA_TIME);
       const totalLeaves = paid + unpaid + half + extraTime;
 
+      // Get half day and extra time leaves with their start times
+      const halfDayLeaves = leaves.filter(l => l.category === LeaveCategory.HALF_DAY);
+      const extraTimeLeaves = leaves.filter(l => l.category === LeaveCategory.EXTRA_TIME);
+
       return { 
           user, 
           presentDays, 
@@ -195,7 +351,10 @@ export const HRDashboard: React.FC = () => {
           totalExtraTimeSeconds,
           paid, unpaid, half, extraTime, totalLeaves,
           records, 
-          allLeaves
+          allLeaves,
+          balance, // Add balance information
+          halfDayLeaves, // Add half day leaves with time info
+          extraTimeLeaves // Add extra time leaves with time info
       };
   });
 
@@ -211,8 +370,51 @@ export const HRDashboard: React.FC = () => {
     e.preventDefault();
     if(newUser.name && newUser.username && newUser.email && newUser.department) {
         try {
-          await createUser({ ...newUser, role: Role.EMPLOYEE, isActive: true });
-          setNewUser({ name: '', username: '', email: '', department: '' });
+          await createUser({ 
+            ...newUser, 
+            role: Role.EMPLOYEE, 
+            isActive: true, 
+            joiningDate: newUser.joiningDate ? convertToDDMMYYYY(newUser.joiningDate) : undefined,
+            bonds: newUser.bonds.filter(b => {
+              // Include bond if periodMonths is provided
+              return b.periodMonths && parseInt(b.periodMonths) > 0;
+            }).map((b, bondIndex, filteredBonds) => {
+              const periodMonths = parseInt(b.periodMonths) || 0;
+              
+              // Calculate start date for each bond
+              let bondStartDate: string;
+              if (bondIndex === 0) {
+                // First bond starts from joining date
+                bondStartDate = newUser.joiningDate || '';
+              } else {
+                // Subsequent bonds start from previous bond's end date + 1 day
+                let previousEndDate: Date | null = null;
+                for (let i = 0; i < bondIndex; i++) {
+                  const prevBond = filteredBonds[i];
+                  const prevPeriodMonths = parseInt(prevBond.periodMonths) || 0;
+                  const prevStart = i === 0 
+                    ? (parseDDMMYYYY(newUser.joiningDate) || new Date())
+                    : (previousEndDate || new Date());
+                  previousEndDate = new Date(prevStart);
+                  previousEndDate.setMonth(previousEndDate.getMonth() + prevPeriodMonths);
+                }
+                if (previousEndDate) {
+                  previousEndDate.setDate(previousEndDate.getDate() + 1); // Add 1 day
+                  bondStartDate = convertToDDMMYYYY(previousEndDate.toISOString().split('T')[0]);
+                } else {
+                  bondStartDate = newUser.joiningDate || '';
+                }
+              }
+              
+              return {
+                type: b.type || 'Job',
+                periodMonths: periodMonths,
+                startDate: bondStartDate,
+                salary: b.salary ? parseFloat(b.salary) : 0
+              };
+            })
+          });
+          setNewUser({ name: '', username: '', email: '', department: '', joiningDate: '', bonds: [] });
           alert("Employee created successfully! Temporary password: tempPassword123");
         } catch (error: any) {
           alert(error.message || "Failed to create user");
@@ -402,8 +604,26 @@ export const HRDashboard: React.FC = () => {
     return <><span>{h}</span><span className="text-sm font-normal ml-1">hours</span> <span>{m}</span><span className="text-sm font-normal ml-1">min</span></>;
   };
 
+  const hrUser = auth.user;
+  const hrBondInfo = hrUser ? calculateBondRemaining(hrUser.bonds, hrUser.joiningDate) : null;
+
   return (
     <div className="space-y-8 animate-fade-in">
+      {/* HR Bond Period Button */}
+      {hrUser && hrBondInfo && (hrBondInfo.currentBond || hrBondInfo.totalRemaining.display !== '-') && (
+        <section>
+          <Card title="My Bond Period">
+            <Button
+              variant="outline"
+              onClick={() => setBondModalUser(hrUser)}
+              className="w-full flex items-center justify-center gap-2"
+            >
+              <FileText size={18} />
+              View Bond Details
+            </Button>
+          </Card>
+        </section>
+      )}
       
       {/* Approvals Section */}
       <section>
@@ -453,6 +673,57 @@ export const HRDashboard: React.FC = () => {
         </div>
       </section>
 
+      {/* Weekly Balance Report */}
+      <section>
+        <h2 className="text-xl font-bold text-gray-800 mb-4">Weekly Balance Report</h2>
+        <Card>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left text-gray-500">
+              <thead className="text-xs text-gray-700 uppercase bg-gray-50 border-b">
+                <tr>
+                  <th className="px-4 py-3">Employee</th>
+                  <th className="px-4 py-3 text-center">Extra Time Leave Taken</th>
+                  <th className="px-4 py-3 text-center">Extra Time Worked</th>
+                  <th className="px-4 py-3 text-center text-orange-600">Remaining Balance</th>
+                  <th className="px-4 py-3 text-center text-red-600">Low Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {employeeStats.map(stat => {
+                  const balance = stat.balance || calculateEmployeeBalance(stat.user.id, stat.records, leaveRequests.filter(l => l.userId === stat.user.id && l.status === LeaveStatus.APPROVED));
+                  const now = new Date();
+                  const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                  
+                  return (
+                    <tr key={stat.user.id} className="bg-white border-b hover:bg-gray-50">
+                      <td className="px-4 py-3 font-medium text-gray-900">{stat.user.name}</td>
+                      <td className="px-4 py-3 text-center">
+                        {balance.extraTimeLeaveHours > 0 ? formatHoursToHoursMinutes(balance.extraTimeLeaveHours) : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {balance.finalTimeDifference > 0 ? `+${formatDuration(balance.finalTimeDifference)}` : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className={`font-bold ${
+                          balance.remainingExtraTimeLeaveHours > 0 ? 'text-orange-600' : 'text-green-600'
+                        }`}>
+                          {balance.remainingExtraTimeLeaveHours > 0 
+                            ? formatHoursToHoursMinutes(balance.remainingExtraTimeLeaveHours)
+                            : '0h'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-center text-red-600">
+                        {balance.totalLowTimeSeconds > 0 ? formatDuration(balance.totalLowTimeSeconds) : '-'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </section>
+
       {/* Employee Monthly Summary Table */}
       <section>
         <h2 className="text-xl font-bold text-gray-800 mb-4">Employee Monthly Summary</h2>
@@ -464,7 +735,8 @@ export const HRDashboard: React.FC = () => {
                             <th rowSpan={2} className="px-4 py-3 bg-gray-100 border-r w-10"></th>
                             <th rowSpan={2} className="px-6 py-3 bg-gray-100 border-r">Employee</th>
                             <th colSpan={5} className="px-6 py-2 text-center bg-blue-50 border-b border-r text-blue-800">Attendance</th>
-                            <th colSpan={5} className="px-6 py-2 text-center bg-orange-50 border-b text-orange-800">Leave Breakdown (Approved)</th>
+                            <th colSpan={5} className="px-6 py-2 text-center bg-orange-50 border-b border-r text-orange-800">Leave Breakdown (Approved)</th>
+                            <th className="px-6 py-2 text-center bg-purple-50 border-b text-purple-800">Balance</th>
                         </tr>
                         <tr>
                             <th className="px-4 py-2 text-center border-r">Present</th>
@@ -473,11 +745,13 @@ export const HRDashboard: React.FC = () => {
                             <th className="px-4 py-2 text-center border-r text-red-600">Low Time</th>
                             <th className="px-4 py-2 text-center border-r text-green-600">Extra Time</th>
                             
-                            <th className="px-2 py-2 text-center">Paid</th>
-                            <th className="px-2 py-2 text-center">Unpaid</th>
-                            <th className="px-2 py-2 text-center">Half Day</th>
-                            <th className="px-2 py-2 text-center">Extra Time</th>
-                            <th className="px-2 py-2 text-center font-bold border-l">Total</th>
+                            <th className="px-2 py-2 text-center border-r">Paid</th>
+                            <th className="px-2 py-2 text-center border-r">Unpaid</th>
+                            <th className="px-2 py-2 text-center border-r">Half Day</th>
+                            <th className="px-2 py-2 text-center border-r">Extra Time</th>
+                            <th className="px-2 py-2 text-center font-bold border-l border-r">Total</th>
+                            
+                            <th className="px-2 py-2 text-center text-orange-600">Extra Time Leave Balance</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -492,7 +766,28 @@ export const HRDashboard: React.FC = () => {
                                     <td className="px-4 py-4 text-center border-r font-medium">{stat.presentDays}</td>
                                     <td className="px-4 py-4 text-center border-r">{formatDuration(stat.totalWorkedSeconds)}</td>
                                     <td className="px-4 py-4 text-center border-r text-amber-600">
-                                        {stat.totalBreakSeconds > 0 ? formatDuration(stat.totalBreakSeconds) : '-'}
+                                        <div className="space-y-1">
+                                          <span>{stat.totalBreakSeconds > 0 ? formatDuration(stat.totalBreakSeconds) : '-'}</span>
+                                          {stat.records && stat.records.length > 0 && (() => {
+                                            const extraBreaks = stat.records
+                                              .flatMap((r: any) => (r.breaks || []).filter((b: any) => b.type === 'Extra' && b.reason));
+                                            if (extraBreaks.length > 0) {
+                                              return (
+                                                <div className="text-xs text-purple-600 mt-1 space-y-0.5">
+                                                  {extraBreaks.slice(0, 2).map((b: any, idx: number) => (
+                                                    <div key={idx} className="truncate" title={b.reason}>
+                                                      Extra: {b.reason}
+                                                    </div>
+                                                  ))}
+                                                  {extraBreaks.length > 2 && (
+                                                    <div className="text-gray-400">+{extraBreaks.length - 2} more</div>
+                                                  )}
+                                                </div>
+                                              );
+                                            }
+                                            return null;
+                                          })()}
+                                        </div>
                                     </td>
                                     <td className="px-4 py-4 text-center border-r">
                                         {stat.lowTimeCount > 0 ? (
@@ -519,11 +814,61 @@ export const HRDashboard: React.FC = () => {
                                         )}
                                     </td>
                                     
-                                    <td className="px-2 py-4 text-center">{stat.paid || '-'}</td>
-                                    <td className="px-2 py-4 text-center">{stat.unpaid || '-'}</td>
-                                    <td className="px-2 py-4 text-center">{stat.half || '-'}</td>
-                                    <td className="px-2 py-4 text-center">{stat.extraTime || '-'}</td>
-                                    <td className="px-2 py-4 text-center font-bold border-l bg-gray-50">{stat.totalLeaves}</td>
+                                    <td className="px-2 py-4 text-center border-r">{stat.paid || '-'}</td>
+                                    <td className="px-2 py-4 text-center border-r">{stat.unpaid || '-'}</td>
+                                    <td className="px-2 py-4 text-center border-r">
+                                        {stat.half ? (
+                                            <div className="flex flex-col items-center gap-1">
+                                                <span className="font-medium">{stat.half}</span>
+                                                {stat.halfDayLeaves && stat.halfDayLeaves.length > 0 && (
+                                                    <div className="text-[10px] text-gray-600 space-y-0.5">
+                                                        {stat.halfDayLeaves.slice(0, 2).map((l, idx) => (
+                                                            <div key={idx} className="text-purple-600">
+                                                                {l.startTime || '-'}
+                                                            </div>
+                                                        ))}
+                                                        {stat.halfDayLeaves.length > 2 && (
+                                                            <div className="text-gray-400">+{stat.halfDayLeaves.length - 2} more</div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : '-'}
+                                    </td>
+                                    <td className="px-2 py-4 text-center border-r">
+                                        {stat.extraTime ? (
+                                            <div className="flex flex-col items-center gap-1">
+                                                <span className="font-medium">{stat.extraTime}</span>
+                                                {stat.extraTimeLeaves && stat.extraTimeLeaves.length > 0 && (
+                                                    <div className="text-[10px] text-gray-600 space-y-0.5">
+                                                        {stat.extraTimeLeaves.slice(0, 2).map((l, idx) => (
+                                                            <div key={idx} className="text-orange-600">
+                                                                {l.startTime || '-'}
+                                                            </div>
+                                                        ))}
+                                                        {stat.extraTimeLeaves.length > 2 && (
+                                                            <div className="text-gray-400">+{stat.extraTimeLeaves.length - 2} more</div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : '-'}
+                                    </td>
+                                    <td className="px-2 py-4 text-center font-bold border-l border-r bg-gray-50">{stat.totalLeaves}</td>
+                                    
+                                    <td className="px-2 py-4 text-center">
+                                        {stat.balance ? (
+                                            <div className="flex flex-col items-center gap-1">
+                                                <span className={`text-xs font-bold ${
+                                                    stat.balance.remainingExtraTimeLeaveHours > 0 ? 'text-orange-600' : 'text-green-600'
+                                                }`}>
+                                                    {stat.balance.remainingExtraTimeLeaveHours > 0 
+                                                        ? formatHoursToHoursMinutes(stat.balance.remainingExtraTimeLeaveHours)
+                                                        : '0h'}
+                                                </span>
+                                            </div>
+                                        ) : '-'}
+                                    </td>
                                 </tr>
                                 {expandedUser === stat.user.id && (
                                     <tr className="bg-gray-50">
@@ -588,9 +933,20 @@ export const HRDashboard: React.FC = () => {
                                                                 <tbody>
                                                                     {filterLeavesForHR(stat.allLeaves, hrLeaveStatusFilter, hrLeaveFilterDate, hrLeaveFilterMonth).map(l => {
                                                                         const days = calculateLeaveDaysForCategory(l.startDate, l.endDate, l.category);
+                                                                        const isHalfDay = l.category === LeaveCategory.HALF_DAY;
+                                                                        const isExtraTime = l.category === LeaveCategory.EXTRA_TIME;
+                                                                        const showTime = (isHalfDay || isExtraTime) && l.startTime;
                                                                         return (
                                                                             <tr key={l.id} className="border-t hover:bg-gray-50">
-                                                                                <td className="px-3 py-2">{formatDate(l.startDate)}</td>
+                                                                                <td className="px-3 py-2">
+                                                                                    <div>{formatDate(l.startDate)}</div>
+                                                                                    {showTime && (
+                                                                                        <div className="text-[10px] text-purple-600 mt-0.5">
+                                                                                            Start: {l.startTime}
+                                                                                            {l.endTime && ` - End: ${l.endTime}`}
+                                                                                        </div>
+                                                                                    )}
+                                                                                </td>
                                                                                 <td className="px-3 py-2">{l.category}</td>
                                                                                 <td className="px-3 py-2">{days} {days === 1 ? 'day' : 'days'}</td>
                                                                                 <td className="px-3 py-2 text-right">
@@ -796,6 +1152,26 @@ export const HRDashboard: React.FC = () => {
                 <p className="text-lg font-bold text-gray-700">{getMonthName()}</p>
               </div>
             </div>
+
+            {/* Bond Period Button */}
+            {(() => {
+              const userBondInfo = calculateBondRemaining(selectedUser.bonds, selectedUser.joiningDate);
+              if (userBondInfo.currentBond || userBondInfo.totalRemaining.display !== '-') {
+                return (
+                  <Card title="Bond Period" className="mb-6">
+                    <Button
+                      variant="outline"
+                      onClick={() => setBondModalUser(selectedUser)}
+                      className="w-full flex items-center justify-center gap-2"
+                    >
+                      <FileText size={18} />
+                      View Bond Details
+                    </Button>
+                  </Card>
+                );
+              }
+              return null;
+            })()}
 
             {/* Stats Grid */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -1063,9 +1439,22 @@ export const HRDashboard: React.FC = () => {
                               </span>
                             </td>
                             <td className="px-6 py-4">
-                              <span className="text-amber-600 font-medium">
-                                {breakSeconds > 0 ? formatDuration(breakSeconds) : '-'}
-                              </span>
+                              <div className="space-y-1">
+                                <span className="text-amber-600 font-medium">
+                                  {breakSeconds > 0 ? formatDuration(breakSeconds) : '-'}
+                                </span>
+                                {record.breaks && record.breaks.length > 0 && (
+                                  <div className="text-xs text-gray-500 space-y-0.5">
+                                    {record.breaks
+                                      .filter((b: any) => b.type === 'Extra' && b.reason)
+                                      .map((b: any, idx: number) => (
+                                        <div key={idx} className="text-purple-600">
+                                          <span className="font-semibold">Extra:</span> {b.reason}
+                                        </div>
+                                      ))}
+                                  </div>
+                                )}
+                              </div>
                             </td>
                             <td className="px-6 py-4">
                               <span className="font-bold text-gray-800">
@@ -1128,8 +1517,187 @@ export const HRDashboard: React.FC = () => {
                       <div>
                           <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Department</label>
                           <input type="text" className="w-full p-2 border rounded text-sm" value={newUser.department} onChange={e => setNewUser({...newUser, department: e.target.value})} required />
-                          <p className="text-xs text-gray-500 mt-1">Employee will receive temporary password: tempPassword123</p>
                       </div>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Joining Date</label>
+                          <input type="date" className="w-full p-2 border rounded text-sm" value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''} onChange={e => setNewUser({...newUser, joiningDate: e.target.value})} />
+                      </div>
+                      <div>
+                          <div className="flex items-center justify-between mb-2">
+                              <label className="block text-xs font-bold text-gray-700 uppercase">Bond Periods</label>
+                              <button
+                                  type="button"
+                                  onClick={() => setNewUser({
+                                      ...newUser,
+                                      bonds: [...newUser.bonds, { type: 'Internship', periodMonths: '', startDate: '', salary: '' }]
+                                  })}
+                                  className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
+                              >
+                                  <Plus size={14} /> Add Bond
+                              </button>
+                          </div>
+                          {newUser.bonds.length === 0 ? (
+                              <p className="text-xs text-gray-400 italic">No bonds added. Click "Add Bond" to add bond periods.</p>
+                          ) : (
+                              <div className="space-y-2">
+                                  {newUser.bonds.map((bond, index) => (
+                                      <div key={index} className="p-3 border border-gray-200 rounded-lg bg-gray-50 space-y-2">
+                                          <div className="flex items-center justify-between">
+                                              <span className="text-xs font-semibold text-gray-700">Bond {index + 1}</span>
+                                              <button
+                                                  type="button"
+                                                  onClick={() => setNewUser({
+                                                      ...newUser,
+                                                      bonds: newUser.bonds.filter((_, i) => i !== index)
+                                                  })}
+                                                  className="text-red-500 hover:text-red-700"
+                                              >
+                                                  <X size={14} />
+                                              </button>
+                                          </div>
+                                          <div className="grid grid-cols-2 gap-2">
+                                              <div>
+                                                  <label className="block text-xs text-gray-600 mb-1">Type</label>
+                                                  <select
+                                                      className="w-full p-2 border border-gray-200 rounded text-xs"
+                                                      value={bond.type}
+                                                      onChange={e => {
+                                                          const updated = [...newUser.bonds];
+                                                          updated[index].type = e.target.value;
+                                                          setNewUser({ ...newUser, bonds: updated });
+                                                      }}
+                                                  >
+                                                      <option value="Internship">Internship</option>
+                                                      <option value="Job">Job</option>
+                                                      <option value="Other">Other</option>
+                                                  </select>
+                                              </div>
+                                              <div>
+                                                  <label className="block text-xs text-gray-600 mb-1">Period (Months)</label>
+                                                  <input
+                                                      type="number"
+                                                      min="1"
+                                                      className="w-full p-2 border border-gray-200 rounded text-xs"
+                                                      value={bond.periodMonths}
+                                                      onChange={e => {
+                                                          const updated = [...newUser.bonds];
+                                                          updated[index].periodMonths = e.target.value;
+                                                          setNewUser({ ...newUser, bonds: updated });
+                                                      }}
+                                                      placeholder="e.g., 6"
+                                                  />
+                                              </div>
+                                          </div>
+                                          {newUser.joiningDate && (() => {
+                                              // Calculate start date for this bond
+                                              let bondStartDate: Date;
+                                              if (index === 0) {
+                                                  // First bond starts from joining date
+                                                  bondStartDate = parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate);
+                                              } else {
+                                                  // Subsequent bonds start from previous bond's end date + 1 day
+                                                  let previousEndDate: Date | null = null;
+                                                  for (let i = 0; i < index; i++) {
+                                                      const prevBond = newUser.bonds[i];
+                                                      if (prevBond.periodMonths && parseInt(prevBond.periodMonths) > 0) {
+                                                          const prevStart = i === 0 
+                                                              ? (parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate))
+                                                              : previousEndDate || new Date(newUser.joiningDate);
+                                                          previousEndDate = new Date(prevStart);
+                                                          previousEndDate.setMonth(previousEndDate.getMonth() + parseInt(prevBond.periodMonths));
+                                                      }
+                                                  }
+                                                  if (previousEndDate) {
+                                                      bondStartDate = new Date(previousEndDate);
+                                                      bondStartDate.setDate(bondStartDate.getDate() + 1); // Add 1 day
+                                                  } else {
+                                                      bondStartDate = parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate);
+                                                  }
+                                              }
+                                              
+                                              return (
+                                                  <div>
+                                                      <p className="text-xs text-gray-500 mb-1">
+                                                          Start Date: {convertToDDMMYYYY(bondStartDate.toISOString().split('T')[0])}
+                                                          {index === 0 && ' (Joining Date)'}
+                                                          {index > 0 && ' (Previous bond end + 1 day)'}
+                                                      </p>
+                                                      {bond.periodMonths && parseInt(bond.periodMonths) > 0 && (() => {
+                                                          const periodMonths = parseInt(bond.periodMonths);
+                                                          const endDate = new Date(bondStartDate);
+                                                          endDate.setMonth(endDate.getMonth() + periodMonths);
+                                                          
+                                                          const today = new Date();
+                                                          today.setHours(0, 0, 0, 0);
+                                                          endDate.setHours(0, 0, 0, 0);
+                                                          
+                                                          if (endDate >= today) {
+                                                              const diffTime = endDate.getTime() - today.getTime();
+                                                              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                                                              const months = Math.floor(diffDays / 30);
+                                                              const days = diffDays % 30;
+                                                              
+                                                              let display = '';
+                                                              if (months > 0 && days > 0) {
+                                                                  display = `${months} month${months > 1 ? 's' : ''} ${days} day${days > 1 ? 's' : ''}`;
+                                                              } else if (months > 0) {
+                                                                  display = `${months} month${months > 1 ? 's' : ''}`;
+                                                              } else {
+                                                                  display = `${days} day${days > 1 ? 's' : ''}`;
+                                                              }
+                                                              
+                                                              return (
+                                                                  <div className="mt-2">
+                                                                      <p className="text-xs text-gray-500 mb-1">End Date: {convertToDDMMYYYY(endDate.toISOString().split('T')[0])}</p>
+                                                                      <p className="text-xs text-blue-600 font-semibold">
+                                                                          Remaining: {display}
+                                                                      </p>
+                                                                  </div>
+                                                              );
+                                                          } else {
+                                                              const diffTime = today.getTime() - endDate.getTime();
+                                                              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                                                              return (
+                                                                  <div className="mt-2">
+                                                                      <p className="text-xs text-gray-500 mb-1">End Date: {convertToDDMMYYYY(endDate.toISOString().split('T')[0])}</p>
+                                                                      <p className="text-xs text-red-600 font-semibold">
+                                                                          Expired {diffDays} day{diffDays > 1 ? 's' : ''} ago
+                                                                      </p>
+                                                                  </div>
+                                                              );
+                                                          }
+                                                      })()}
+                                                  </div>
+                                              );
+                                          })()}
+                                          {!newUser.joiningDate && (
+                                              <p className="text-xs text-gray-500 mb-1">Start Date: Set joining date first</p>
+                                          )}
+                                          <div>
+                                              <label className="block text-xs text-gray-600 mb-1">
+                                                  {bond.type === 'Internship' ? 'Stipend' : bond.type === 'Job' ? 'Salary' : 'Amount'} (₹)
+                                              </label>
+                                              <input
+                                                  type="number"
+                                                  min="0"
+                                                  step="0.01"
+                                                  className="w-full p-2 border border-gray-200 rounded text-xs"
+                                                  value={bond.salary || ''}
+                                                  onChange={e => {
+                                                      const updated = [...newUser.bonds];
+                                                      updated[index].salary = e.target.value;
+                                                      setNewUser({ ...newUser, bonds: updated });
+                                                  }}
+                                                  placeholder={bond.type === 'Internship' ? 'e.g., 10000' : 'e.g., 25000'}
+                                              />
+                                          </div>
+                                      </div>
+                                  ))}
+                              </div>
+                          )}
+                          <p className="text-xs text-gray-400 mt-2">Add multiple bonds (e.g., 6 months internship + 1 year job)</p>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">Employee will receive temporary password: tempPassword123</p>
                       <Button type="submit" className="w-full" variant="primary">
                           <UserPlus size={16} className="mr-2" /> Create Account
                       </Button>
@@ -1191,6 +1759,27 @@ export const HRDashboard: React.FC = () => {
                           <Plus size={16} className="mr-2" /> Post Holiday
                       </Button>
                   </form>
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                      <Button 
+                          type="button"
+                          onClick={async () => {
+                              if (!confirm('This will add all Sundays for the current month as holidays. Continue?')) {
+                                  return;
+                              }
+                              try {
+                                  const result: any = await holidayAPI.autoAddSundays();
+                                  alert(result.message || `Successfully added ${result.added || 0} Sunday(s) as holidays`);
+                                  await refreshData();
+                              } catch (error: any) {
+                                  alert(error.message || 'Failed to add Sundays');
+                              }
+                          }}
+                          className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700"
+                      >
+                          <Calendar size={16} className="mr-2" /> Auto Add All Sundays (Current Month)
+                      </Button>
+                      <p className="text-xs text-gray-500 mt-2 text-center">Adds all Sundays of the current month as holidays</p>
+                  </div>
               </Card>
 
               {/* Paid Leave Allocation Section */}
@@ -1374,6 +1963,751 @@ export const HRDashboard: React.FC = () => {
               </div>
           </div>
       </section>
+
+      {/* All Users Table - HR and Employee Only */}
+      <section>
+        <Card className="overflow-hidden p-0">
+          <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
+                <Users className="h-5 w-5 text-emerald-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-800">All Users</h3>
+                <p className="text-xs text-gray-500">{users.filter(u => u.role === Role.HR || u.role === Role.EMPLOYEE).length} users (HR & Employee)</p>
+              </div>
+            </div>
+          </div>
+          <div className="overflow-x-auto max-h-[600px]">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-xs text-gray-500 uppercase sticky top-0">
+                <tr>
+                  <th className="px-5 py-3 text-left">User</th>
+                  <th className="px-5 py-3 text-left">Role</th>
+                  <th className="px-5 py-3 text-left">Department</th>
+                  <th className="px-5 py-3 text-left">Joining Date</th>
+                  <th className="px-5 py-3 text-left">Bond Period</th>
+                  <th className="px-5 py-3 text-center">Status</th>
+                  <th className="px-5 py-3 text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {users.filter(u => u.role === Role.HR || u.role === Role.EMPLOYEE).length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-5 py-8 text-center text-gray-400">
+                      No users found
+                    </td>
+                  </tr>
+                ) : (
+                  users.filter(u => u.role === Role.HR || u.role === Role.EMPLOYEE).map(user => {
+                    const bondInfo = calculateBondRemaining(user.bonds, user.joiningDate);
+                    return (
+                      <tr key={user.id} className="hover:bg-gray-50">
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className={`h-9 w-9 rounded-lg flex items-center justify-center text-white font-bold text-sm ${
+                              user.role === Role.HR ? 'bg-blue-500' : 'bg-emerald-500'
+                            }`}>
+                              {user.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <p className="font-semibold text-gray-800">{user.name}</p>
+                              <p className="text-xs text-gray-400">{user.email}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-5 py-4">
+                          <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                            user.role === Role.HR ? 'bg-blue-100 text-blue-700' :
+                            'bg-emerald-100 text-emerald-700'
+                          }`}>
+                            {user.role}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4 text-gray-600">{user.department}</td>
+                        <td className="px-5 py-4 text-gray-600 text-xs">
+                          {user.joiningDate || '-'}
+                        </td>
+                        <td className="px-5 py-4 text-xs">
+                          {bondInfo.currentBond || bondInfo.totalRemaining.display !== '-' ? (
+                            <button
+                              onClick={() => setBondModalUser(user)}
+                              className="text-blue-600 hover:text-blue-800 font-semibold text-xs underline"
+                            >
+                              View Bond Details
+                            </button>
+                          ) : (
+                            <span className="text-gray-400">-</span>
+                          )}
+                        </td>
+                        <td className="px-5 py-4 text-center">
+                          <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                            user.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                          }`}>
+                            {user.isActive ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4">
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              onClick={() => {
+                                setEditingUser(user);
+                                setEditUserForm({
+                                  name: user.name,
+                                  email: user.email,
+                                  department: user.department,
+                                  joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
+                                  bonds: (user.bonds || []).map(b => ({
+                                    type: b.type,
+                                    periodMonths: b.periodMonths.toString(),
+                                    startDate: b.startDate,
+                                    salary: (b.salary || 0).toString()
+                                  }))
+                                });
+                              }}
+                              className="text-gray-400 hover:text-blue-500 transition-colors p-2 rounded-lg hover:bg-blue-50"
+                              title="Edit User"
+                            >
+                              <PenTool size={16} />
+                            </button>
+                            {user.id !== auth.user?.id && (
+                              <button 
+                                onClick={async () => {
+                                  if (confirm(`Are you sure you want to delete ${user.name}?`)) {
+                                    try {
+                                      await userAPI.deleteUser(user.id);
+                                      alert(`User ${user.name} deleted successfully`);
+                                      await refreshData();
+                                    } catch (error: any) {
+                                      alert(error.message || 'Failed to delete user');
+                                    }
+                                  }
+                                }}
+                                className="text-gray-400 hover:text-red-500 transition-colors p-2 rounded-lg hover:bg-red-50"
+                                title="Delete User"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </section>
+
+      {/* Guidance Section */}
+      <section>
+        <Card>
+          <div className="flex items-center gap-3 mb-6">
+            <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-sm">
+              <BookOpen className="h-6 w-6 text-white" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-gray-800">HRMS System Guide</h2>
+              <p className="text-sm text-gray-500">Complete guide to using the HRMS system</p>
+            </div>
+          </div>
+
+          <div className="space-y-8">
+            {/* Leave Management Section */}
+            <section className="border-l-4 border-blue-500 pl-6">
+              <div className="flex items-center gap-3 mb-4">
+                <Calendar className="h-5 w-5 text-blue-600" />
+                <h3 className="text-xl font-bold text-gray-800">Leave Management</h3>
+              </div>
+              <div className="space-y-3 text-gray-700">
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-blue-500 mt-1 flex-shrink-0" />
+                  <span><strong>Pending Requests:</strong> Review and approve/reject leave requests from employees. Add optional HR comments when approving or rejecting.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-blue-500 mt-1 flex-shrink-0" />
+                  <span><strong>Filter Leaves:</strong> Filter leave requests by status (All, Approved, Rejected, Pending), date, or month to find specific requests.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-blue-500 mt-1 flex-shrink-0" />
+                  <span><strong>Leave Categories:</strong> Handle Paid Leave, Unpaid Leave, Half Day Leave, and Extra Time Leave requests.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-blue-500 mt-1 flex-shrink-0" />
+                  <span><strong>View All Leaves:</strong> See all leave requests with their status, dates, and employee information in a comprehensive table.</span>
+                </p>
+              </div>
+            </section>
+
+            {/* Employee Management Section */}
+            <section className="border-l-4 border-purple-500 pl-6">
+              <div className="flex items-center gap-3 mb-4">
+                <Users className="h-5 w-5 text-purple-600" />
+                <h3 className="text-xl font-bold text-gray-800">Employee Management</h3>
+              </div>
+              <div className="space-y-3 text-gray-700">
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                  <span><strong>Create Employees:</strong> Add new employee accounts. Fill in name, username, email, department, and optional joining date. Employees receive temporary password: <code className="bg-gray-100 px-1 rounded">tempPassword123</code></span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                  <span><strong>View Employees:</strong> See all employees with their attendance statistics, leave balances, and performance metrics.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
+                  <span><strong>Paid Leave Allocation:</strong> Add paid leaves to employees. The number you enter will be added to their existing allocation.</span>
+                </p>
+              </div>
+            </section>
+
+            {/* Attendance Management Section */}
+            <section className="border-l-4 border-green-500 pl-6">
+              <div className="flex items-center gap-3 mb-4">
+                <Clock className="h-5 w-5 text-green-600" />
+                <h3 className="text-xl font-bold text-gray-800">Attendance Management</h3>
+              </div>
+              <div className="space-y-3 text-gray-700">
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-green-500 mt-1 flex-shrink-0" />
+                  <span><strong>Today's Attendance:</strong> View all employees' attendance for today, including check-in/check-out times and break durations.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-green-500 mt-1 flex-shrink-0" />
+                  <span><strong>Attendance Correction:</strong> Manually create or update attendance records for any employee. Enter check-in, check-out times, break duration, and notes.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-green-500 mt-1 flex-shrink-0" />
+                  <span><strong>Monthly Summary:</strong> View monthly attendance statistics for employees including present days, worked hours, and flags.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-green-500 mt-1 flex-shrink-0" />
+                  <span><strong>Performance Flags:</strong> Low time flag (less than 8h 15m) and extra time flag (more than 8h 30m) help track employee performance.</span>
+                </p>
+              </div>
+            </section>
+
+            {/* Company Holidays Section */}
+            <section className="border-l-4 border-orange-500 pl-6">
+              <div className="flex items-center gap-3 mb-4">
+                <Calendar className="h-5 w-5 text-orange-600" />
+                <h3 className="text-xl font-bold text-gray-800">Company Holidays</h3>
+              </div>
+              <div className="space-y-3 text-gray-700">
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-orange-500 mt-1 flex-shrink-0" />
+                  <span><strong>Add Holidays:</strong> Add company holidays that will be automatically marked for all employees. Holidays are shown in the attendance calendar.</span>
+                </p>
+                <p className="flex items-start gap-2">
+                  <ArrowRight className="h-4 w-4 text-orange-500 mt-1 flex-shrink-0" />
+                  <span><strong>Delete Holidays:</strong> Remove holidays if needed. This will update the attendance calendar for all employees.</span>
+                </p>
+              </div>
+            </section>
+
+            {/* Quick Tips */}
+            <section className="bg-gradient-to-r from-blue-50 to-indigo-50 p-6 rounded-xl border border-blue-100">
+              <div className="flex items-center gap-3 mb-4">
+                <HelpCircle className="h-5 w-5 text-blue-600" />
+                <h3 className="text-xl font-bold text-gray-800">Quick Tips</h3>
+              </div>
+              <ul className="space-y-2 text-gray-700">
+                <li className="flex items-start gap-2">
+                  <span className="text-blue-500 font-bold">•</span>
+                  <span>Always review leave requests carefully and add comments explaining your decision.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-blue-500 font-bold">•</span>
+                  <span>When creating employees, they will receive temporary password <code className="bg-white px-1 rounded">tempPassword123</code> and must change it on first login.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-blue-500 font-bold">•</span>
+                  <span>Paid leave allocation is cumulative - adding 5 to an employee with 10 remaining gives them 15 total.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-blue-500 font-bold">•</span>
+                  <span>Use attendance correction to fix any discrepancies in employee attendance records.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-blue-500 font-bold">•</span>
+                  <span>Filter leave requests by status, date, or month to quickly find what you're looking for.</span>
+                </li>
+              </ul>
+            </section>
+          </div>
+        </Card>
+      </section>
+
+      {/* Bond Details Modal */}
+      {bondModalUser && (() => {
+        const bondInfo = calculateBondRemaining(bondModalUser.bonds, bondModalUser.joiningDate);
+        if (!bondInfo.currentBond && bondInfo.totalRemaining.display === '-') {
+          return null;
+        }
+        
+        // Calculate total duration in months
+        const totalMonths = bondInfo.allBonds.reduce((sum, bond) => sum + bond.periodMonths, 0);
+        const totalYears = Math.floor(totalMonths / 12);
+        const remainingMonths = totalMonths % 12;
+        const totalDurationDisplay = totalYears > 0 
+          ? `${totalYears} year${totalYears > 1 ? 's' : ''} ${remainingMonths > 0 ? `${remainingMonths} month${remainingMonths > 1 ? 's' : ''}` : ''}`
+          : `${totalMonths} month${totalMonths > 1 ? 's' : ''}`;
+
+        return (
+          <>
+            <div
+              className="fixed inset-0 bg-black/50 z-50"
+              onClick={() => setBondModalUser(null)}
+            />
+            <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+              <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h3 className="text-2xl font-bold text-gray-900">Bond Details</h3>
+                    <p className="text-sm text-gray-500 mt-1">{bondModalUser.name}</p>
+                  </div>
+                  <button
+                    onClick={() => setBondModalUser(null)}
+                    className="text-gray-400 hover:text-gray-600 transition-colors"
+                  >
+                    <X size={24} />
+                  </button>
+                </div>
+                
+                <div className="space-y-6">
+                  {/* Joining Date */}
+                  {bondModalUser.joiningDate && (
+                    <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+                      <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-1">Joining Date</p>
+                      <p className="text-lg font-bold text-blue-900">{bondModalUser.joiningDate}</p>
+                    </div>
+                  )}
+
+                  {/* Total Duration */}
+                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                    <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Total Bond Duration</p>
+                    <p className="text-xl font-bold text-gray-900">{totalDurationDisplay}</p>
+                  </div>
+
+                  {/* All Bonds */}
+                  {bondInfo.allBonds.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">
+                        All Bonds ({bondInfo.allBonds.length})
+                      </p>
+                      <div className="space-y-3">
+                        {bondInfo.allBonds.map((bond, index) => (
+                          <div key={index} className="bg-white border-2 border-gray-200 rounded-lg p-4">
+                            <div className="flex items-start justify-between mb-2">
+                              <div>
+                                <p className="font-bold text-gray-900 text-lg">{bond.type}</p>
+                                <p className="text-sm text-gray-600 mt-1">
+                                  Period: {bond.periodMonths} month{bond.periodMonths > 1 ? 's' : ''}
+                                </p>
+                              </div>
+                              <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                                bond.remaining.isExpired 
+                                  ? 'bg-red-100 text-red-700' 
+                                  : bond.remaining.isActive 
+                                  ? 'bg-green-100 text-green-700'
+                                  : 'bg-gray-100 text-gray-700'
+                              }`}>
+                                {bond.remaining.isExpired ? 'Expired' : bond.remaining.isActive ? 'Active' : 'Future'}
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3 mt-3 text-sm">
+                              <div>
+                                <p className="text-xs text-gray-500">Start Date</p>
+                                <p className="font-semibold text-gray-800">{bond.startDate || bondModalUser.joiningDate || '-'}</p>
+                              </div>
+                              <div>
+                                <p className="text-xs text-gray-500">End Date</p>
+                                <p className="font-semibold text-gray-800">
+                                  {bond.endDate ? convertToDDMMYYYY(bond.endDate.toISOString().split('T')[0]) : '-'}
+                                </p>
+                              </div>
+                            </div>
+                            {bond.salary && bond.salary > 0 && (
+                              <div className="mt-3 pt-3 border-t border-gray-200">
+                                <p className="text-xs text-gray-500">{bond.type === 'Internship' ? 'Stipend' : 'Salary'}</p>
+                                <p className="font-semibold text-green-600">₹{bond.salary.toLocaleString('en-IN')}</p>
+                              </div>
+                            )}
+                            {bond.remaining.isActive && (
+                              <div className="mt-3 pt-3 border-t border-gray-200">
+                                <p className="text-xs text-gray-500">Remaining</p>
+                                <p className="font-semibold text-blue-600">{bond.remaining.display}</p>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* First Completion Date */}
+                  {bondInfo.firstCompletionDate && (
+                    <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
+                      <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-1">
+                        {bondInfo.firstCompletionBondType} Bond Completion Date
+                      </p>
+                      <p className="text-xl font-bold text-purple-900">
+                        {convertToDDMMYYYY(bondInfo.firstCompletionDate.toISOString().split('T')[0])}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Current Bond Remaining */}
+                  <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
+                    <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">
+                      {bondInfo.currentBond ? `${bondInfo.currentBond.type} Bond Remaining` : 'Total Remaining'}
+                    </p>
+                    <p className="text-xl font-bold text-emerald-900">{bondInfo.currentBondRemaining?.display || bondInfo.totalRemaining.display}</p>
+                  </div>
+
+                  {/* Current Salary/Stipend */}
+                  {bondInfo.currentSalary > 0 && (
+                    <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+                      <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-1">
+                        Current {bondInfo.currentBond?.type === 'Internship' ? 'Stipend' : 'Salary'}
+                      </p>
+                      <p className="text-xl font-bold text-green-900">₹{bondInfo.currentSalary.toLocaleString('en-IN')}</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-6 flex justify-end">
+                  <Button
+                    variant="primary"
+                    onClick={() => setBondModalUser(null)}
+                  >
+                    Close
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </>
+        );
+      })()}
+
+      {/* Edit User Modal - Same as AdminDashboard */}
+      {editingUser && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/50 z-50"
+            onClick={() => {
+              setEditingUser(null);
+              setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [] });
+            }}
+          />
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-2xl font-bold text-gray-900">Edit User: {editingUser.name}</h3>
+                <button
+                  onClick={() => {
+                    setEditingUser(null);
+                    setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [] });
+                  }}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+              
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                try {
+                  const updates: any = {
+                    name: editUserForm.name,
+                    email: editUserForm.email,
+                    department: editUserForm.department,
+                  };
+                  
+                  if (editUserForm.joiningDate) {
+                    updates.joiningDate = convertToDDMMYYYY(editUserForm.joiningDate);
+                  }
+                  
+                  if (editUserForm.bonds.length > 0) {
+                    updates.bonds = editUserForm.bonds.filter(b => {
+                      return b.periodMonths && parseInt(b.periodMonths) > 0;
+                    }).map((b, bondIndex, filteredBonds) => {
+                      const periodMonths = parseInt(b.periodMonths) || 0;
+                      
+                      // Calculate start date for each bond
+                      let bondStartDate: string;
+                      if (bondIndex === 0) {
+                        bondStartDate = editUserForm.joiningDate || '';
+                      } else {
+                        let previousEndDate: Date | null = null;
+                        for (let i = 0; i < bondIndex; i++) {
+                          const prevBond = filteredBonds[i];
+                          const prevPeriodMonths = parseInt(prevBond.periodMonths) || 0;
+                          const prevStart = i === 0 
+                            ? (parseDDMMYYYY(editUserForm.joiningDate) || new Date())
+                            : (previousEndDate || new Date());
+                          previousEndDate = new Date(prevStart);
+                          previousEndDate.setMonth(previousEndDate.getMonth() + prevPeriodMonths);
+                        }
+                        if (previousEndDate) {
+                          previousEndDate.setDate(previousEndDate.getDate() + 1);
+                          bondStartDate = convertToDDMMYYYY(previousEndDate.toISOString().split('T')[0]);
+                        } else {
+                          bondStartDate = editUserForm.joiningDate || '';
+                        }
+                      }
+                      
+                      return {
+                        type: b.type || 'Job',
+                        periodMonths: periodMonths,
+                        startDate: bondStartDate,
+                        salary: b.salary ? parseFloat(b.salary) : 0
+                      };
+                    });
+                  }
+                  
+                  await userAPI.updateUser(editingUser.id, updates);
+                  alert('User updated successfully!');
+                  setEditingUser(null);
+                  setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [] });
+                  await refreshData();
+                } catch (error: any) {
+                  alert(error.message || 'Failed to update user');
+                }
+              }} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Name</label>
+                  <input
+                    type="text"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.name}
+                    onChange={e => setEditUserForm({ ...editUserForm, name: e.target.value })}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Email</label>
+                  <input
+                    type="email"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.email}
+                    onChange={e => setEditUserForm({ ...editUserForm, email: e.target.value })}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Department</label>
+                  <input
+                    type="text"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.department}
+                    onChange={e => setEditUserForm({ ...editUserForm, department: e.target.value })}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Joining Date</label>
+                  <input
+                    type="date"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.joiningDate}
+                    onChange={e => setEditUserForm({ ...editUserForm, joiningDate: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-xs font-bold text-gray-600 uppercase">Bond Periods</label>
+                    <button
+                      type="button"
+                      onClick={() => setEditUserForm({
+                        ...editUserForm,
+                        bonds: [...editUserForm.bonds, { type: 'Internship', periodMonths: '', startDate: '', salary: '' }]
+                      })}
+                      className="text-xs text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+                    >
+                      <Plus size={14} /> Add Bond
+                    </button>
+                  </div>
+                  {editUserForm.bonds.length === 0 ? (
+                    <p className="text-xs text-gray-400 italic">No bonds added. Click "Add Bond" to add bond periods.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {editUserForm.bonds.map((bond, index) => (
+                        <div key={index} className="p-3 border border-gray-200 rounded-lg bg-gray-50 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-gray-700">Bond {index + 1}</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditUserForm({
+                                ...editUserForm,
+                                bonds: editUserForm.bonds.filter((_, i) => i !== index)
+                              })}
+                              className="text-red-500 hover:text-red-700"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-1">Type</label>
+                              <select
+                                className="w-full p-2 border border-gray-200 rounded text-xs"
+                                value={bond.type}
+                                onChange={e => {
+                                  const updated = [...editUserForm.bonds];
+                                  updated[index].type = e.target.value;
+                                  setEditUserForm({ ...editUserForm, bonds: updated });
+                                }}
+                              >
+                                <option value="Internship">Internship</option>
+                                <option value="Job">Job</option>
+                                <option value="Other">Other</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-1">Period (Months)</label>
+                              <input
+                                type="number"
+                                min="1"
+                                className="w-full p-2 border border-gray-200 rounded text-xs"
+                                value={bond.periodMonths}
+                                onChange={e => {
+                                  const updated = [...editUserForm.bonds];
+                                  updated[index].periodMonths = e.target.value;
+                                  setEditUserForm({ ...editUserForm, bonds: updated });
+                                }}
+                                placeholder="e.g., 6"
+                              />
+                            </div>
+                          </div>
+                          {editUserForm.joiningDate && (() => {
+                            let bondStartDate: Date;
+                            if (index === 0) {
+                              bondStartDate = parseDDMMYYYY(editUserForm.joiningDate) || new Date(editUserForm.joiningDate);
+                            } else {
+                              let previousEndDate: Date | null = null;
+                              for (let i = 0; i < index; i++) {
+                                const prevBond = editUserForm.bonds[i];
+                                if (prevBond.periodMonths && parseInt(prevBond.periodMonths) > 0) {
+                                  const prevStart = i === 0 
+                                    ? (parseDDMMYYYY(editUserForm.joiningDate) || new Date(editUserForm.joiningDate))
+                                    : previousEndDate || new Date(editUserForm.joiningDate);
+                                  previousEndDate = new Date(prevStart);
+                                  previousEndDate.setMonth(previousEndDate.getMonth() + parseInt(prevBond.periodMonths));
+                                }
+                              }
+                              if (previousEndDate) {
+                                bondStartDate = new Date(previousEndDate);
+                                bondStartDate.setDate(bondStartDate.getDate() + 1);
+                              } else {
+                                bondStartDate = parseDDMMYYYY(editUserForm.joiningDate) || new Date(editUserForm.joiningDate);
+                              }
+                            }
+                            
+                            return (
+                              <div>
+                                <p className="text-xs text-gray-500 mb-1">
+                                  Start Date: {convertToDDMMYYYY(bondStartDate.toISOString().split('T')[0])}
+                                  {index === 0 && ' (Joining Date)'}
+                                  {index > 0 && ' (Previous bond end + 1 day)'}
+                                </p>
+                                {bond.periodMonths && parseInt(bond.periodMonths) > 0 && (() => {
+                                  const periodMonths = parseInt(bond.periodMonths);
+                                  const endDate = new Date(bondStartDate);
+                                  endDate.setMonth(endDate.getMonth() + periodMonths);
+                                  
+                                  const today = new Date();
+                                  today.setHours(0, 0, 0, 0);
+                                  endDate.setHours(0, 0, 0, 0);
+                                  
+                                  if (endDate >= today) {
+                                    const diffTime = endDate.getTime() - today.getTime();
+                                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                                    const months = Math.floor(diffDays / 30);
+                                    const days = diffDays % 30;
+                                    
+                                    let display = '';
+                                    if (months > 0 && days > 0) {
+                                      display = `${months} month${months > 1 ? 's' : ''} ${days} day${days > 1 ? 's' : ''}`;
+                                    } else if (months > 0) {
+                                      display = `${months} month${months > 1 ? 's' : ''}`;
+                                    } else {
+                                      display = `${days} day${days > 1 ? 's' : ''}`;
+                                    }
+                                    
+                                    return (
+                                      <div className="mt-2">
+                                        <p className="text-xs text-gray-500 mb-1">End Date: {convertToDDMMYYYY(endDate.toISOString().split('T')[0])}</p>
+                                        <p className="text-xs text-blue-600 font-semibold">
+                                          Remaining: {display}
+                                        </p>
+                                      </div>
+                                    );
+                                  } else {
+                                    const diffTime = today.getTime() - endDate.getTime();
+                                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                                    return (
+                                      <div className="mt-2">
+                                        <p className="text-xs text-gray-500 mb-1">End Date: {convertToDDMMYYYY(endDate.toISOString().split('T')[0])}</p>
+                                        <p className="text-xs text-red-600 font-semibold">
+                                          Expired {diffDays} day{diffDays > 1 ? 's' : ''} ago
+                                        </p>
+                                      </div>
+                                    );
+                                  }
+                                })()}
+                              </div>
+                            );
+                          })()}
+                          {!editUserForm.joiningDate && (
+                            <p className="text-xs text-gray-500 mb-1">Start Date: Set joining date first</p>
+                          )}
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">
+                              {bond.type === 'Internship' ? 'Stipend' : bond.type === 'Job' ? 'Salary' : 'Amount'} (₹)
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              className="w-full p-2 border border-gray-200 rounded text-xs"
+                              value={bond.salary || ''}
+                              onChange={e => {
+                                const updated = [...editUserForm.bonds];
+                                updated[index].salary = e.target.value;
+                                setEditUserForm({ ...editUserForm, bonds: updated });
+                              }}
+                              placeholder={bond.type === 'Internship' ? 'e.g., 10000' : 'e.g., 25000'}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-400 mt-2">Add multiple bonds (e.g., 6 months internship + 1 year job)</p>
+                </div>
+                <div className="flex gap-3 justify-end mt-6">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      setEditingUser(null);
+                      setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [] });
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" variant="primary">
+                    Update User
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 };
