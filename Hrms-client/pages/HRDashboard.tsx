@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { LeaveStatus, Role, LeaveCategory } from '../types';
+import { LeaveStatus, Role, LeaveCategory, User } from '../types';
 import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY } from '../services/utils';
 import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2 } from 'lucide-react';
 import { attendanceAPI, holidayAPI, userAPI } from '../services/api';
@@ -2276,7 +2276,7 @@ export const HRDashboard: React.FC = () => {
         }
 
         // Calculate total duration in months
-        const totalMonths = bondInfo.allBonds.reduce((sum, bond) => sum + bond.periodMonths, 0);
+        const totalMonths = bondInfo.allBonds.map(b => b.periodMonths || 0).reduce((sum, current) => sum + current, 0);
         const totalYears = Math.floor(totalMonths / 12);
         const remainingMonths = totalMonths % 12;
         const totalDurationDisplay = totalYears > 0

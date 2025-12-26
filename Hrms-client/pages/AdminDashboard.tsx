@@ -1201,7 +1201,6 @@ export const AdminDashboard: React.FC = () => {
                     username: newUser.username,
                     email: newUser.email,
                     department: newUser.department,
-                    department: newUser.department,
                     role: newUser.role,
                     aadhaarNumber: newUser.aadhaarNumber,
                     guardianName: newUser.guardianName,
@@ -2403,7 +2402,7 @@ export const AdminDashboard: React.FC = () => {
         }
 
         // Calculate total duration in months
-        const totalMonths = bondInfo.allBonds.reduce((sum, bond) => sum + bond.periodMonths, 0);
+        const totalMonths = bondInfo.allBonds.map(b => b.periodMonths).reduce((sum, months) => sum + months, 0);
         const totalYears = Math.floor(totalMonths / 12);
         const remainingMonths = totalMonths % 12;
         const totalDurationDisplay = totalYears > 0
