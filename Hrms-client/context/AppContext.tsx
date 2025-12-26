@@ -30,7 +30,7 @@ interface AppContextType {
   requestLeave: (req: Omit<LeaveRequest, 'id' | 'userId' | 'userName' | 'status' | 'createdAt'>) => Promise<void>;
   updateLeaveStatus: (id: string, status: LeaveStatus, comment?: string) => Promise<void>;
   createUser: (user: Omit<User, 'id' | 'password' | 'isFirstLogin'>) => Promise<void>;
-  updateUser: (id: string, updates: { paidLeaveAllocation?: number | null }) => Promise<void>;
+  updateUser: (id: string, updates: { paidLeaveAllocation?: number | null; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string }) => Promise<void>;
 
   // Admin/HR Actions
   adminUpdateAttendance: (recordId: string, updates: Partial<Attendance>, breakDurationMinutes?: number) => Promise<void>;
@@ -64,7 +64,10 @@ const transformUser = (apiUser: any): User => ({
     startDate: b.startDate || '',
     order: b.order || 1,
     salary: b.salary || 0
-  })) : undefined
+  })) : undefined,
+  aadhaarNumber: apiUser.aadhaarNumber || undefined,
+  guardianName: apiUser.guardianName || undefined,
+  mobileNumber: apiUser.mobileNumber || undefined
 });
 
 // Helper to transform API attendance to frontend Attendance type
@@ -425,7 +428,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const updateUser = async (id: string, updates: { paidLeaveAllocation?: number | null }): Promise<void> => {
+  const updateUser = async (id: string, updates: { paidLeaveAllocation?: number | null; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string }): Promise<void> => {
     try {
       const { user } = await api.userAPI.updateUser(id, updates) as any;
       const transformedUser = transformUser(user);

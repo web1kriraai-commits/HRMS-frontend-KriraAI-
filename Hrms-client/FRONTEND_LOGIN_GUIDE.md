@@ -160,7 +160,7 @@ http://localhost:3001
 **Solutions:**
 1. Verify username is correct (case-sensitive)
 2. Check password is correct
-3. Ensure backend server is running on `http://localhost:5001`
+3. Ensure backend server is running on `http://82.112.226.75:5001`
 4. Check browser console for errors (F12)
 
 ### Issue: Can't Access Login Page
@@ -174,10 +174,10 @@ http://localhost:3001
 ### Issue: Stuck on Login Page
 
 **Solutions:**
-1. Check backend API is accessible: `http://localhost:5001/health`
+1. Check backend API is accessible: `http://82.112.226.75:5001/health`
 2. Verify API URL in `.env` file:
    ```
-   VITE_API_URL=http://localhost:5001/api
+   VITE_API_URL=http://82.112.226.75:5001/api
    ```
 3. Check browser Network tab (F12) for API errors
 4. Restart both frontend and backend servers
@@ -203,10 +203,10 @@ The frontend uses the API URL from environment variable:
 
 **File:** `Hrms-client/.env` (create if doesn't exist)
 ```
-VITE_API_URL=http://localhost:5001/api
+VITE_API_URL=http://82.112.226.75:5001/api
 ```
 
-**Default:** If not set, defaults to `http://localhost:5001/api`
+**Default:** If not set, defaults to `http://82.112.226.75:5001/api`
 
 ---
 
@@ -224,7 +224,7 @@ VITE_API_URL=http://localhost:5001/api
 
 ## Quick Start Checklist
 
-- [ ] Backend server running on `http://localhost:5001`
+- [ ] Backend server running on `http://82.112.226.75:5001`
 - [ ] Frontend server running on `http://localhost:3001`
 - [ ] Database connected (check backend console)
 - [ ] Users exist in database (run `npm run init-db` in backend)
@@ -251,7 +251,7 @@ localStorage.getItem('token')
 
 ```bash
 # Test login endpoint
-curl -X POST http://localhost:5001/api/auth/login \
+curl -X POST http://82.112.226.75:5001/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"pass"}'
 ```

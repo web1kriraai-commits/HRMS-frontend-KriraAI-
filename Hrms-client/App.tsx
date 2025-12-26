@@ -7,6 +7,7 @@ import { HRDashboard } from './pages/HRDashboard';
 import { AdminDashboard } from './pages/AdminDashboard';
 import { TodayAttendance } from './pages/TodayAttendance';
 import { Holidays } from './pages/Holidays';
+import { Profile } from './pages/Profile';
 import { Sidebar } from './components/Sidebar';
 import { Role } from './types';
 
@@ -31,15 +32,15 @@ const PrivateRoute: React.FC<{ children: React.ReactNode; roles?: Role[] }> = ({
 
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { auth } = useApp();
-  if(!auth.isAuthenticated) return <>{children}</>;
+  if (!auth.isAuthenticated) return <>{children}</>;
 
   return (
     <div className="flex min-h-screen bg-slate-50">
       <Sidebar />
       <main className="ml-64 flex-1 p-8 overflow-y-auto h-screen">
-         <div className="max-w-6xl mx-auto">
-           {children}
-         </div>
+        <div className="max-w-6xl mx-auto">
+          {children}
+        </div>
       </main>
     </div>
   );
@@ -58,11 +59,19 @@ const AppRoutes = () => {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      
+
       <Route path="/" element={
         <PrivateRoute>
           <AppLayout>
             <HomeDashboard />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/profile" element={
+        <PrivateRoute>
+          <AppLayout>
+            <Profile />
           </AppLayout>
         </PrivateRoute>
       } />

@@ -2,7 +2,7 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Role } from '../types';
-import { LayoutDashboard, Users, Settings, LogOut, CheckSquare, Calendar, CalendarDays } from 'lucide-react';
+import { LayoutDashboard, Users, Settings, LogOut, CheckSquare, Calendar, CalendarDays, UserCircle } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
   const { auth, logout } = useApp();
@@ -19,24 +19,29 @@ export const Sidebar: React.FC = () => {
 
       <div className="flex-1 py-6 px-3 space-y-1">
         <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Menu</p>
-        
-        <NavLink to="/" className={({isActive}) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+
+        <NavLink to="/" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
           <LayoutDashboard size={18} />
           Dashboard
         </NavLink>
 
-        <NavLink to="/holidays" className={({isActive}) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+        <NavLink to="/profile" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+          <UserCircle size={18} />
+          Profile
+        </NavLink>
+
+        <NavLink to="/holidays" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
           <CalendarDays size={18} />
           Holidays
         </NavLink>
 
         {user.role !== Role.EMPLOYEE && (
           <>
-             <NavLink to="/hr-approvals" className={({isActive}) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+            <NavLink to="/hr-approvals" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
               <CheckSquare size={18} />
               Approvals
             </NavLink>
-            <NavLink to="/hr-today" className={({isActive}) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+            <NavLink to="/hr-today" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
               <Calendar size={18} />
               Today
             </NavLink>

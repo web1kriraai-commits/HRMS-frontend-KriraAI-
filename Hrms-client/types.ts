@@ -37,6 +37,9 @@ export interface User {
   paidLeaveLastAllocatedDate?: string; // ISO string - Last date when paid leave was allocated
   joiningDate?: string; // dd-mm-yyyy format - Employee joining date
   bonds?: Bond[]; // Array of bonds
+  aadhaarNumber?: string; // Aadhaar card number
+  guardianName?: string; // Guardian/emergency contact name
+  mobileNumber?: string; // Mobile/phone number
 }
 
 export interface Bond {
@@ -91,7 +94,7 @@ export interface AuditLog {
   id: string;
   actorId: string;
   actorName: string;
-  action: string; 
+  action: string;
   targetType: string; // 'USER', 'ATTENDANCE', 'LEAVE', 'SYSTEM'
   targetId: string;
   beforeData?: string; // JSON string
