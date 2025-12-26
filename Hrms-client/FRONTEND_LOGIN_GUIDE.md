@@ -10,7 +10,7 @@ npm install
 npm run dev
 ```
 
-The frontend will run on: `http://localhost:3001` (or the port shown in terminal)
+The frontend will run on: `http://localhost:3002` (or the port shown in terminal)
 
 ---
 
@@ -18,12 +18,12 @@ The frontend will run on: `http://localhost:3001` (or the port shown in terminal
 
 Open your browser and go to:
 ```
-http://localhost:3001/#/login
+http://localhost:3002/#/login
 ```
 
 Or simply:
 ```
-http://localhost:3001
+http://localhost:3002
 ```
 (It will redirect to login if not authenticated)
 
@@ -127,7 +127,7 @@ http://localhost:3001
 
 ### Scenario 1: Regular Login (Existing User)
 
-1. **Open:** `http://localhost:3001/#/login`
+1. **Open:** `http://localhost:3002/#/login`
 2. **Enter:**
    - Username: `admin`
    - Password: `pass`
@@ -136,7 +136,7 @@ http://localhost:3001
 
 ### Scenario 2: First Login (New User)
 
-1. **Open:** `http://localhost:3001/#/login`
+1. **Open:** `http://localhost:3002/#/login`
 2. **Enter:**
    - Username: `admin`
    - Password: `tempPassword123`
@@ -167,7 +167,7 @@ http://localhost:3001
 
 **Solutions:**
 1. Check frontend server is running
-2. Verify URL: `http://localhost:3001/#/login`
+2. Verify URL: `http://localhost:3002/#/login`
 3. Clear browser cache
 4. Check browser console for errors
 
@@ -225,7 +225,7 @@ VITE_API_URL=http://82.112.226.75:5001/api
 ## Quick Start Checklist
 
 - [ ] Backend server running on `http://82.112.226.75:5001`
-- [ ] Frontend server running on `http://localhost:3001`
+- [ ] Frontend server running on `http://localhost:3002`
 - [ ] Database connected (check backend console)
 - [ ] Users exist in database (run `npm run init-db` in backend)
 - [ ] API URL configured in `.env` (optional)
