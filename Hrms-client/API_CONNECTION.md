@@ -77,10 +77,10 @@ The frontend has been fully connected to the backend API. All mock data has been
 ### Environment Variables
 Create a `.env` file in `Hrms-client` directory:
 ```
-VITE_API_URL=http://82.112.226.75:5001/api
+VITE_API_URL=http://localhost:5001/api
 ```
 
-If not set, it defaults to `http://82.112.226.75:5001/api`.
+If not set, it defaults to `http://localhost:5001/api`.
 
 ## How It Works
 

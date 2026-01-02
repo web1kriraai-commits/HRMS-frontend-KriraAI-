@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://82.112.226.75:5001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
 
 // Helper to get auth token
 const getToken = (): string | null => {
@@ -112,6 +112,30 @@ export const authAPI = {
       method: 'POST',
       body: JSON.stringify({ email, otp }),
     });
+  },
+
+  sendAdminLoginOTP: async (email: string) => {
+    return apiRequest<{ message: string }>('/auth/admin-login/send-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+  },
+
+  verifyAdminLoginOTP: async (email: string, otp: string) => {
+    const data = await apiRequest<{
+      token: string;
+      user: any;
+    }>('/auth/admin-login/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email, otp }),
+    });
+    if (data.token) {
+      setToken(data.token);
+    }
+    if (data.user) {
+      saveUser(data.user);
+    }
+    return data;
   },
 };
 
@@ -234,10 +258,23 @@ export const userAPI = {
   updateUser: async (id: string, updates: {
     paidLeaveAllocation?: number | null;
     joiningDate?: string;
-    bonds?: Array<{ type: string; periodMonths: number; startDate: string }>;
+    bonds?: Array<{ type: string; periodMonths: number; startDate: string; salary?: number }>;
     name?: string;
     email?: string;
     department?: string;
+    aadhaarNumber?: string;
+    guardianName?: string;
+    mobileNumber?: string;
+    password?: string;
+    salaryBreakdown?: Array<{
+      month: number;
+      year: number;
+      amount: number;
+      bondType: string;
+      startDate: string;
+      endDate: string;
+      isPartialMonth: boolean;
+    }>;
   }) => {
     return apiRequest(`/users/${id}`, {
       method: 'PUT',
@@ -259,6 +296,13 @@ export const userAPI = {
 
   getEmployeeStats: async () => {
     return apiRequest('/users/stats/employees');
+  },
+
+  markSalaryAsPaid: async (userId: string, month: number, year: number, isPaid: boolean) => {
+    return apiRequest(`/users/${userId}/salary/${month}/${year}/payment`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isPaid }),
+    });
   },
 };
 

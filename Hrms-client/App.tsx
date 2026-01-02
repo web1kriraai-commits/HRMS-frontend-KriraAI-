@@ -20,11 +20,11 @@ const PrivateRoute: React.FC<{ children: React.ReactNode; roles?: Role[] }> = ({
   }
 
   if (!auth.isAuthenticated || !auth.user) {
-    return <Navigate to="/login" />;
+    return <Navigate to="/login" replace />;
   }
 
   if (roles && !roles.includes(auth.user.role)) {
-    return <Navigate to="/" />; // Redirect to home if not authorized
+    return <Navigate to="/" replace />; // Redirect to home if not authorized
   }
 
   return <>{children}</>;
@@ -108,7 +108,7 @@ const AppRoutes = () => {
         </PrivateRoute>
       } />
 
-      <Route path="*" element={<Navigate to="/" />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 };

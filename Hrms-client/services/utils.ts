@@ -55,9 +55,25 @@ export const formatDuration = (seconds: number): string => {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 };
 
-export const formatDate = (dateStr: string): string => {
+export const formatDate = (dateStr: string | Date): string => {
   if (!dateStr) return '';
-  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  let date: Date;
+
+  if (dateStr instanceof Date) {
+    date = dateStr;
+  } else if (typeof dateStr === 'string' && /^\d{1,2}-\d{1,2}-\d{4}$/.test(dateStr)) {
+    // Check for dd-mm-yyyy format
+    const [day, month, year] = dateStr.split('-').map(Number);
+    date = new Date(year, month - 1, day);
+  } else {
+    // Try standard parsing
+    date = new Date(dateStr);
+  }
+
+  if (isNaN(date.getTime())) return 'Invalid Date';
+
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
 // BR6: Display timestamps in company timezone

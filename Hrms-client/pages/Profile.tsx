@@ -22,8 +22,25 @@ export const Profile: React.FC = () => {
     const currentBond = bondInfo?.currentBond;
     const allBonds = user.bonds || [];
 
-    // Get current salary from active bond
-    const currentSalary = currentBond?.salary || 0;
+    // Get current month's salary from salaryBreakdown
+    const currentDate = new Date();
+    const currentMonth = currentDate.getMonth() + 1;
+    const currentYear = currentDate.getFullYear();
+
+    const currentSalaryEntry = user.salaryBreakdown?.find(
+        (entry: any) => entry.month === currentMonth && entry.year === currentYear
+    );
+    const currentSalary = currentSalaryEntry?.amount || 0;
+
+    // Get actual joining date from first salary breakdown entry
+    const actualJoiningDate = user.salaryBreakdown && user.salaryBreakdown.length > 0
+        ? user.salaryBreakdown[0].startDate
+        : user.joiningDate;
+
+    // Get actual bond end date from last salary breakdown entry
+    const actualBondEndDate = user.salaryBreakdown && user.salaryBreakdown.length > 0
+        ? user.salaryBreakdown[user.salaryBreakdown.length - 1].endDate
+        : null;
 
     return (
         <div className="space-y-6 animate-fade-in">
@@ -71,7 +88,7 @@ export const Profile: React.FC = () => {
                         <div>
                             <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Joining Date</p>
                             <p className="text-base font-medium text-gray-900 mt-1">
-                                {user.joiningDate ? formatDate(user.joiningDate) : 'N/A'}
+                                {actualJoiningDate ? formatDate(actualJoiningDate) : 'N/A'}
                             </p>
                         </div>
                     </div>
@@ -111,18 +128,30 @@ export const Profile: React.FC = () => {
                             </p>
                         </div>
                     </div>
+
+                    <div className="flex items-start gap-3">
+                        <div className="h-10 w-10 rounded-lg bg-pink-100 flex items-center justify-center flex-shrink-0">
+                            <Phone className="text-pink-600" size={20} />
+                        </div>
+                        <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Guardian Mobile Number</p>
+                            <p className={`text-base font-medium mt-1 ${user.guardianMobileNumber ? 'text-gray-900' : 'text-gray-400 italic'}`}>
+                                {user.guardianMobileNumber || 'Not Provided'}
+                            </p>
+                        </div>
+                    </div>
                 </div>
             </Card>
 
             {/* Salary Information Card */}
             <Card title="Salary Information">
-                <div className="flex items-center justify-between p-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-100">
+                <div className="flex items-center justify-between p-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-100 mb-4">
                     <div className="flex items-center gap-4">
                         <div className="h-12 w-12 rounded-full bg-blue-100 flex items-center justify-center">
                             <DollarSign className="text-blue-600" size={24} />
                         </div>
                         <div>
-                            <p className="text-sm text-gray-600 font-medium">Current Salary</p>
+                            <p className="text-sm text-gray-600 font-medium">Current Month Salary ({new Date().toLocaleString('default', { month: 'long', year: 'numeric' })})</p>
                             <p className="text-2xl font-bold text-gray-900 mt-1">
                                 {showSalary ? (
                                     `₹${currentSalary.toLocaleString('en-IN')}`
@@ -148,6 +177,108 @@ export const Profile: React.FC = () => {
                         )}
                     </button>
                 </div>
+
+                {/* Monthly Salary Breakdown */}
+                {user.salaryBreakdown && user.salaryBreakdown.length > 0 && (
+                    <div className="mt-4">
+                        <h4 className="font-semibold text-gray-700 mb-3 text-sm">Monthly Salary Breakdown</h4>
+                        <div className="max-h-96 overflow-y-auto border border-gray-200 rounded-lg">
+                            <table className="w-full text-xs">
+                                <thead className="bg-gray-50 sticky top-0">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left font-bold text-gray-600">#</th>
+                                        <th className="px-4 py-3 text-left font-bold text-gray-600">Period</th>
+                                        <th className="px-4 py-3 text-left font-bold text-gray-600">Type</th>
+                                        <th className="px-4 py-3 text-left font-bold text-gray-600">Salary (₹)</th>
+                                        <th className="px-4 py-3 text-left font-bold text-gray-600">Status</th>
+                                        <th className="px-4 py-3 text-left font-bold text-gray-600">Payment Info</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                    {user.salaryBreakdown.map((item: any, index: number) => {
+                                        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                                        const monthName = monthNames[item.month - 1] || '';
+                                        const displayLabel = item.isPartialMonth
+                                            ? `${monthName} ${item.startDate.split('-')[0]}-${item.endDate.split('-')[0]}, ${item.year}`
+                                            : `${monthName} ${item.year}`;
+                                        const isCurrent = item.month === currentMonth && item.year === currentYear;
+                                        const isPaid = item.isPaid || false;
+
+                                        return (
+                                            <tr key={index} className={`${isPaid ? 'bg-green-50' :
+                                                item.isPartialMonth ? 'bg-orange-50' :
+                                                    isCurrent ? 'bg-blue-50' : 'hover:bg-gray-50'
+                                                }`}>
+                                                <td className="px-4 py-3 text-gray-700 font-semibold">{index + 1}</td>
+                                                <td className="px-4 py-3">
+                                                    <div className="text-gray-800 font-medium">{displayLabel}</div>
+                                                    <div className="text-gray-500 text-xs">{item.startDate} to {item.endDate}</div>
+                                                    {item.isPartialMonth && (
+                                                        <div className="text-orange-600 text-xs font-semibold mt-1">
+                                                            Partial month
+                                                        </div>
+                                                    )}
+                                                    {isCurrent && (
+                                                        <div className="text-blue-600 text-xs font-semibold mt-1">
+                                                            Current month
+                                                        </div>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className={`px-2 py-1 rounded text-xs font-semibold ${item.bondType === 'Internship' ? 'bg-blue-100 text-blue-700' :
+                                                        item.bondType === 'Job' ? 'bg-green-100 text-green-700' :
+                                                            'bg-gray-100 text-gray-700'
+                                                        }`}>
+                                                        {item.bondType}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className="text-gray-800 font-semibold">
+                                                        {showSalary ? (
+                                                            `₹${item.amount.toLocaleString('en-IN')}`
+                                                        ) : (
+                                                            <span className="tracking-wider">••••••</span>
+                                                        )}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    {isPaid ? (
+                                                        <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-semibold inline-flex items-center gap-1">
+                                                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                                            </svg>
+                                                            Paid
+                                                        </span>
+                                                    ) : (
+                                                        <span className="px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs font-semibold">
+                                                            Unpaid
+                                                        </span>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    {isPaid && item.paidAt ? (
+                                                        <div className="text-xs">
+                                                            <div className="text-gray-700 font-medium">
+                                                                {new Date(item.paidAt).toLocaleDateString('en-IN', {
+                                                                    day: '2-digit',
+                                                                    month: 'short',
+                                                                    year: 'numeric'
+                                                                })}
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-gray-400 text-xs">-</span>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                )}
+
                 <p className="text-xs text-gray-500 mt-3 italic">
                     💡 Hold the eye button to view your salary
                 </p>
@@ -201,7 +332,9 @@ export const Profile: React.FC = () => {
                                                     <div>
                                                         <p className="text-xs text-gray-500 font-semibold">End Date</p>
                                                         <p className="text-sm font-medium text-gray-900 mt-0.5">
-                                                            {bondInfo?.currentBond?.endDate ? formatDate(bondInfo.currentBond.endDate) : 'N/A'}
+                                                            {index === allBonds.length - 1 && actualBondEndDate
+                                                                ? formatDate(actualBondEndDate)
+                                                                : bond.endDate ? formatDate(bond.endDate) : 'N/A'}
                                                         </p>
                                                     </div>
                                                 </div>

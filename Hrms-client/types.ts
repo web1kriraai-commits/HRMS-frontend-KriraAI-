@@ -40,6 +40,18 @@ export interface User {
   aadhaarNumber?: string; // Aadhaar card number
   guardianName?: string; // Guardian/emergency contact name
   mobileNumber?: string; // Mobile/phone number
+  salaryBreakdown?: Array<{
+    month: number; // 1-12
+    year: number;
+    amount: number;
+    bondType: 'Internship' | 'Job' | 'Other';
+    startDate: string; // dd-mm-yyyy format
+    endDate: string; // dd-mm-yyyy format
+    isPartialMonth: boolean;
+    isPaid?: boolean; // Payment status
+    paidAt?: string; // ISO string - when it was marked as paid
+    paidBy?: string; // Name of admin/HR who marked it as paid
+  }>;
 }
 
 export interface Bond {

@@ -6,6 +6,7 @@ import * as api from '../services/api';
 interface AppContextType {
   auth: AuthState;
   login: (username: string, password?: string) => Promise<'success' | 'fail' | 'change_password'>;
+  manualLogin: (user: any) => void;
   logout: () => void;
   changePassword: (newPass: string) => Promise<void>;
 
@@ -67,7 +68,19 @@ const transformUser = (apiUser: any): User => ({
   })) : undefined,
   aadhaarNumber: apiUser.aadhaarNumber || undefined,
   guardianName: apiUser.guardianName || undefined,
-  mobileNumber: apiUser.mobileNumber || undefined
+  mobileNumber: apiUser.mobileNumber || undefined,
+  salaryBreakdown: apiUser.salaryBreakdown && Array.isArray(apiUser.salaryBreakdown) ? apiUser.salaryBreakdown.map((s: any) => ({
+    month: s.month,
+    year: s.year,
+    amount: s.amount || 0,
+    bondType: s.bondType,
+    startDate: s.startDate,
+    endDate: s.endDate,
+    isPartialMonth: s.isPartialMonth || false,
+    isPaid: s.isPaid || false,
+    paidAt: s.paidAt,
+    paidBy: s.paidBy
+  })) : undefined
 });
 
 // Helper to transform API attendance to frontend Attendance type
@@ -320,6 +333,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const manualLogin = (userData: any) => {
+    const transformed = transformUser(userData);
+    setAuth({
+      user: transformed,
+      isAuthenticated: true,
+      requiresPasswordChange: false
+    });
+    // Trigger refresh to load all data
+    setTimeout(refreshData, 100);
+  };
+
   const logout = () => {
     api.authAPI.logout();
     setAuth({ user: null, isAuthenticated: false, requiresPasswordChange: false });
@@ -510,6 +534,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     <AppContext.Provider value={{
       auth,
       login,
+      manualLogin,
       logout,
       changePassword,
       users,
