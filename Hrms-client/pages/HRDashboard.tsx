@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { LeaveStatus, Role, LeaveCategory, User } from '../types';
 import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY } from '../services/utils';
-import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2 } from 'lucide-react';
+import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
+import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2, Key } from 'lucide-react';
 import { attendanceAPI, holidayAPI, userAPI } from '../services/api';
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
@@ -35,8 +36,20 @@ export const HRDashboard: React.FC = () => {
     bonds: [] as Array<{ type: string; periodMonths: string; startDate: string; salary: string }>,
     aadhaarNumber: '',
     guardianName: '',
-    mobileNumber: ''
+    mobileNumber: '',
+    guardianMobileNumber: ''
   });
+  const [salaryBreakdownRows, setSalaryBreakdownRows] = useState<SalaryBreakdownRow[]>([]);
+  const [salaryBreakdownData, setSalaryBreakdownData] = useState<{ [key: string]: number }>({});
+  const [editSalaryBreakdownRows, setEditSalaryBreakdownRows] = useState<SalaryBreakdownRow[]>([]);
+  const [editSalaryBreakdownData, setEditSalaryBreakdownData] = useState<{ [key: string]: number }>({});
+  const [isCreateUserModalOpen, setIsCreateUserModalOpen] = useState(false);
+  const [resetPasswordModalOpen, setResetPasswordModalOpen] = useState(false);
+  const [selectedUserForReset, setSelectedUserForReset] = useState<User | null>(null);
+  const [newEmployeePassword, setNewEmployeePassword] = useState('');
+
+  // Calculate salary breakdown when joining date or bonds change
+
   const [correction, setCorrection] = useState({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '' });
   const [paidLeaveAllocation, setPaidLeaveAllocation] = useState({ userId: '', allocation: '' });
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
@@ -64,8 +77,92 @@ export const HRDashboard: React.FC = () => {
     bonds: [] as Array<{ type: string; periodMonths: string; startDate: string; salary: string }>,
     aadhaarNumber: '',
     guardianName: '',
-    mobileNumber: ''
+    mobileNumber: '',
+    guardianMobileNumber: ''
   });
+
+  // Calculate salary breakdown when joining date or bonds change
+  useEffect(() => {
+    if (newUser.joiningDate && newUser.bonds.length > 0) {
+      const bonds = newUser.bonds
+        .filter(b => b.periodMonths && parseInt(b.periodMonths) > 0)
+        .map(b => ({
+          type: b.type,
+          periodMonths: parseInt(b.periodMonths),
+          salary: parseFloat(b.salary) || 0
+        }));
+
+      if (bonds.length > 0) {
+        const rows = calculateSalaryBreakdown(newUser.joiningDate, bonds);
+        setSalaryBreakdownRows(rows);
+
+        // Preserve existing custom salary values, only initialize new months
+        setSalaryBreakdownData(prev => {
+          const updatedData: { [key: string]: number } = { ...prev };
+          rows.forEach((row) => {
+            const key = `${row.month}-${row.year}`;
+            // Only set default value if this month doesn't exist yet
+            if (updatedData[key] === undefined) {
+              updatedData[key] = row.salary;
+            }
+          });
+          return updatedData;
+        });
+      } else {
+        setSalaryBreakdownRows([]);
+        setSalaryBreakdownData({});
+      }
+    } else {
+      setSalaryBreakdownRows([]);
+      setSalaryBreakdownData({});
+    }
+  }, [newUser.joiningDate, newUser.bonds]);
+
+  // Calculate salary breakdown for edit form
+  useEffect(() => {
+    if (editUserForm.joiningDate && editUserForm.bonds.length > 0) {
+      const bonds = editUserForm.bonds
+        .filter(b => b.periodMonths && parseInt(b.periodMonths) > 0)
+        .map(b => ({
+          type: b.type,
+          periodMonths: parseInt(b.periodMonths),
+          salary: parseFloat(b.salary) || 0
+        }));
+
+      if (bonds.length > 0) {
+        const rows = calculateSalaryBreakdown(editUserForm.joiningDate, bonds);
+        setEditSalaryBreakdownRows(rows);
+
+        // Load existing salary data from editingUser if available
+        if (editingUser && editingUser.salaryBreakdown && editingUser.salaryBreakdown.length > 0) {
+          const existingData: { [key: string]: number } = {};
+          editingUser.salaryBreakdown.forEach((item: any) => {
+            existingData[`${item.month}-${item.year}`] = item.amount || 0;
+          });
+          setEditSalaryBreakdownData(existingData);
+        } else {
+          // Preserve existing custom values, only initialize new months
+          setEditSalaryBreakdownData(prev => {
+            const updatedData: { [key: string]: number } = { ...prev };
+            rows.forEach((row) => {
+              const key = `${row.month}-${row.year}`;
+              // Only set default value if this month doesn't exist yet
+              if (updatedData[key] === undefined) {
+                updatedData[key] = row.salary;
+              }
+            });
+            return updatedData;
+          });
+        }
+      } else {
+        setEditSalaryBreakdownRows([]);
+        setEditSalaryBreakdownData({});
+      }
+    } else {
+      setEditSalaryBreakdownRows([]);
+      setEditSalaryBreakdownData({});
+    }
+  }, [editUserForm.joiningDate, editUserForm.bonds, editingUser]);
 
   // Helper to calculate break seconds from breaks array
   const getBreakSeconds = (breaks: any[]) => {
@@ -431,7 +528,13 @@ export const HRDashboard: React.FC = () => {
               startDate: bondStartDate,
               salary: b.salary ? parseFloat(b.salary) : 0
             };
-          })
+          }),
+          salaryBreakdown: salaryBreakdownRows.map(row => ({
+            month: row.month,
+            year: row.year,
+            amount: salaryBreakdownData[`${row.month}-${row.year}`] || row.salary,
+            currency: 'INR'
+          }))
         });
         setNewUser({
           name: '',
@@ -442,14 +545,43 @@ export const HRDashboard: React.FC = () => {
           bonds: [],
           aadhaarNumber: '',
           guardianName: '',
-          mobileNumber: ''
+          mobileNumber: '',
+          guardianMobileNumber: ''
         });
+        setIsCreateUserModalOpen(false);
+        setSalaryBreakdownRows([]);
+        setSalaryBreakdownData({});
         alert("Employee created successfully! Temporary password: tempPassword123");
       } catch (error: any) {
         alert(error.message || "Failed to create user");
       }
     } else {
       alert("Please fill all required fields");
+    }
+  };
+
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedUserForReset || !newEmployeePassword) return;
+
+    if (newEmployeePassword.length < 4) {
+      alert('Password must be at least 4 characters');
+      return;
+    }
+
+    try {
+      await userAPI.updateUser(selectedUserForReset.id, {
+        password: newEmployeePassword
+      });
+
+      setResetPasswordModalOpen(false);
+      setNewEmployeePassword('');
+      setSelectedUserForReset(null);
+      alert('Password reset successfully');
+      await refreshData();
+    } catch (error: any) {
+      console.error('Failed to reset password:', error);
+      alert(error.message || 'Failed to reset password');
     }
   };
 
@@ -1520,220 +1652,27 @@ export const HRDashboard: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
           {/* Create Employee */}
-          <Card title="Create Employee" className="h-fit">
-            <form onSubmit={handleCreateUser} className="space-y-3">
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Name</label>
-                <input type="text" className="w-full p-2 border rounded text-sm" value={newUser.name} onChange={e => setNewUser({ ...newUser, name: e.target.value })} required />
+          <Card className="h-fit">
+            <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-100">
+              <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 flex items-center justify-center shadow-sm">
+                <UserPlus className="h-6 w-6 text-white" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Username</label>
-                <input type="text" className="w-full p-2 border rounded text-sm" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} required />
+                <h3 className="font-bold text-gray-800 text-lg">Create Employee</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Add new employee to the system</p>
               </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Email</label>
-                <input type="email" className="w-full p-2 border rounded text-sm" value={newUser.email} onChange={e => setNewUser({ ...newUser, email: e.target.value })} required />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Department</label>
-                <input type="text" className="w-full p-2 border rounded text-sm" value={newUser.department} onChange={e => setNewUser({ ...newUser, department: e.target.value })} required />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Aadhaar Number</label>
-                <input type="text" className="w-full p-2 border rounded text-sm" value={newUser.aadhaarNumber} onChange={e => setNewUser({ ...newUser, aadhaarNumber: e.target.value })} placeholder="Optional" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Guardian Name</label>
-                <input type="text" className="w-full p-2 border rounded text-sm" value={newUser.guardianName} onChange={e => setNewUser({ ...newUser, guardianName: e.target.value })} placeholder="Optional" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Mobile Number</label>
-                <input type="tel" className="w-full p-2 border rounded text-sm" value={newUser.mobileNumber} onChange={e => setNewUser({ ...newUser, mobileNumber: e.target.value })} placeholder="Optional" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Joining Date</label>
-                <input type="date" className="w-full p-2 border rounded text-sm" value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''} onChange={e => setNewUser({ ...newUser, joiningDate: e.target.value })} />
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-bold text-gray-700 uppercase">Bond Periods</label>
-                  <button
-                    type="button"
-                    onClick={() => setNewUser({
-                      ...newUser,
-                      bonds: [...newUser.bonds, { type: 'Internship', periodMonths: '', startDate: '', salary: '' }]
-                    })}
-                    className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
-                  >
-                    <Plus size={14} /> Add Bond
-                  </button>
-                </div>
-                {newUser.bonds.length === 0 ? (
-                  <p className="text-xs text-gray-400 italic">No bonds added. Click "Add Bond" to add bond periods.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {newUser.bonds.map((bond, index) => (
-                      <div key={index} className="p-3 border border-gray-200 rounded-lg bg-gray-50 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-gray-700">Bond {index + 1}</span>
-                          <button
-                            type="button"
-                            onClick={() => setNewUser({
-                              ...newUser,
-                              bonds: newUser.bonds.filter((_, i) => i !== index)
-                            })}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            <X size={14} />
-                          </button>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="block text-xs text-gray-600 mb-1">Type</label>
-                            <select
-                              className="w-full p-2 border border-gray-200 rounded text-xs"
-                              value={bond.type}
-                              onChange={e => {
-                                const updated = [...newUser.bonds];
-                                updated[index].type = e.target.value;
-                                setNewUser({ ...newUser, bonds: updated });
-                              }}
-                            >
-                              <option value="Internship">Internship</option>
-                              <option value="Job">Job</option>
-                              <option value="Other">Other</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-xs text-gray-600 mb-1">Period (Months)</label>
-                            <input
-                              type="number"
-                              min="1"
-                              className="w-full p-2 border border-gray-200 rounded text-xs"
-                              value={bond.periodMonths}
-                              onChange={e => {
-                                const updated = [...newUser.bonds];
-                                updated[index].periodMonths = e.target.value;
-                                setNewUser({ ...newUser, bonds: updated });
-                              }}
-                              placeholder="e.g., 6"
-                            />
-                          </div>
-                        </div>
-                        {newUser.joiningDate && (() => {
-                          // Calculate start date for this bond
-                          let bondStartDate: Date;
-                          if (index === 0) {
-                            // First bond starts from joining date
-                            bondStartDate = parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate);
-                          } else {
-                            // Subsequent bonds start from previous bond's end date + 1 day
-                            let previousEndDate: Date | null = null;
-                            for (let i = 0; i < index; i++) {
-                              const prevBond = newUser.bonds[i];
-                              if (prevBond.periodMonths && parseInt(prevBond.periodMonths) > 0) {
-                                const prevStart = i === 0
-                                  ? (parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate))
-                                  : previousEndDate || new Date(newUser.joiningDate);
-                                previousEndDate = new Date(prevStart);
-                                previousEndDate.setMonth(previousEndDate.getMonth() + parseInt(prevBond.periodMonths));
-                              }
-                            }
-                            if (previousEndDate) {
-                              bondStartDate = new Date(previousEndDate);
-                              bondStartDate.setDate(bondStartDate.getDate() + 1); // Add 1 day
-                            } else {
-                              bondStartDate = parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate);
-                            }
-                          }
-
-                          return (
-                            <div>
-                              <p className="text-xs text-gray-500 mb-1">
-                                Start Date: {convertToDDMMYYYY(bondStartDate.toISOString().split('T')[0])}
-                                {index === 0 && ' (Joining Date)'}
-                                {index > 0 && ' (Previous bond end + 1 day)'}
-                              </p>
-                              {bond.periodMonths && parseInt(bond.periodMonths) > 0 && (() => {
-                                const periodMonths = parseInt(bond.periodMonths);
-                                const endDate = new Date(bondStartDate);
-                                endDate.setMonth(endDate.getMonth() + periodMonths);
-
-                                const today = new Date();
-                                today.setHours(0, 0, 0, 0);
-                                endDate.setHours(0, 0, 0, 0);
-
-                                if (endDate >= today) {
-                                  const diffTime = endDate.getTime() - today.getTime();
-                                  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                                  const months = Math.floor(diffDays / 30);
-                                  const days = diffDays % 30;
-
-                                  let display = '';
-                                  if (months > 0 && days > 0) {
-                                    display = `${months} month${months > 1 ? 's' : ''} ${days} day${days > 1 ? 's' : ''}`;
-                                  } else if (months > 0) {
-                                    display = `${months} month${months > 1 ? 's' : ''}`;
-                                  } else {
-                                    display = `${days} day${days > 1 ? 's' : ''}`;
-                                  }
-
-                                  return (
-                                    <div className="mt-2">
-                                      <p className="text-xs text-gray-500 mb-1">End Date: {convertToDDMMYYYY(endDate.toISOString().split('T')[0])}</p>
-                                      <p className="text-xs text-blue-600 font-semibold">
-                                        Remaining: {display}
-                                      </p>
-                                    </div>
-                                  );
-                                } else {
-                                  const diffTime = today.getTime() - endDate.getTime();
-                                  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                                  return (
-                                    <div className="mt-2">
-                                      <p className="text-xs text-gray-500 mb-1">End Date: {convertToDDMMYYYY(endDate.toISOString().split('T')[0])}</p>
-                                      <p className="text-xs text-red-600 font-semibold">
-                                        Expired {diffDays} day{diffDays > 1 ? 's' : ''} ago
-                                      </p>
-                                    </div>
-                                  );
-                                }
-                              })()}
-                            </div>
-                          );
-                        })()}
-                        {!newUser.joiningDate && (
-                          <p className="text-xs text-gray-500 mb-1">Start Date: Set joining date first</p>
-                        )}
-                        <div>
-                          <label className="block text-xs text-gray-600 mb-1">
-                            {bond.type === 'Internship' ? 'Stipend' : bond.type === 'Job' ? 'Salary' : 'Amount'} (₹)
-                          </label>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            className="w-full p-2 border border-gray-200 rounded text-xs"
-                            value={bond.salary || ''}
-                            onChange={e => {
-                              const updated = [...newUser.bonds];
-                              updated[index].salary = e.target.value;
-                              setNewUser({ ...newUser, bonds: updated });
-                            }}
-                            placeholder={bond.type === 'Internship' ? 'e.g., 10000' : 'e.g., 25000'}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <p className="text-xs text-gray-400 mt-2">Add multiple bonds (e.g., 6 months internship + 1 year job)</p>
-              </div>
-              <p className="text-xs text-gray-500 mt-1">Employee will receive temporary password: tempPassword123</p>
-              <Button type="submit" className="w-full" variant="primary">
-                <UserPlus size={16} className="mr-2" /> Create Account
+            </div>
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">
+                Create a new employee account with personal details, bond configuration, and salary breakdown.
+              </p>
+              <Button
+                onClick={() => setIsCreateUserModalOpen(true)}
+                className="w-full bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 shadow-md"
+              >
+                <Plus size={18} className="mr-2" /> Create New Employee
               </Button>
-            </form>
+            </div>
           </Card>
 
           {/* Attendance Correction */}
@@ -2031,7 +1970,9 @@ export const HRDashboard: React.FC = () => {
                   </tr>
                 ) : (
                   users.filter(u => u.role === Role.HR || u.role === Role.EMPLOYEE).map(user => {
+                    // Check bond status for display
                     const bondInfo = calculateBondRemaining(user.bonds, user.joiningDate);
+
                     return (
                       <tr key={user.id} className="hover:bg-gray-50">
                         <td className="px-5 py-4">
@@ -2055,7 +1996,7 @@ export const HRDashboard: React.FC = () => {
                         </td>
                         <td className="px-5 py-4 text-gray-600">{user.department}</td>
                         <td className="px-5 py-4 text-gray-600 text-xs">
-                          {user.joiningDate || '-'}
+                          {user.joiningDate ? formatDate(user.joiningDate) : '-'}
                         </td>
                         <td className="px-5 py-4 text-xs">
                           {bondInfo.currentBond || bondInfo.totalRemaining.display !== '-' ? (
@@ -2084,11 +2025,16 @@ export const HRDashboard: React.FC = () => {
                                   name: user.name,
                                   email: user.email,
                                   department: user.department,
+                                  aadhaarNumber: user.aadhaarNumber || '',
+                                  guardianName: user.guardianName || '',
+                                  mobileNumber: user.mobileNumber || '',
+                                  guardianMobileNumber: user.guardianMobileNumber || '',
                                   joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
                                   bonds: (user.bonds || []).map(b => ({
                                     type: b.type,
                                     periodMonths: b.periodMonths.toString(),
                                     startDate: b.startDate,
+                                    endDate: '',
                                     salary: (b.salary || 0).toString()
                                   }))
                                 });
@@ -2426,7 +2372,7 @@ export const HRDashboard: React.FC = () => {
             className="fixed inset-0 bg-black/50 z-50"
             onClick={() => {
               setEditingUser(null);
-              setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [] });
+              setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
             }}
           />
           <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
@@ -2436,7 +2382,7 @@ export const HRDashboard: React.FC = () => {
                 <button
                   onClick={() => {
                     setEditingUser(null);
-                    setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [] });
+                    setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
                   }}
                   className="text-gray-400 hover:text-gray-600 transition-colors"
                 >
@@ -2451,6 +2397,10 @@ export const HRDashboard: React.FC = () => {
                     name: editUserForm.name,
                     email: editUserForm.email,
                     department: editUserForm.department,
+                    aadhaarNumber: editUserForm.aadhaarNumber,
+                    guardianName: editUserForm.guardianName,
+                    mobileNumber: editUserForm.mobileNumber,
+                    guardianMobileNumber: editUserForm.guardianMobileNumber,
                   };
 
                   if (editUserForm.joiningDate) {
@@ -2498,7 +2448,7 @@ export const HRDashboard: React.FC = () => {
                   await userAPI.updateUser(editingUser.id, updates);
                   alert('User updated successfully!');
                   setEditingUser(null);
-                  setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [] });
+                  setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
                   await refreshData();
                 } catch (error: any) {
                   alert(error.message || 'Failed to update user');
@@ -2522,6 +2472,42 @@ export const HRDashboard: React.FC = () => {
                     value={editUserForm.email}
                     onChange={e => setEditUserForm({ ...editUserForm, email: e.target.value })}
                     required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Mobile Number</label>
+                  <input
+                    type="text"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.mobileNumber}
+                    onChange={e => setEditUserForm({ ...editUserForm, mobileNumber: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Guardian Mobile Number</label>
+                  <input
+                    type="text"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.guardianMobileNumber}
+                    onChange={e => setEditUserForm({ ...editUserForm, guardianMobileNumber: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Aadhaar Number</label>
+                  <input
+                    type="text"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.aadhaarNumber}
+                    onChange={e => setEditUserForm({ ...editUserForm, aadhaarNumber: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Guardian Name</label>
+                  <input
+                    type="text"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.guardianName}
+                    onChange={e => setEditUserForm({ ...editUserForm, guardianName: e.target.value })}
                   />
                 </div>
                 <div>
@@ -2721,7 +2707,7 @@ export const HRDashboard: React.FC = () => {
                     variant="secondary"
                     onClick={() => {
                       setEditingUser(null);
-                      setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [] });
+                      setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
                     }}
                   >
                     Cancel
@@ -2735,6 +2721,460 @@ export const HRDashboard: React.FC = () => {
           </div>
         </>
       )}
+
+      {/* Create User Modal */}
+      {isCreateUserModalOpen && (
+        <>
+          <div className="fixed inset-0 bg-black/50 bg-opacity-50 backdrop-blur-sm z-40 transition-opacity" onClick={() => setIsCreateUserModalOpen(false)} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in duration-200">
+              <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50/50 sticky top-0 backdrop-blur-sm z-10">
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                    <UserPlus className="text-indigo-600" /> Create New Employee
+                  </h3>
+                  <p className="text-sm text-gray-500 mt-1">Add a new employee to the system with bond configurations</p>
+                </div>
+                <button
+                  onClick={() => setIsCreateUserModalOpen(false)}
+                  className="text-gray-400 hover:text-gray-600 transition-colors p-2 hover:bg-gray-100 rounded-full"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="p-6">
+                <form onSubmit={handleCreateUser} className="space-y-8">
+                  {/* Section 1: Basic Information */}
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4 flex items-center gap-2 pb-2 border-b border-gray-100">
+                      <Users size={16} className="text-indigo-500" /> Personal & Account Details
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Full Name <span className="text-red-500">*</span></label>
+                        <input
+                          type="text"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.name}
+                          onChange={e => setNewUser({ ...newUser, name: e.target.value })}
+                          placeholder="e.g. John Doe"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Email Address <span className="text-red-500">*</span></label>
+                        <input
+                          type="email"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.email}
+                          onChange={e => setNewUser({ ...newUser, email: e.target.value })}
+                          placeholder="e.g. john@company.com"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Username <span className="text-red-500">*</span></label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            className="w-full p-2.5 pl-9 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                            value={newUser.username}
+                            onChange={e => setNewUser({ ...newUser, username: e.target.value })}
+                            placeholder="johndoe"
+                            required
+                          />
+                          <UserPlus size={14} className="absolute left-3 top-3 text-gray-400" />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Department <span className="text-red-500">*</span></label>
+                        <input
+                          type="text"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.department}
+                          onChange={e => setNewUser({ ...newUser, department: e.target.value })}
+                          placeholder="e.g. Engineering"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Joining Date</label>
+                        <input
+                          type="date"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''}
+                          onChange={e => setNewUser({ ...newUser, joiningDate: e.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Aadhaar Number</label>
+                        <input
+                          type="text"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.aadhaarNumber}
+                          onChange={e => setNewUser({ ...newUser, aadhaarNumber: e.target.value })}
+                          placeholder="Optional"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Mobile Number</label>
+                        <input
+                          type="tel"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.mobileNumber}
+                          onChange={e => setNewUser({ ...newUser, mobileNumber: e.target.value })}
+                          placeholder="Optional"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Guardian Name</label>
+                        <input
+                          type="text"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.guardianName}
+                          onChange={e => setNewUser({ ...newUser, guardianName: e.target.value })}
+                          placeholder="Optional"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Guardian Mobile Number</label>
+                        <input
+                          type="tel"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.guardianMobileNumber}
+                          onChange={e => setNewUser({ ...newUser, guardianMobileNumber: e.target.value })}
+                          placeholder="Optional"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Section 2: Bond Configuration */}
+                  <div className="bg-gray-50 rounded-2xl p-5 border border-gray-100">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-sm font-bold text-gray-900 uppercase tracking-wide flex items-center gap-2">
+                        <FileText size={16} className="text-indigo-500" /> Bond Configuration
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => setNewUser({
+                          ...newUser,
+                          bonds: [...newUser.bonds, { type: 'Internship', periodMonths: '', startDate: '', salary: '' }]
+                        })}
+                        className="text-xs font-semibold bg-white border border-gray-200 text-indigo-600 hover:bg-indigo-50 hover:border-indigo-200 px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 shadow-sm"
+                      >
+                        <Plus size={14} /> Add Bond Period
+                      </button>
+                    </div>
+
+                    {newUser.bonds.length === 0 ? (
+                      <div className="text-center py-8 border-2 border-dashed border-gray-200 rounded-xl bg-white">
+                        <p className="text-sm text-gray-500">No bonds added yet.</p>
+                        <p className="text-xs text-gray-400 mt-1">Click "Add Bond Period" to configure employment terms.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {newUser.bonds.map((bond, index) => (
+                          <div key={index} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm relative group animate-in slide-in-from-top-2 duration-200">
+                            <div className="flex items-center justify-between mb-3">
+                              <span className="text-xs font-bold text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                                Period {index + 1}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setNewUser({
+                                  ...newUser,
+                                  bonds: newUser.bonds.filter((_, i) => i !== index)
+                                })}
+                                className="text-gray-400 hover:text-red-500 transition-colors bg-gray-50 p-1.5 rounded-lg opacity-0 group-hover:opacity-100"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                              <div>
+                                <label className="block text-xs font-semibold text-gray-600 mb-1">Employment Type</label>
+                                <div className="relative">
+                                  <select
+                                    className="w-full p-2 border border-gray-200 rounded-lg text-sm appearance-none bg-gray-50 focus:bg-white transition-colors"
+                                    value={bond.type}
+                                    onChange={e => {
+                                      const updated = [...newUser.bonds];
+                                      updated[index].type = e.target.value;
+                                      setNewUser({ ...newUser, bonds: updated });
+                                    }}
+                                  >
+                                    <option value="Internship">Internship</option>
+                                    <option value="Job">Full Time Job</option>
+                                    <option value="Other">Other</option>
+                                  </select>
+                                  <ChevronDown size={14} className="absolute right-3 top-3 text-gray-400 pointer-events-none" />
+                                </div>
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-gray-600 mb-1">Duration (Months)</label>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:bg-white transition-colors"
+                                  value={bond.periodMonths}
+                                  onChange={e => {
+                                    const updated = [...newUser.bonds];
+                                    updated[index].periodMonths = e.target.value;
+                                    setNewUser({ ...newUser, bonds: updated });
+                                  }}
+                                  placeholder="e.g. 6"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-gray-600 mb-1">
+                                  {bond.type === 'Internship' ? 'Stipend' : 'Salary'} (₹/month)
+                                </label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:bg-white transition-colors"
+                                  value={bond.salary || ''}
+                                  onChange={e => {
+                                    const updated = [...newUser.bonds];
+                                    updated[index].salary = e.target.value;
+                                    setNewUser({ ...newUser, bonds: updated });
+                                  }}
+                                  placeholder="e.g. 15000"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Auto-calculated Dates */}
+                            {newUser.joiningDate && (() => {
+                              // Calculate start date for this bond
+                              let bondStartDate: Date;
+                              if (index === 0) {
+                                // First bond starts from joining date
+                                bondStartDate = parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate);
+                              } else {
+                                // Subsequent bonds start from previous bond's end date + 1 day
+                                let previousEndDate: Date | null = null;
+                                for (let i = 0; i < index; i++) {
+                                  const prevBond = newUser.bonds[i];
+                                  if (prevBond.periodMonths && parseInt(prevBond.periodMonths) > 0) {
+                                    const prevStart = i === 0
+                                      ? (parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate))
+                                      : previousEndDate || new Date(newUser.joiningDate);
+                                    previousEndDate = new Date(prevStart);
+                                    previousEndDate.setMonth(previousEndDate.getMonth() + parseInt(prevBond.periodMonths));
+                                  }
+                                }
+                                if (previousEndDate) {
+                                  bondStartDate = new Date(previousEndDate);
+                                  bondStartDate.setDate(bondStartDate.getDate() + 1); // Add 1 day
+                                } else {
+                                  bondStartDate = parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate);
+                                }
+                              }
+
+                              return (
+                                <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500 bg-gray-50/50 -mx-4 -mb-4 px-4 py-2 rounded-b-xl">
+                                  <span>Starts: <span className="font-semibold text-gray-700">{convertToDDMMYYYY(bondStartDate.toISOString().split('T')[0])}</span></span>
+                                  {bond.periodMonths && parseInt(bond.periodMonths) > 0 && (() => {
+                                    const periodMonths = parseInt(bond.periodMonths);
+                                    const endDate = new Date(bondStartDate);
+                                    endDate.setMonth(endDate.getMonth() + periodMonths);
+                                    const today = new Date();
+                                    today.setHours(0, 0, 0, 0);
+                                    endDate.setHours(0, 0, 0, 0);
+
+                                    return (
+                                      <span>Ends: <span className="font-semibold text-gray-700">{convertToDDMMYYYY(endDate.toISOString().split('T')[0])}</span></span>
+                                    );
+                                  })()}
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Section 3: Salary Breakdown */}
+                  {salaryBreakdownRows.length > 0 && (
+                    <div className="bg-emerald-50/50 rounded-2xl p-5 border border-emerald-100 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h4 className="text-sm font-bold text-gray-900 uppercase tracking-wide flex items-center gap-2">
+                            <TrendingUp size={16} className="text-emerald-600" /> Salary Projection
+                          </h4>
+                          <p className="text-xs text-emerald-600/80 mt-1 font-medium">
+                            Auto-generated breakdown based on bond periods
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-xs font-bold text-gray-500 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm">
+                            {salaryBreakdownRows.length} Months
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="max-h-64 overflow-y-auto border border-emerald-100 rounded-xl bg-white shadow-sm">
+                        <table className="w-full text-xs">
+                          <thead className="bg-emerald-50/30 sticky top-0 backdrop-blur-sm z-10">
+                            <tr>
+                              <th className="px-4 py-3 text-left font-bold text-gray-600">Month</th>
+                              <th className="px-4 py-3 text-left font-bold text-gray-600">Period</th>
+                              <th className="px-4 py-3 text-left font-bold text-gray-600">Type</th>
+                              <th className="px-4 py-3 text-left font-bold text-gray-600 w-32">Amount (₹)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-emerald-50/50">
+                            {salaryBreakdownRows.map((row, index) => {
+                              const key = `${row.month}-${row.year}`;
+                              return (
+                                <tr key={index} className={`transition-colors ${row.isPartialMonth ? 'bg-orange-50/50' : 'hover:bg-gray-50'}`}>
+                                  <td className="px-4 py-2.5">
+                                    <div className="font-semibold text-gray-800">{row.displayLabel}</div>
+                                    {row.isPartialMonth && (
+                                      <span className="text-[10px] text-orange-600 font-bold bg-orange-100 px-1.5 py-0.5 rounded-full inline-block mt-0.5">
+                                        PARTIAL
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-2.5 text-gray-500">
+                                    {row.startDate} <span className="text-gray-300 mx-1">→</span> {row.endDate}
+                                  </td>
+                                  <td className="px-4 py-2.5">
+                                    <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${row.bondType === 'Internship' ? 'bg-blue-50 text-blue-600 border border-blue-100' :
+                                      row.bondType === 'Job' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' :
+                                        'bg-gray-50 text-gray-600 border border-gray-100'
+                                      }`}>
+                                      {row.bondType}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-2.5">
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      className="w-full p-2 border border-gray-200 rounded text-right font-mono text-sm focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 bg-transparent hover:bg-white transition-all"
+                                      value={salaryBreakdownData[key] || ''}
+                                      onChange={e => {
+                                        const value = parseFloat(e.target.value) || 0;
+                                        setSalaryBreakdownData(prev => ({
+                                          ...prev,
+                                          [key]: value
+                                        }));
+                                      }}
+                                    />
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-3 flex items-start gap-2">
+                        <AlertCircle size={14} className="text-emerald-500 mt-0.5 flex-shrink-0" />
+                        <span>
+                          <strong>Note:</strong> Partial months (orange) are calculated pro-rata unless manually overridden.
+                          You can adjust any monthly amount manually in the table above.
+                        </span>
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Footer */}
+                  <div className="pt-6 border-t border-gray-100 flex items-center justify-between gap-4">
+                    <div className="text-xs text-gray-500 italic flex items-center gap-1.5 bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-100">
+                      <Key size={12} className="text-gray-400" />
+                      Temp Password: <span className="font-mono font-bold text-gray-700">tempPassword123</span>
+                    </div>
+                    <div className="flex gap-3">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => setIsCreateUserModalOpen(false)}
+                        className="px-6"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="submit"
+                        variant="primary"
+                        className="px-6 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 shadow-lg shadow-indigo-200"
+                        disabled={!newUser.name || !newUser.email || !newUser.username || !newUser.department}
+                      >
+                        <UserPlus size={16} className="mr-2" />
+                        Create Employee Account
+                      </Button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Reset Password Modal */}
+      {resetPasswordModalOpen && selectedUserForReset && (
+        <>
+          <div className="fixed inset-0 bg-black/50 bg-opacity-50 backdrop-blur-sm z-40 transition-opacity" onClick={() => setResetPasswordModalOpen(false)} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+              <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">Reset Password</h3>
+                  <p className="text-sm text-gray-500 mt-1">Set a new password for {selectedUserForReset.name}</p>
+                </div>
+                <button
+                  onClick={() => setResetPasswordModalOpen(false)}
+                  className="text-gray-400 hover:text-gray-600 transition-colors p-2 hover:bg-gray-100 rounded-full"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <form onSubmit={handleResetPasswordSubmit}>
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+                    <input
+                      type="password"
+                      className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all"
+                      value={newEmployeePassword}
+                      onChange={(e) => setNewEmployeePassword(e.target.value)}
+                      placeholder="Enter new password (min 4 chars)"
+                      autoFocus
+                      required
+                      minLength={4}
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setResetPasswordModalOpen(false)}
+                      className="px-4 py-2.5 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-100 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!newEmployeePassword || newEmployeePassword.length < 4}
+                      className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-200 hover:shadow-purple-300 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Reset Password
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
     </div>
   );
 };

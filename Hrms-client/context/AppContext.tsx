@@ -31,7 +31,7 @@ interface AppContextType {
   requestLeave: (req: Omit<LeaveRequest, 'id' | 'userId' | 'userName' | 'status' | 'createdAt'>) => Promise<void>;
   updateLeaveStatus: (id: string, status: LeaveStatus, comment?: string) => Promise<void>;
   createUser: (user: Omit<User, 'id' | 'password' | 'isFirstLogin'>) => Promise<void>;
-  updateUser: (id: string, updates: { paidLeaveAllocation?: number | null; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string }) => Promise<void>;
+  updateUser: (id: string, updates: { paidLeaveAllocation?: number | null; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string; guardianMobileNumber?: string }) => Promise<void>;
 
   // Admin/HR Actions
   adminUpdateAttendance: (recordId: string, updates: Partial<Attendance>, breakDurationMinutes?: number) => Promise<void>;
@@ -69,6 +69,7 @@ const transformUser = (apiUser: any): User => ({
   aadhaarNumber: apiUser.aadhaarNumber || undefined,
   guardianName: apiUser.guardianName || undefined,
   mobileNumber: apiUser.mobileNumber || undefined,
+  guardianMobileNumber: apiUser.guardianMobileNumber || undefined,
   salaryBreakdown: apiUser.salaryBreakdown && Array.isArray(apiUser.salaryBreakdown) ? apiUser.salaryBreakdown.map((s: any) => ({
     month: s.month,
     year: s.year,
@@ -452,7 +453,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const updateUser = async (id: string, updates: { paidLeaveAllocation?: number | null; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string }): Promise<void> => {
+  const updateUser = async (id: string, updates: { paidLeaveAllocation?: number | null; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string; guardianMobileNumber?: string }): Promise<void> => {
     try {
       const { user } = await api.userAPI.updateUser(id, updates) as any;
       const transformedUser = transformUser(user);

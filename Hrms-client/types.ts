@@ -40,6 +40,7 @@ export interface User {
   aadhaarNumber?: string; // Aadhaar card number
   guardianName?: string; // Guardian/emergency contact name
   mobileNumber?: string; // Mobile/phone number
+  guardianMobileNumber?: string; // Guardian mobile number
   salaryBreakdown?: Array<{
     month: number; // 1-12
     year: number;

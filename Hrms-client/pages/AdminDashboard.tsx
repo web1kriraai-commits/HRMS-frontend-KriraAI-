@@ -34,7 +34,8 @@ export const AdminDashboard: React.FC = () => {
     bonds: [] as Array<{ type: string; periodMonths: string; startDate: string }>,
     aadhaarNumber: '',
     guardianName: '',
-    mobileNumber: ''
+    mobileNumber: '',
+    guardianMobileNumber: ''
   });
   const [salaryBreakdownRows, setSalaryBreakdownRows] = useState<SalaryBreakdownRow[]>([]);
   const [salaryBreakdownData, setSalaryBreakdownData] = useState<{ [key: string]: number }>({});
@@ -2760,8 +2761,8 @@ export const AdminDashboard: React.FC = () => {
                                   </td>
                                   <td className="px-5 py-3 text-center">
                                     <span className={`px-2 py-1 rounded text-xs font-bold ${row.bondType === 'Internship' ? 'bg-indigo-100 text-indigo-700' :
-                                        row.bondType === 'Job' ? 'bg-emerald-100 text-emerald-700' :
-                                          'bg-gray-100 text-gray-700'
+                                      row.bondType === 'Job' ? 'bg-emerald-100 text-emerald-700' :
+                                        'bg-gray-100 text-gray-700'
                                       }`}>
                                       {row.bondType}
                                     </span>
