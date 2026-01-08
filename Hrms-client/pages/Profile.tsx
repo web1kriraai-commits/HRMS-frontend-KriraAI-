@@ -150,16 +150,6 @@ export const Profile: React.FC = () => {
                         <div className="h-12 w-12 rounded-full bg-blue-100 flex items-center justify-center">
                             <DollarSign className="text-blue-600" size={24} />
                         </div>
-                        <div>
-                            <p className="text-sm text-gray-600 font-medium">Current Month Salary ({new Date().toLocaleString('default', { month: 'long', year: 'numeric' })})</p>
-                            <p className="text-2xl font-bold text-gray-900 mt-1">
-                                {showSalary ? (
-                                    `₹${currentSalary.toLocaleString('en-IN')}`
-                                ) : (
-                                    <span className="tracking-wider">••••••••</span>
-                                )}
-                            </p>
-                        </div>
                     </div>
                     <button
                         onMouseDown={() => setShowSalary(true)}
@@ -189,7 +179,6 @@ export const Profile: React.FC = () => {
                                         <th className="px-4 py-3 text-left font-bold text-gray-600">#</th>
                                         <th className="px-4 py-3 text-left font-bold text-gray-600">Period</th>
                                         <th className="px-4 py-3 text-left font-bold text-gray-600">Type</th>
-                                        <th className="px-4 py-3 text-left font-bold text-gray-600">Salary (₹)</th>
                                         <th className="px-4 py-3 text-left font-bold text-gray-600">Status</th>
                                         <th className="px-4 py-3 text-left font-bold text-gray-600">Payment Info</th>
                                     </tr>
@@ -230,15 +219,6 @@ export const Profile: React.FC = () => {
                                                             'bg-gray-100 text-gray-700'
                                                         }`}>
                                                         {item.bondType}
-                                                    </span>
-                                                </td>
-                                                <td className="px-4 py-3">
-                                                    <span className="text-gray-800 font-semibold">
-                                                        {showSalary ? (
-                                                            `₹${item.amount.toLocaleString('en-IN')}`
-                                                        ) : (
-                                                            <span className="tracking-wider">••••••</span>
-                                                        )}
                                                     </span>
                                                 </td>
                                                 <td className="px-4 py-3">
