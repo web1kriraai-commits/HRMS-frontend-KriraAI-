@@ -251,10 +251,12 @@ export const AdminDashboard: React.FC = () => {
     guardianName?: string;
     mobileNumber?: string;
     guardianMobileNumber?: string;
+    paidLeaveAllocation?: string;
   }>({
     name: '',
     email: '',
     department: '',
+    paidLeaveAllocation: '',
     joiningDate: '',
     bonds: [],
     aadhaarNumber: '',
@@ -490,10 +492,11 @@ export const AdminDashboard: React.FC = () => {
       }, 0);
 
     // Calculate low time and extra time from attendance
+    // Include Extra Time Leave hours in the calculation for each day
     let totalLowTimeSeconds = 0;
     let totalExtraTimeSeconds = 0;
-    const MIN_NORMAL_SECONDS = 8 * 3600 + 15 * 60;
-    const MAX_NORMAL_SECONDS = 8 * 3600 + 30 * 60;
+    const MIN_NORMAL_SECONDS = 8 * 3600 + 15 * 60; // 8h 15m
+    const MAX_NORMAL_SECONDS = 8 * 3600 + 22 * 60; // 8h 22m
 
     monthRecords.forEach(r => {
       if (r.checkIn && r.checkOut) {
@@ -501,10 +504,46 @@ export const AdminDashboard: React.FC = () => {
         const checkOut = new Date(r.checkOut).getTime();
         const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
         const breakSeconds = getBreakSeconds(r.breaks) || 0;
-        const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+
+        // Check if there's an approved Extra Time Leave for this attendance date
+        // Add the leave hours to worked hours for flag calculation
+        // Example: 1 hour leave + 7:15 work = 8:15 total (normal time)
+        const attendanceDate = r.date;
+        const extraTimeLeaveForDate = monthLeaves.find(leave => {
+          const status = (leave.status || '').trim();
+          if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+          if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
+          // Check if leave date matches attendance date
+          return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
+            (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
+        });
+
+        if (extraTimeLeaveForDate && extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
+          // Calculate leave hours from startTime/endTime
+          const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
+          const leaveSeconds = leaveHours * 3600;
+          netWorkedSeconds += leaveSeconds; // Add leave time to worked time
+        } else if (extraTimeLeaveForDate) {
+          // Fallback if no specific time: add standard day calculation
+          const leaveDays = calculateLeaveDays(extraTimeLeaveForDate.startDate, extraTimeLeaveForDate.endDate);
+          netWorkedSeconds += leaveDays * 8.25 * 3600;
+        }
+
+        // Check for Half Day Leave to suppress Low Time
+        const hasHalfDay = monthLeaves.some(leave => {
+          const status = (leave.status || '').trim();
+          if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+          if (leave.category !== LeaveCategory.HALF_DAY) return false;
+          // Check if leave date matches attendance date
+          return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
+            (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
+        });
 
         if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
-          totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
+          if (!hasHalfDay) {
+            totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
+          }
         } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
           totalExtraTimeSeconds += (netWorkedSeconds - MAX_NORMAL_SECONDS);
         }
@@ -615,9 +654,8 @@ export const AdminDashboard: React.FC = () => {
     let totalLowTimeSeconds = 0;
     let totalExtraTimeSeconds = 0;
 
-    // Normal time: 8:15 to 8:30, Low < 8:15, Extra > 8:30
     const MIN_NORMAL_SECONDS = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
-    const MAX_NORMAL_SECONDS = 8 * 3600 + 20 * 60; // 8h 30m = 30600 seconds
+    const MAX_NORMAL_SECONDS = 8 * 3600 + 22 * 60; // 8h 22m = 30120 seconds
 
     monthlyAttendance.forEach(record => {
       if (record.checkIn && record.checkOut) {
@@ -628,18 +666,48 @@ export const AdminDashboard: React.FC = () => {
 
         // Get break time from breaks array or totalBreakDuration
         const breakSeconds = getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
-        const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+
+        const recordDateStr = new Date(record.date).toDateString();
+
+        // Add Extra Time Leave
+        const extraTimeLeave = filteredMonthlyLeaves.find(leave =>
+          leave.userId === record.userId &&
+          new Date(leave.startDate).toDateString() === recordDateStr &&
+          (leave.category === LeaveCategory.EXTRA_TIME || (leave.category === LeaveCategory.HALF_DAY && leave.reason?.includes('[Extra Time Leave]'))) &&
+          (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED)
+        );
+
+        if (extraTimeLeave && extraTimeLeave.startTime && extraTimeLeave.endTime) {
+          const [startH, startM] = extraTimeLeave.startTime.split(':').map(Number);
+          const [endH, endM] = extraTimeLeave.endTime.split(':').map(Number);
+          const startMinutes = startH * 60 + startM;
+          const endMinutes = endH * 60 + endM;
+          const leaveMinutes = Math.max(0, endMinutes - startMinutes);
+          netWorkedSeconds += leaveMinutes * 60;
+        }
 
         totalWorkedSeconds += netWorkedSeconds;
         totalBreakSeconds += breakSeconds;
 
-        // Normal: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+        // Check for Half Day Leave (Standard, not Extra Time Leave derived)
+        const hasHalfDay = filteredMonthlyLeaves.some(leave =>
+          leave.userId === record.userId &&
+          new Date(leave.startDate).toDateString() === recordDateStr &&
+          leave.category === LeaveCategory.HALF_DAY &&
+          !leave.reason?.includes('[Extra Time Leave]') &&
+          (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED)
+        );
+
+        // Normal: 8:15 to 8:22, Low < 8:15, Extra > 8:22
         if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
-          totalLowTimeSeconds += MIN_NORMAL_SECONDS - netWorkedSeconds;
+          if (!hasHalfDay) {
+            totalLowTimeSeconds += MIN_NORMAL_SECONDS - netWorkedSeconds;
+          }
         } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
           totalExtraTimeSeconds += netWorkedSeconds - MAX_NORMAL_SECONDS;
         }
-        // If netWorkedSeconds is between 8:15 and 8:30, it's normal (no low/extra)
+        // If netWorkedSeconds is between 8:15 and 8:22, it's normal (no low/extra)
       }
     });
 
@@ -1337,9 +1405,9 @@ export const AdminDashboard: React.FC = () => {
                         </tr>
                       ) : (
                         monthlyAttendance.map((record, idx) => {
-                          // Normal time: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+                          // Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
                           const MIN_NORMAL_SECONDS_LOCAL = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
-                          const MAX_NORMAL_SECONDS_LOCAL = 8 * 3600 + 30 * 60; // 8h 30m = 30600 seconds
+                          const MAX_NORMAL_SECONDS_LOCAL = 8 * 3600 + 22 * 60; // 8h 22m = 30120 seconds
 
                           // Get break seconds from breaks array or totalBreakDuration
                           const breakSeconds = getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
@@ -1352,7 +1420,7 @@ export const AdminDashboard: React.FC = () => {
                             netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
                           }
 
-                          // Normal: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+                          // Normal: 8:15 to 8:22, Low < 8:15, Extra > 8:22
                           const isLowTime = netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
                           const isExtraTime = netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL;
 
@@ -1622,7 +1690,8 @@ export const AdminDashboard: React.FC = () => {
                                       aadhaarNumber: user.aadhaarNumber || '',
                                       guardianName: user.guardianName || '',
                                       mobileNumber: user.mobileNumber || '',
-                                      guardianMobileNumber: user.guardianMobileNumber || ''
+                                      guardianMobileNumber: user.guardianMobileNumber || '',
+                                      paidLeaveAllocation: (user.paidLeaveAllocation || 0).toString()
                                     });
                                   }}
                                   className="text-gray-400 hover:text-blue-500 transition-colors p-2 rounded-lg hover:bg-blue-50"
@@ -1681,8 +1750,8 @@ export const AdminDashboard: React.FC = () => {
                   <Calendar className="h-6 w-6 text-white" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-gray-800 text-lg">Add Paid Leave</h3>
-                  <p className="text-xs text-gray-500 mt-0.5">Allocate paid leaves to employees</p>
+                  <h3 className="font-bold text-gray-800 text-lg">Update Paid Leave Allocation</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">Set total paid leave allocation for employees</p>
                 </div>
               </div>
               <form onSubmit={async (e) => {
@@ -1692,7 +1761,7 @@ export const AdminDashboard: React.FC = () => {
                   return;
                 }
                 if (!paidLeaveAllocation.allocation || paidLeaveAllocation.allocation === '') {
-                  alert("Please enter a number to add");
+                  alert("Please enter a number");
                   return;
                 }
                 try {
@@ -1701,8 +1770,12 @@ export const AdminDashboard: React.FC = () => {
                     alert("Please enter a valid positive number");
                     return;
                   }
-                  await updateUser(paidLeaveAllocation.userId, { paidLeaveAllocation: allocation });
-                  alert(`Added ${allocation} paid leave(s) successfully.`);
+                  // Use 'set' action to overwrite the allocation instead of adding to it
+                  await updateUser(paidLeaveAllocation.userId, {
+                    paidLeaveAllocation: allocation,
+                    paidLeaveAction: 'set'
+                  });
+                  alert(`Updated paid leave allocation to ${allocation} successfully.`);
                   setPaidLeaveAllocation({ userId: '', allocation: '' });
                   await refreshData();
                 } catch (error: any) {
@@ -1715,6 +1788,8 @@ export const AdminDashboard: React.FC = () => {
                     className="w-full p-3 border-2 border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all bg-white"
                     value={paidLeaveAllocation.userId}
                     onChange={e => {
+                      // Find current allocation for selected user to pre-fill? 
+                      // For now just clear allocation to reset input
                       setPaidLeaveAllocation({
                         userId: e.target.value,
                         allocation: ''
@@ -1725,31 +1800,31 @@ export const AdminDashboard: React.FC = () => {
                     <option value="">Choose an employee...</option>
                     {users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).map(u => (
                       <option key={u.id} value={u.id}>
-                        {u.name} - {u.department}
+                        {u.name} - {u.department} (Current: {u.paidLeaveAllocation || 0})
                       </option>
                     ))}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Number of Paid Leaves</label>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">New Allocation (Total Year)</label>
                   <input
                     type="number"
                     placeholder="e.g., 12"
                     className="w-full p-3 border-2 border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all"
                     value={paidLeaveAllocation.allocation}
                     onChange={e => setPaidLeaveAllocation({ ...paidLeaveAllocation, allocation: e.target.value })}
-                    min="1"
+                    min="0"
                     required
                   />
                   <div className="mt-2 p-3 bg-blue-50 border border-blue-100 rounded-lg">
                     <p className="text-xs text-blue-700 leading-relaxed">
-                      <span className="font-semibold">Note:</span> This will be added to the existing allocation.
-                      For example, if an employee has 5 remaining and you add 12, the total becomes 17.
+                      <span className="font-semibold">Note:</span> This will <strong>overwrite</strong> the existing allocation.
+                      If an employee has 5 and you enter 12, the new total will be 12.
                     </p>
                   </div>
                 </div>
                 <Button type="submit" className="w-full bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 shadow-md">
-                  <Calendar size={18} className="mr-2" /> Add Paid Leave Allocation
+                  <Calendar size={18} className="mr-2" /> Update Paid Leave Allocation
                 </Button>
               </form>
               <div className="mt-6 pt-6 border-t border-gray-200">
@@ -1794,6 +1869,7 @@ export const AdminDashboard: React.FC = () => {
                       <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Used</th>
                       <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Remaining</th>
                       <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[120px]">Last Allocated</th>
+                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -1844,6 +1920,35 @@ export const AdminDashboard: React.FC = () => {
                                 ? formatDate(user.paidLeaveLastAllocatedDate)
                                 : <span className="text-gray-400 italic">Never</span>}
                             </span>
+                          </td>
+                          <td className="px-4 py-4 text-center w-[100px]">
+                            <button
+                              onClick={() => {
+                                setEditingUser(user);
+                                setEditUserForm({
+                                  name: user.name,
+                                  email: user.email,
+                                  department: user.department,
+                                  paidLeaveAllocation: (user.paidLeaveAllocation || 0).toString(),
+                                  aadhaarNumber: user.aadhaarNumber || '',
+                                  guardianName: user.guardianName || '',
+                                  mobileNumber: user.mobileNumber || '',
+                                  guardianMobileNumber: user.guardianMobileNumber || '',
+                                  joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
+                                  bonds: (user.bonds || []).map(b => ({
+                                    type: b.type,
+                                    periodMonths: b.periodMonths.toString(),
+                                    startDate: b.startDate,
+                                    endDate: '',
+                                    salary: (b.salary || 0).toString()
+                                  }))
+                                });
+                              }}
+                              className="p-2 hover:bg-indigo-50 text-indigo-600 rounded-lg transition-colors group"
+                              title="Edit Paid Leave"
+                            >
+                              <PenTool size={16} className="group-hover:scale-110 transition-transform" />
+                            </button>
                           </td>
                         </tr>
                       ))
@@ -3010,7 +3115,9 @@ export const AdminDashboard: React.FC = () => {
                     aadhaarNumber: editUserForm.aadhaarNumber,
                     guardianName: editUserForm.guardianName,
                     mobileNumber: editUserForm.mobileNumber,
-                    guardianMobileNumber: editUserForm.guardianMobileNumber
+                    guardianMobileNumber: editUserForm.guardianMobileNumber,
+                    paidLeaveAllocation: editUserForm.paidLeaveAllocation,
+                    paidLeaveAction: 'set'
                   };
 
                   if (editUserForm.joiningDate) {
@@ -3133,6 +3240,16 @@ export const AdminDashboard: React.FC = () => {
                     className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
                     value={editUserForm.guardianMobileNumber}
                     onChange={e => setEditUserForm({ ...editUserForm, guardianMobileNumber: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Paid Leave Allocation (Total)</label>
+                  <input
+                    type="number"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.paidLeaveAllocation}
+                    onChange={e => setEditUserForm({ ...editUserForm, paidLeaveAllocation: e.target.value })}
+                    placeholder="Total days/year"
                   />
                 </div>
                 <div>

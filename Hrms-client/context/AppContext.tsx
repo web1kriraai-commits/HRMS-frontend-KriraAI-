@@ -31,7 +31,7 @@ interface AppContextType {
   requestLeave: (req: Omit<LeaveRequest, 'id' | 'userId' | 'userName' | 'status' | 'createdAt'>) => Promise<void>;
   updateLeaveStatus: (id: string, status: LeaveStatus, comment?: string) => Promise<void>;
   createUser: (user: Omit<User, 'id' | 'password' | 'isFirstLogin'>) => Promise<void>;
-  updateUser: (id: string, updates: { paidLeaveAllocation?: number | null; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string; guardianMobileNumber?: string }) => Promise<void>;
+  updateUser: (id: string, updates: { paidLeaveAllocation?: number | null; paidLeaveAction?: 'set' | 'add'; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string; guardianMobileNumber?: string }) => Promise<void>;
 
   // Admin/HR Actions
   adminUpdateAttendance: (recordId: string, updates: Partial<Attendance>, breakDurationMinutes?: number) => Promise<void>;
@@ -185,6 +185,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     try {
       setLoading(true);
+
+      // PRIORITY: Fetch today's attendance FIRST for Employee Dashboard (faster load)
+      const todayAttendance = await api.attendanceAPI.getToday().catch(() => null);
+      if (todayAttendance) {
+        const todayTransformed = transformAttendance(todayAttendance);
+        setAttendanceRecords(prev => {
+          const filtered = prev.filter(a => !(a.date === todayTransformed.date && a.userId === todayTransformed.userId));
+          return [todayTransformed, ...filtered];
+        });
+      }
+
       // For HR/Admin, get all attendance records; for employees, get only their own
       const isHRorAdmin = auth.user?.role === Role.HR || auth.user?.role === Role.ADMIN;
       const attendancePromise = isHRorAdmin
@@ -196,15 +207,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ? api.leaveAPI.getAllLeaves().catch(() => [])
         : (auth.user?.id ? api.leaveAPI.getLeavesByUserId(auth.user.id).catch(() => []) : Promise.resolve([]));
 
-      const [usersData, attendanceHistory, todayAttendance, leavesData, holidaysData, notifsData, settingsData] = await Promise.all([
+      const [usersData, attendanceHistory, leavesData, holidaysData, notifsData, settingsData] = await Promise.all([
         api.userAPI.getAllUsers().catch(() => []),
         attendancePromise,
-        api.attendanceAPI.getToday().catch(() => null),
         leavesPromise,
         api.holidayAPI.getHolidays().catch(() => []),
         api.notificationAPI.getMyNotifications().catch(() => []),
         api.settingsAPI.getSettings().catch(() => ({ timezone: 'Asia/Kolkata' }))
-      ]) as [any[], any[], any, any[], any[], any[], any];
+      ]) as [any[], any[], any[], any[], any[], any];
 
       const transformedUsers = (Array.isArray(usersData) ? usersData : []).map(transformUser);
       setUsers(transformedUsers);
@@ -453,8 +463,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const updateUser = async (id: string, updates: { paidLeaveAllocation?: number | null; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string; guardianMobileNumber?: string }): Promise<void> => {
+  const updateUser = async (id: string, updates: { paidLeaveAllocation?: number | null; paidLeaveAction?: 'set' | 'add'; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string; guardianMobileNumber?: string }): Promise<void> => {
     try {
+      console.log('Context updateUser called with:', updates);
       const { user } = await api.userAPI.updateUser(id, updates) as any;
       const transformedUser = transformUser(user);
 

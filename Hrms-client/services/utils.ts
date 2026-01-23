@@ -1,11 +1,11 @@
 import { Attendance, Bond, Break } from '../types';
 
 // Business Rules
-// BR1: Low Time < 8:08 (488 mins), Extra Time > 8:20 (500 mins)
+// BR1: Low Time < 8:15 (495 mins), Extra Time > 8:22 (502 mins)
 // BR3: Half-day reduces threshold to 4 hours (240 mins)
 
-const LOW_TIME_THRESHOLD_MINUTES = 488; // 8h 08m
-const EXTRA_TIME_THRESHOLD_MINUTES = 500; // 8h 20m
+const LOW_TIME_THRESHOLD_MINUTES = 495; // 8h 15m
+const EXTRA_TIME_THRESHOLD_MINUTES = 502; // 8h 22m
 const HALF_DAY_THRESHOLD_MINUTES = 240; // 4h 00m
 
 export const calculateDurationSeconds = (start: string, end: string): number => {

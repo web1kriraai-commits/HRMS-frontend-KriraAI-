@@ -167,6 +167,12 @@ export const attendanceAPI = {
     });
   },
 
+  cancelBreak: async () => {
+    return apiRequest('/attendance/break/cancel', {
+      method: 'POST',
+    });
+  },
+
   getToday: async () => {
     return apiRequest('/attendance/today');
   },
@@ -275,6 +281,7 @@ export const userAPI = {
       endDate: string;
       isPartialMonth: boolean;
     }>;
+    paidLeaveAction?: 'set' | 'add';
   }) => {
     return apiRequest(`/users/${id}`, {
       method: 'PUT',

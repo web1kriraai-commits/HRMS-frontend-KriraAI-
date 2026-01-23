@@ -19,9 +19,9 @@ const formatHoursToHoursMinutes = (hours: number) => {
   return `${h}h ${m}m`;
 };
 
-// Normal time: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+// Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
 const MIN_NORMAL_SECONDS = (8 * 3600) + (15 * 60); // 8h 15m = 29700 seconds
-const MAX_NORMAL_SECONDS = (8 * 3600) + (30 * 60); // 8h 30m = 30600 seconds
+const MAX_NORMAL_SECONDS = (8 * 3600) + (22 * 60); // 8h 22m = 30120 seconds
 
 export const HRDashboard: React.FC = () => {
   const { auth, leaveRequests, updateLeaveStatus, users, attendanceRecords, companyHolidays, addCompanyHoliday, createUser, updateUser, refreshData } = useApp();
@@ -73,6 +73,7 @@ export const HRDashboard: React.FC = () => {
     name: '',
     email: '',
     department: '',
+    paidLeaveAllocation: '',
     joiningDate: '',
     bonds: [] as Array<{ type: string; periodMonths: string; startDate: string; salary: string }>,
     aadhaarNumber: '',
@@ -352,6 +353,7 @@ export const HRDashboard: React.FC = () => {
       }, 0);
 
     // Calculate low time and extra time from attendance
+    // Include Extra Time Leave hours in the calculation for each day
     let totalLowTimeSeconds = 0;
     let totalExtraTimeSeconds = 0;
 
@@ -361,10 +363,42 @@ export const HRDashboard: React.FC = () => {
         const checkOut = new Date(r.checkOut).getTime();
         const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
         const breakSeconds = getBreakSeconds(r.breaks) || 0;
-        const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+
+        // Check if there's an approved Extra Time Leave for this attendance date
+        // Add the leave hours to worked hours for flag calculation
+        // Example: 1 hour leave + 7:15 work = 8:15 total (normal time)
+        const attendanceDate = r.date;
+        const extraTimeLeaveForDate = monthLeaves.find(leave => {
+          const status = (leave.status || '').trim();
+          if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+          if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
+          // Check if leave date matches attendance date
+          return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
+            (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
+        });
+
+        if (extraTimeLeaveForDate && extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
+          // Calculate leave hours from startTime/endTime
+          const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
+          const leaveSeconds = leaveHours * 3600;
+          netWorkedSeconds += leaveSeconds; // Add leave time to worked time
+        }
+
+        // Check for Half Day Leave to suppress Low Time
+        const hasHalfDay = monthLeaves.some(leave => {
+          const status = (leave.status || '').trim();
+          if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+          if (leave.category !== LeaveCategory.HALF_DAY) return false;
+          // Check if leave date matches attendance date
+          return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
+            (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
+        });
 
         if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
-          totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
+          if (!hasHalfDay) {
+            totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
+          }
         } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
           totalExtraTimeSeconds += (netWorkedSeconds - MAX_NORMAL_SECONDS);
         }
@@ -412,28 +446,57 @@ export const HRDashboard: React.FC = () => {
     let totalLowTimeSeconds = 0;
     let totalExtraTimeSeconds = 0;
 
+    const leaves = leaveRequests.filter(l => l.userId === user.id && l.status === LeaveStatus.APPROVED);
+
     records.forEach(r => {
       if (r.checkIn && r.checkOut) {
         const checkIn = new Date(r.checkIn).getTime();
         const checkOut = new Date(r.checkOut).getTime();
         const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
         const breakSeconds = getBreakSeconds(r.breaks) || 0;
-        const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+
+        const recordDateStr = new Date(r.date).toDateString();
+
+        // Add Extra Time Leave
+        const extraTimeLeave = leaves.find(leave =>
+          new Date(leave.startDate).toDateString() === recordDateStr &&
+          leave.category === 'Extra Time Leave'
+        );
+
+        if (extraTimeLeave && extraTimeLeave.startTime && extraTimeLeave.endTime) {
+          const [startH, startM] = extraTimeLeave.startTime.split(':').map(Number);
+          const [endH, endM] = extraTimeLeave.endTime.split(':').map(Number);
+          const startMinutes = startH * 60 + startM;
+          const endMinutes = endH * 60 + endM;
+          const leaveMinutes = Math.max(0, endMinutes - startMinutes);
+          netWorkedSeconds += leaveMinutes * 60;
+        } else if (extraTimeLeave) {
+          // Fallback if no specific time: add standard day calculation
+          const leaveDays = calculateLeaveDaysForCategory(extraTimeLeave.startDate, extraTimeLeave.endDate, extraTimeLeave.category);
+          netWorkedSeconds += leaveDays * 8.25 * 3600;
+        }
 
         totalWorkedSeconds += netWorkedSeconds;
         totalBreakSeconds += breakSeconds;
 
+        // Check for Half Day Leave
+        const hasHalfDay = leaves.some(leave =>
+          new Date(leave.startDate).toDateString() === recordDateStr &&
+          leave.category === 'Half Day Leave'
+        );
+
         if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
-          lowTimeCount++;
-          totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
+          if (!hasHalfDay) {
+            lowTimeCount++;
+            totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
+          }
         } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
           extraTimeCount++;
           totalExtraTimeSeconds += (netWorkedSeconds - MAX_NORMAL_SECONDS);
         }
       }
     });
-
-    const leaves = leaveRequests.filter(l => l.userId === user.id && l.status === LeaveStatus.APPROVED);
     const allLeaves = leaveRequests.filter(l => l.userId === user.id);
 
     // Calculate balance with carryover
@@ -704,9 +767,9 @@ export const HRDashboard: React.FC = () => {
     let totalLowTimeSeconds = 0;
     let totalExtraTimeSeconds = 0;
 
-    // Normal time: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+    // Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
     const MIN_NORMAL_SECONDS_LOCAL = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
-    const MAX_NORMAL_SECONDS_LOCAL = 8 * 3600 + 30 * 60; // 8h 30m = 30600 seconds
+    const MAX_NORMAL_SECONDS_LOCAL = 8 * 3600 + 22 * 60; // 8h 22m = 30120 seconds
 
     monthlyAttendance.forEach(record => {
       if (record.checkIn && record.checkOut) {
@@ -717,18 +780,47 @@ export const HRDashboard: React.FC = () => {
 
         // Get break time from breaks array
         const breakSeconds = getBreakSeconds(record.breaks) || 0;
-        const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+
+        const recordDateStr = new Date(record.date).toDateString();
+
+        // Add Extra Time Leave
+        const extraTimeLeave = monthlyLeaves.find(leave =>
+          leave.userId === record.userId &&
+          new Date(leave.startDate).toDateString() === recordDateStr &&
+          leave.category === 'Extra Time Leave' &&
+          leave.status === 'Approved'
+        );
+
+        if (extraTimeLeave && extraTimeLeave.startTime && extraTimeLeave.endTime) {
+          const [startH, startM] = extraTimeLeave.startTime.split(':').map(Number);
+          const [endH, endM] = extraTimeLeave.endTime.split(':').map(Number);
+          const startMinutes = startH * 60 + startM;
+          const endMinutes = endH * 60 + endM;
+          const leaveMinutes = Math.max(0, endMinutes - startMinutes);
+          netWorkedSeconds += leaveMinutes * 60;
+        }
 
         totalWorkedSeconds += netWorkedSeconds;
         totalBreakSeconds += breakSeconds;
 
-        // Normal: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+        // Check for Half Day Leave
+        const hasHalfDay = monthlyLeaves.some(leave =>
+          leave.userId === record.userId &&
+          new Date(leave.startDate).toDateString() === recordDateStr &&
+          leave.category === 'Half Day Leave' &&
+          leave.status === 'Approved'
+        );
+
+        // Normal: 8:15 to 8:22, Low < 8:15, Extra > 8:22
         if (netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL) {
-          totalLowTimeSeconds += MIN_NORMAL_SECONDS_LOCAL - netWorkedSeconds;
+          if (!hasHalfDay) {
+            totalLowTimeSeconds += MIN_NORMAL_SECONDS_LOCAL - netWorkedSeconds;
+          }
         } else if (netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL) {
           totalExtraTimeSeconds += netWorkedSeconds - MAX_NORMAL_SECONDS_LOCAL;
         }
-        // If netWorkedSeconds is between 8:15 and 8:30, it's normal (no low/extra)
+        // If netWorkedSeconds is between 8:15 and 8:22, it's normal (no low/extra)
       }
     });
 
@@ -1134,7 +1226,39 @@ export const HRDashboard: React.FC = () => {
                                   const checkIn = new Date(r.checkIn).getTime();
                                   const checkOut = new Date(r.checkOut).getTime();
                                   const breakSec = getBreakSeconds(r.breaks) || 0;
-                                  const netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+                                  let netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+
+                                  const recordDateStr = new Date(r.date).toDateString();
+
+                                  // Add Extra Time Leave
+                                  const extraTimeLeave = stat.allLeaves.find(leave =>
+                                    new Date(leave.startDate).toDateString() === recordDateStr &&
+                                    leave.category === 'Extra Time Leave' &&
+                                    leave.status === 'Approved'
+                                  );
+
+                                  if (extraTimeLeave && extraTimeLeave.startTime && extraTimeLeave.endTime) {
+                                    const [startH, startM] = extraTimeLeave.startTime.split(':').map(Number);
+                                    const [endH, endM] = extraTimeLeave.endTime.split(':').map(Number);
+                                    const startMinutes = startH * 60 + startM;
+                                    const endMinutes = endH * 60 + endM;
+                                    const leaveMinutes = Math.max(0, endMinutes - startMinutes);
+                                    netWorked += leaveMinutes * 60;
+                                  } else if (extraTimeLeave) {
+                                    // Fallback if no specific time: add standard day calculation
+                                    const leaveDays = calculateLeaveDaysForCategory(extraTimeLeave.startDate, extraTimeLeave.endDate, extraTimeLeave.category);
+                                    netWorked += leaveDays * 8.25 * 3600;
+                                  }
+
+                                  // Suppress Low Time if Half Day Leave exists
+                                  const hasHalfDay = stat.allLeaves.some(leave =>
+                                    new Date(leave.startDate).toDateString() === recordDateStr &&
+                                    leave.category === 'Half Day Leave' &&
+                                    leave.status === 'Approved'
+                                  );
+
+                                  if (hasHalfDay) return false;
+
                                   return netWorked < MIN_NORMAL_SECONDS;
                                 });
 
@@ -1156,7 +1280,28 @@ export const HRDashboard: React.FC = () => {
                                           const checkIn = new Date(r.checkIn!).getTime();
                                           const checkOut = new Date(r.checkOut!).getTime();
                                           const breakSec = getBreakSeconds(r.breaks) || 0;
-                                          const netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+                                          let netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+
+                                          const recordDateStr = new Date(r.date).toDateString();
+                                          const extraTimeLeave = stat.allLeaves.find(leave =>
+                                            new Date(leave.startDate).toDateString() === recordDateStr &&
+                                            leave.category === 'Extra Time Leave' &&
+                                            leave.status === 'Approved'
+                                          );
+
+                                          if (extraTimeLeave && extraTimeLeave.startTime && extraTimeLeave.endTime) {
+                                            const [startH, startM] = extraTimeLeave.startTime.split(':').map(Number);
+                                            const [endH, endM] = extraTimeLeave.endTime.split(':').map(Number);
+                                            const startMinutes = startH * 60 + startM;
+                                            const endMinutes = endH * 60 + endM;
+                                            const leaveMinutes = Math.max(0, endMinutes - startMinutes);
+                                            netWorked += leaveMinutes * 60;
+                                          } else if (extraTimeLeave) {
+                                            // Fallback if no specific time: add standard day calculation
+                                            const leaveDays = calculateLeaveDaysForCategory(extraTimeLeave.startDate, extraTimeLeave.endDate, extraTimeLeave.category);
+                                            netWorked += leaveDays * 8.25 * 3600;
+                                          }
+
                                           const shortage = MIN_NORMAL_SECONDS - netWorked;
                                           return (
                                             <tr key={r.id} className="border-t hover:bg-red-50">
@@ -1177,7 +1322,7 @@ export const HRDashboard: React.FC = () => {
                             {/* Extra Time Logs */}
                             <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
                               <div className="px-4 py-2 bg-green-50 border-b border-green-100 font-semibold text-xs text-green-800 uppercase flex items-center gap-2">
-                                <Clock size={14} /> Extra Time Logs (&gt; 8h 30m)
+                                <Clock size={14} /> Extra Time Logs (&gt; 8h 22m)
                               </div>
                               {(() => {
                                 const extraTimeRecords = stat.records.filter(r => {
@@ -1185,7 +1330,30 @@ export const HRDashboard: React.FC = () => {
                                   const checkIn = new Date(r.checkIn).getTime();
                                   const checkOut = new Date(r.checkOut).getTime();
                                   const breakSec = getBreakSeconds(r.breaks) || 0;
-                                  const netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+                                  let netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+
+                                  const recordDateStr = new Date(r.date).toDateString();
+
+                                  // Add Extra Time Leave
+                                  const extraTimeLeave = stat.allLeaves.find(leave =>
+                                    new Date(leave.startDate).toDateString() === recordDateStr &&
+                                    leave.category === 'Extra Time Leave' &&
+                                    leave.status === 'Approved'
+                                  );
+
+                                  if (extraTimeLeave && extraTimeLeave.startTime && extraTimeLeave.endTime) {
+                                    const [startH, startM] = extraTimeLeave.startTime.split(':').map(Number);
+                                    const [endH, endM] = extraTimeLeave.endTime.split(':').map(Number);
+                                    const startMinutes = startH * 60 + startM;
+                                    const endMinutes = endH * 60 + endM;
+                                    const leaveMinutes = Math.max(0, endMinutes - startMinutes);
+                                    netWorked += leaveMinutes * 60;
+                                  } else if (extraTimeLeave) {
+                                    // Fallback if no specific time: add standard day calculation
+                                    const leaveDays = calculateLeaveDaysForCategory(extraTimeLeave.startDate, extraTimeLeave.endDate, extraTimeLeave.category);
+                                    netWorked += leaveDays * 8.25 * 3600;
+                                  }
+
                                   return netWorked > MAX_NORMAL_SECONDS;
                                 });
 
@@ -1207,7 +1375,28 @@ export const HRDashboard: React.FC = () => {
                                           const checkIn = new Date(r.checkIn!).getTime();
                                           const checkOut = new Date(r.checkOut).getTime();
                                           const breakSec = getBreakSeconds(r.breaks) || 0;
-                                          const netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+                                          let netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+
+                                          const recordDateStr = new Date(r.date).toDateString();
+                                          const extraTimeLeave = stat.allLeaves.find(leave =>
+                                            new Date(leave.startDate).toDateString() === recordDateStr &&
+                                            leave.category === 'Extra Time Leave' &&
+                                            leave.status === 'Approved'
+                                          );
+
+                                          if (extraTimeLeave && extraTimeLeave.startTime && extraTimeLeave.endTime) {
+                                            const [startH, startM] = extraTimeLeave.startTime.split(':').map(Number);
+                                            const [endH, endM] = extraTimeLeave.endTime.split(':').map(Number);
+                                            const startMinutes = startH * 60 + startM;
+                                            const endMinutes = endH * 60 + endM;
+                                            const leaveMinutes = Math.max(0, endMinutes - startMinutes);
+                                            netWorked += leaveMinutes * 60;
+                                          } else if (extraTimeLeave) {
+                                            // Fallback if no specific time: add standard day calculation
+                                            const leaveDays = calculateLeaveDaysForCategory(extraTimeLeave.startDate, extraTimeLeave.endDate, extraTimeLeave.category);
+                                            netWorked += leaveDays * 8.25 * 3600;
+                                          }
+
                                           const extra = netWorked - MAX_NORMAL_SECONDS;
                                           return (
                                             <tr key={r.id} className="border-t hover:bg-green-50">
@@ -1555,9 +1744,9 @@ export const HRDashboard: React.FC = () => {
                       </tr>
                     ) : (
                       monthlyAttendance.map((record, idx) => {
-                        // Normal time: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+                        // Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
                         const MIN_NORMAL_SECONDS_LOCAL = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
-                        const MAX_NORMAL_SECONDS_LOCAL = 8 * 3600 + 30 * 60; // 8h 30m = 30600 seconds
+                        const MAX_NORMAL_SECONDS_LOCAL = 8 * 3600 + 22 * 60; // 8h 22m = 30120 seconds
 
                         // Get break seconds from breaks array
                         const breakSeconds = getBreakSeconds(record.breaks) || 0;
@@ -1570,7 +1759,7 @@ export const HRDashboard: React.FC = () => {
                           netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
                         }
 
-                        // Normal: 8:15 to 8:30, Low < 8:15, Extra > 8:30
+                        // Normal: 8:15 to 8:22, Low < 8:15, Extra > 8:22
                         const isLowTime = netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
                         const isExtraTime = netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL;
 
@@ -1855,12 +2044,13 @@ export const HRDashboard: React.FC = () => {
                       <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Used</th>
                       <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Remaining</th>
                       <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[120px]">Last Allocated</th>
+                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="px-4 py-8 text-center">
+                        <td colSpan={6} className="px-4 py-8 text-center">
                           <div className="flex flex-col items-center justify-center text-gray-400">
                             <Users className="h-12 w-12 mb-2 opacity-50" />
                             <p className="text-sm">No employees found</p>
@@ -1921,6 +2111,35 @@ export const HRDashboard: React.FC = () => {
                                   ? formatDate(user.paidLeaveLastAllocatedDate)
                                   : <span className="text-gray-400 italic">Never</span>}
                               </span>
+                            </td>
+                            <td className="px-4 py-4 text-center w-[100px]">
+                              <button
+                                onClick={() => {
+                                  setEditingUser(user);
+                                  setEditUserForm({
+                                    name: user.name,
+                                    email: user.email,
+                                    department: user.department,
+                                    paidLeaveAllocation: (user.paidLeaveAllocation || 0).toString(),
+                                    aadhaarNumber: user.aadhaarNumber || '',
+                                    guardianName: user.guardianName || '',
+                                    mobileNumber: user.mobileNumber || '',
+                                    guardianMobileNumber: user.guardianMobileNumber || '',
+                                    joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
+                                    bonds: (user.bonds || []).map(b => ({
+                                      type: b.type,
+                                      periodMonths: b.periodMonths.toString(),
+                                      startDate: b.startDate,
+                                      endDate: '',
+                                      salary: (b.salary || 0).toString()
+                                    }))
+                                  });
+                                }}
+                                className="p-2 hover:bg-indigo-50 text-indigo-600 rounded-lg transition-colors group"
+                                title="Edit Paid Leave"
+                              >
+                                <PenTool size={16} className="group-hover:scale-110 transition-transform" />
+                              </button>
                             </td>
                           </tr>
                         );
@@ -2025,6 +2244,7 @@ export const HRDashboard: React.FC = () => {
                                   name: user.name,
                                   email: user.email,
                                   department: user.department,
+                                  paidLeaveAllocation: (user.paidLeaveAllocation || 0).toString(),
                                   aadhaarNumber: user.aadhaarNumber || '',
                                   guardianName: user.guardianName || '',
                                   mobileNumber: user.mobileNumber || '',
@@ -2372,7 +2592,7 @@ export const HRDashboard: React.FC = () => {
             className="fixed inset-0 bg-black/50 z-50"
             onClick={() => {
               setEditingUser(null);
-              setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
+              setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
             }}
           />
           <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
@@ -2382,7 +2602,7 @@ export const HRDashboard: React.FC = () => {
                 <button
                   onClick={() => {
                     setEditingUser(null);
-                    setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
+                    setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
                   }}
                   className="text-gray-400 hover:text-gray-600 transition-colors"
                 >
@@ -2397,6 +2617,8 @@ export const HRDashboard: React.FC = () => {
                     name: editUserForm.name,
                     email: editUserForm.email,
                     department: editUserForm.department,
+                    paidLeaveAllocation: editUserForm.paidLeaveAllocation,
+                    paidLeaveAction: 'set',
                     aadhaarNumber: editUserForm.aadhaarNumber,
                     guardianName: editUserForm.guardianName,
                     mobileNumber: editUserForm.mobileNumber,
@@ -2448,7 +2670,7 @@ export const HRDashboard: React.FC = () => {
                   await userAPI.updateUser(editingUser.id, updates);
                   alert('User updated successfully!');
                   setEditingUser(null);
-                  setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
+                  setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
                   await refreshData();
                 } catch (error: any) {
                   alert(error.message || 'Failed to update user');
@@ -2527,6 +2749,16 @@ export const HRDashboard: React.FC = () => {
                     className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
                     value={editUserForm.joiningDate}
                     onChange={e => setEditUserForm({ ...editUserForm, joiningDate: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Paid Leave Allocation (Total)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.paidLeaveAllocation}
+                    onChange={e => setEditUserForm({ ...editUserForm, paidLeaveAllocation: e.target.value })}
                   />
                 </div>
                 <div>
@@ -2707,7 +2939,7 @@ export const HRDashboard: React.FC = () => {
                     variant="secondary"
                     onClick={() => {
                       setEditingUser(null);
-                      setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
+                      setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
                     }}
                   >
                     Cancel
