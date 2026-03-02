@@ -300,6 +300,11 @@ export const EmployeeDashboard: React.FC = () => {
   const [leaveFilterDate, setLeaveFilterDate] = useState('');
   const [leaveFilterMonth, setLeaveFilterMonth] = useState('');
 
+  // Month filter for Time Summary card — default to current month
+  const [timeSummaryMonth, setTimeSummaryMonth] = useState<string>(
+    `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`
+  );
+
   // Calculate working days (excluding Sundays and holidays) between two dates
   const calculateLeaveDays = (startDateStr: string, endDateStr: string) => {
     if (!startDateStr || !endDateStr) return 0;
@@ -467,9 +472,12 @@ export const EmployeeDashboard: React.FC = () => {
   // Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
   const MIN_NORMAL_SECONDS = (8 * 3600) + (15 * 60); // 8 hours 15 minutes = 29700 seconds
   const MAX_NORMAL_SECONDS = (8 * 3600) + (22 * 60); // 8 hours 22 minutes = 30120 seconds
-  const currentMonthStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
+  const currentMonthStr = timeSummaryMonth; // driven by month picker
+  const selectedMonthDate = timeSummaryMonth
+    ? (() => { const [y, m] = timeSummaryMonth.split('-').map(Number); return new Date(y, m - 1, 1); })()
+    : new Date(currentYear, currentMonth, 1);
+  const selectedMonthLabel = selectedMonthDate.toLocaleString('en-US', { month: 'long', year: 'numeric' });
   const currentMonthAttendance = myAttendanceHistory.filter(r => {
-    // Use string comparison to avoid timezone issues with new Date()
     return typeof r.date === 'string' && r.date.startsWith(currentMonthStr);
   });
 
@@ -514,8 +522,20 @@ export const EmployeeDashboard: React.FC = () => {
         return;
       }
 
-      // For non-holiday days, use the DB flags which the backend computed correctly
-      if (record.lowTimeFlag) {
+      // For non-holiday days, use the DB flags which the backend computed correctly.
+      // Safety net: if an approved half-day leave exists for this date, never count as low
+      // time as long as the employee worked >= 4 hours (240 min = 14400 sec).
+      const hasApprovedHalfDay = myLeaves.some(l => {
+        const status = (l.status || '').trim();
+        if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+        if (l.category !== LeaveCategory.HALF_DAY) return false;
+        const leaveDate = typeof l.startDate === 'string' ? l.startDate.split('T')[0] : l.startDate;
+        return leaveDate === attendanceDate;
+      });
+      const HALF_DAY_MIN_SECONDS = 4 * 3600; // 4 hours = 14400 seconds
+      const isHalfDayNormal = hasApprovedHalfDay && effectiveWorkedSeconds >= HALF_DAY_MIN_SECONDS;
+
+      if (record.lowTimeFlag && !isHalfDayNormal) {
         // Low time: add deficit based on effective worked seconds (including penalty)
         totalLowTimeSeconds += Math.max(0, MIN_NORMAL_SECONDS - effectiveWorkedSeconds);
       } else if (record.extraTimeFlag) {
@@ -1249,21 +1269,13 @@ export const EmployeeDashboard: React.FC = () => {
                 leaveData.reason = `[${halfDayTypeLabel}] ${leaveForm.reason}`;
               }
 
-              // Add time fields for extra time leave and half day leave
-              if (leaveForm.type === LeaveCategory.EXTRA_TIME) {
-                if (!leaveForm.startTime || !leaveForm.endTime) {
-                  alert('Please provide both start time and end time for Extra Time Leave');
-                  return;
-                }
-                leaveData.startTime = leaveForm.startTime;
-                leaveData.endTime = leaveForm.endTime;
-              } else if (leaveForm.type === LeaveCategory.HALF_DAY) {
+              // Add time fields for half day leave only
+              if (leaveForm.type === LeaveCategory.HALF_DAY) {
                 if (!leaveForm.startTime) {
                   alert('Please provide start time for Half Day Leave');
                   return;
                 }
                 leaveData.startTime = leaveForm.startTime;
-                // For half day, end time is optional or can be calculated
                 if (leaveForm.endTime) {
                   leaveData.endTime = leaveForm.endTime;
                 }
@@ -1376,30 +1388,6 @@ export const EmployeeDashboard: React.FC = () => {
                         Will add 4 hours to Extra Time Leave taken
                       </p>
                     )}
-                  </div>
-                </>
-              )}
-              {leaveForm.type === LeaveCategory.EXTRA_TIME && (
-                <>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">Start Time <span className="text-red-500">*</span></label>
-                    <input
-                      type="time"
-                      className="w-full p-2 border rounded text-sm"
-                      required
-                      value={leaveForm.startTime}
-                      onChange={e => setLeaveForm({ ...leaveForm, startTime: e.target.value })}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">End Time <span className="text-red-500">*</span></label>
-                    <input
-                      type="time"
-                      className="w-full p-2 border rounded text-sm"
-                      required
-                      value={leaveForm.endTime}
-                      onChange={e => setLeaveForm({ ...leaveForm, endTime: e.target.value })}
-                    />
                   </div>
                 </>
               )}
@@ -1544,7 +1532,20 @@ export const EmployeeDashboard: React.FC = () => {
             )}
 
             {/* Current Month Time Statistics */}
-            <Card title={`Current Month Time Summary (${new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' })})`} className="h-fit">
+            <Card
+              title={`Time Summary (${selectedMonthLabel})`}
+              className="h-fit"
+              action={
+                <input
+                  type="month"
+                  className="text-xs bg-white border border-gray-200 text-gray-700 px-2 py-1 rounded-lg ml-2"
+                  value={timeSummaryMonth}
+                  max={`${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`}
+                  onChange={e => setTimeSummaryMonth(e.target.value)}
+                  title="Select month"
+                />
+              }
+            >
               <div className="space-y-4">
                 {/* Total Low Time */}
                 <div className="p-4 bg-red-50 rounded-lg border border-red-100">
@@ -1701,11 +1702,17 @@ export const EmployeeDashboard: React.FC = () => {
                         <td className="px-4 py-3">
                           {isHolidayWorkDay && r.checkIn && r.checkOut
                             ? <span className="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full font-semibold">Holiday OT</span>
-                            : r.lowTimeFlag
-                              ? <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full">Low</span>
-                              : r.extraTimeFlag
-                                ? <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">Extra</span>
-                                : <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Normal</span>
+                            : (() => {
+                              // Safety net: if half-day leave approved and worked >= 4 hours, always Normal
+                              const workedSec = r.totalWorkedSeconds || 0;
+                              const isHalfDayOverride = halfDayLeave && workedSec >= 4 * 3600;
+                              const effectiveLow = r.lowTimeFlag && !isHalfDayOverride;
+                              return effectiveLow
+                                ? <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full">Low</span>
+                                : r.extraTimeFlag
+                                  ? <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">Extra</span>
+                                  : <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Normal</span>;
+                            })()
                           }
                         </td>
                       </tr>
@@ -1857,6 +1864,6 @@ export const EmployeeDashboard: React.FC = () => {
           )}
         </Card>
       </div>
-    </div>
+    </div >
   );
 };
