@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { LeaveStatus, Role, LeaveCategory, User } from '../types';
-import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY } from '../services/utils';
+import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
-import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2, Key } from 'lucide-react';
+import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, RotateCcw, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2, Key, Loader2 } from 'lucide-react';
 import { attendanceAPI, holidayAPI, userAPI } from '../services/api';
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
@@ -24,7 +24,7 @@ const MIN_NORMAL_SECONDS = (8 * 3600) + (15 * 60); // 8h 15m = 29700 seconds
 const MAX_NORMAL_SECONDS = (8 * 3600) + (22 * 60); // 8h 22m = 30120 seconds
 
 export const HRDashboard: React.FC = () => {
-  const { auth, leaveRequests, updateLeaveStatus, users, attendanceRecords, companyHolidays, addCompanyHoliday, createUser, updateUser, refreshData } = useApp();
+  const { auth, leaveRequests, updateLeaveStatus, users, attendanceRecords, companyHolidays, addCompanyHoliday, createUser, updateUser, refreshData, loading } = useApp();
 
   const [newHoliday, setNewHoliday] = useState({ date: '', description: '' });
   const [newUser, setNewUser] = useState({
@@ -309,6 +309,11 @@ export const HRDashboard: React.FC = () => {
 
   // Helper function to calculate extra time leave balance and carryover
   const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[]) => {
+    // Build a Set of holiday dates for fast lookup
+    // Use h.date directly to avoid UTC/IST timezone shift
+    const holidayDates = new Set(
+      companyHolidays.map(h => typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0])
+    );
     // Calculate extra time leave hours taken
     const extraTimeLeaveHours = monthLeaves
       .filter(leave => {
@@ -359,16 +364,32 @@ export const HRDashboard: React.FC = () => {
 
     monthRecords.forEach(r => {
       if (r.checkIn && r.checkOut) {
-        const checkIn = new Date(r.checkIn).getTime();
+        const checkInDate = new Date(r.checkIn);
         const checkOut = new Date(r.checkOut).getTime();
-        const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
+        const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
         const breakSeconds = getBreakSeconds(r.breaks) || 0;
-        let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
+
+        const attendanceDate = r.date;
+        const isHolidayDay = holidayDates.has(attendanceDate);
+
+        // Late check-in penalty: use centralized utility
+        const penaltySeconds = !isHolidayDay && isPenaltyEffective(attendanceDate)
+          ? calculateLatenessPenaltySeconds(r.checkIn)
+          : 0;
+        let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+
+        // Check if this day is a company holiday — all worked time is overtime
+        if (isHolidayDay) {
+          if (netWorkedRaw > 0) {
+            totalExtraTimeSeconds += netWorkedRaw;
+          }
+          return; // Skip normal low/extra logic
+        }
 
         // Check if there's an approved Extra Time Leave for this attendance date
         // Add the leave hours to worked hours for flag calculation
         // Example: 1 hour leave + 7:15 work = 8:15 total (normal time)
-        const attendanceDate = r.date;
         const extraTimeLeaveForDate = monthLeaves.find(leave => {
           const status = (leave.status || '').trim();
           if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
@@ -435,7 +456,12 @@ export const HRDashboard: React.FC = () => {
     };
   };
 
-  const employeeStats = users.filter(u => u.role === Role.EMPLOYEE).map(user => {
+  // Build holiday Set for efficient lookup - memoized to avoid redundant rebuilds
+  const holidayDateSet = useMemo(() => new Set(
+    companyHolidays.map(h => typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0])
+  ), [companyHolidays]);
+
+  const employeeStats = useMemo(() => users.filter(u => u.role === Role.EMPLOYEE).map(user => {
     const records = attendanceRecords.filter(r => r.userId === user.id);
     const presentDays = records.filter(r => r.checkIn && r.checkOut).length;
 
@@ -450,13 +476,32 @@ export const HRDashboard: React.FC = () => {
 
     records.forEach(r => {
       if (r.checkIn && r.checkOut) {
-        const checkIn = new Date(r.checkIn).getTime();
+        const checkInDate = new Date(r.checkIn);
         const checkOut = new Date(r.checkOut).getTime();
-        const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
+        const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
         const breakSeconds = getBreakSeconds(r.breaks) || 0;
-        let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
 
+        const recordDateISO = new Date(r.date).toISOString().split('T')[0];
         const recordDateStr = new Date(r.date).toDateString();
+        const isHolidayDay = holidayDateSet.has(recordDateISO);
+
+        // Late check-in penalty: use centralized utility
+        const penaltySeconds = !isHolidayDay && isPenaltyEffective(recordDateISO)
+          ? calculateLatenessPenaltySeconds(r.checkIn)
+          : 0;
+        let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+
+        // Check if this day is a company holiday — all worked time is overtime
+        if (isHolidayDay) {
+          if (netWorkedRaw > 0) {
+            totalWorkedSeconds += netWorkedRaw;
+            extraTimeCount++;
+            totalExtraTimeSeconds += netWorkedRaw;
+          }
+          totalBreakSeconds += breakSeconds;
+          return; // Skip normal low/extra logic
+        }
 
         // Add Extra Time Leave
         const extraTimeLeave = leaves.find(leave =>
@@ -502,6 +547,7 @@ export const HRDashboard: React.FC = () => {
     // Calculate balance with carryover
     const balance = calculateEmployeeBalance(user.id, records, leaves);
 
+    // Sum days helper
     const sumDaysForCategory = (leavesArr: any[], category: LeaveCategory) => {
       return leavesArr
         .filter(l => l.category === category)
@@ -513,10 +559,6 @@ export const HRDashboard: React.FC = () => {
     const half = sumDaysForCategory(leaves, LeaveCategory.HALF_DAY);
     const extraTime = sumDaysForCategory(leaves, LeaveCategory.EXTRA_TIME);
     const totalLeaves = paid + unpaid + half + extraTime;
-
-    // Get half day and extra time leaves with their start times
-    const halfDayLeaves = leaves.filter(l => l.category === LeaveCategory.HALF_DAY);
-    const extraTimeLeaves = leaves.filter(l => l.category === LeaveCategory.EXTRA_TIME);
 
     return {
       user,
@@ -531,11 +573,11 @@ export const HRDashboard: React.FC = () => {
       paid, unpaid, half, extraTime, totalLeaves,
       records,
       allLeaves,
-      balance, // Add balance information
-      halfDayLeaves, // Add half day leaves with time info
-      extraTimeLeaves // Add extra time leaves with time info
+      balance,
+      halfDayLeaves: leaves.filter(l => l.category === LeaveCategory.HALF_DAY),
+      extraTimeLeaves: leaves.filter(l => l.category === LeaveCategory.EXTRA_TIME)
     };
-  });
+  }), [users, attendanceRecords, leaveRequests, holidayDateSet]);
 
   const handleAddHoliday = (e: React.FormEvent) => {
     e.preventDefault();
@@ -771,18 +813,42 @@ export const HRDashboard: React.FC = () => {
     const MIN_NORMAL_SECONDS_LOCAL = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
     const MAX_NORMAL_SECONDS_LOCAL = 8 * 3600 + 22 * 60; // 8h 22m = 30120 seconds
 
+    // Build holiday Set for fast lookup
+    // Use h.date directly to avoid UTC/IST timezone shift
+    const holidayDateSet = new Set(
+      companyHolidays.map(h => typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0])
+    );
+
     monthlyAttendance.forEach(record => {
       if (record.checkIn && record.checkOut) {
         daysPresent++;
-        const checkIn = new Date(record.checkIn).getTime();
+        const checkInDate = new Date(record.checkIn);
         const checkOut = new Date(record.checkOut).getTime();
-        const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
+        const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
 
         // Get break time from breaks array
         const breakSeconds = getBreakSeconds(record.breaks) || 0;
-        let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
 
         const recordDateStr = new Date(record.date).toDateString();
+        const recordDateISO = new Date(record.date).toISOString().split('T')[0];
+        const isHolidayDay = holidayDateSet.has(recordDateISO);
+
+        // Late check-in penalty: 15 minutes if check-in > 9:00 AM
+        const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
+        const isLateCheckIn = !isHolidayDay && checkInSeconds > 9 * 3600;
+        const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+        let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+
+        // Check if this day is a company holiday — all worked time is overtime
+        if (isHolidayDay) {
+          totalWorkedSeconds += netWorkedRaw;
+          totalBreakSeconds += breakSeconds;
+          if (netWorkedRaw > 0) {
+            totalExtraTimeSeconds += netWorkedRaw;
+          }
+          return; // Skip normal low/extra logic
+        }
 
         // Add Extra Time Leave
         const extraTimeLeave = monthlyLeaves.find(leave =>
@@ -859,6 +925,15 @@ export const HRDashboard: React.FC = () => {
 
   const hrUser = auth.user;
   const hrBondInfo = hrUser ? calculateBondRemaining(hrUser.bonds, hrUser.joiningDate) : null;
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[400px] space-y-4">
+        <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
+        <p className="text-slate-500 font-medium animate-pulse">Loading dashboard data...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8 animate-fade-in">
@@ -1179,6 +1254,7 @@ export const HRDashboard: React.FC = () => {
                                         <th className="px-3 py-2 text-left">Category</th>
                                         <th className="px-3 py-2 text-left">Days</th>
                                         <th className="px-3 py-2 text-right">Status</th>
+                                        <th className="px-3 py-2 text-center">Action</th>
                                       </tr>
                                     </thead>
                                     <tbody>
@@ -1206,6 +1282,26 @@ export const HRDashboard: React.FC = () => {
                                                   'bg-yellow-100 text-yellow-700'
                                                 }`}>{l.status}</span>
                                             </td>
+                                            <td className="px-3 py-2 text-center">
+                                              {(l.status === LeaveStatus.APPROVED || l.status === LeaveStatus.REJECTED) && (
+                                                <button
+                                                  onClick={async () => {
+                                                    if (!confirm(`Are you sure you want to revert this ${l.status.toLowerCase()} leave?`)) return;
+                                                    try {
+                                                      await updateLeaveStatus(l.id, LeaveStatus.PENDING, `Reverted from ${l.status} by HR`);
+                                                      alert('Leave reverted to Pending status successfully');
+                                                      await refreshData();
+                                                    } catch (error: any) {
+                                                      alert(error.message || 'Failed to revert leave');
+                                                    }
+                                                  }}
+                                                  className="p-1 text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                                                  title="Revert to Pending"
+                                                >
+                                                  <RotateCcw size={14} />
+                                                </button>
+                                              )}
+                                            </td>
                                           </tr>
                                         );
                                       })}
@@ -1223,10 +1319,22 @@ export const HRDashboard: React.FC = () => {
                               {(() => {
                                 const lowTimeRecords = stat.records.filter(r => {
                                   if (!r.checkIn || !r.checkOut) return false;
-                                  const checkIn = new Date(r.checkIn).getTime();
+                                  const checkInDate = new Date(r.checkIn);
                                   const checkOut = new Date(r.checkOut).getTime();
                                   const breakSec = getBreakSeconds(r.breaks) || 0;
-                                  let netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+                                  const netWorkedRaw = Math.floor((checkOut - checkInDate.getTime()) / 1000) - breakSec;
+
+                                  const recordDateISO = typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0];
+                                  const isHolidayDay = companyHolidays.some(h => (typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0]) === recordDateISO);
+
+                                  // Late check-in penalty: 15 minutes if check-in > 9:00 AM
+                                  const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
+                                  const isLateCheckIn = !isHolidayDay && checkInSeconds > 9 * 3600;
+                                  const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+                                  let netWorked = Math.max(0, netWorkedRaw - penaltySeconds);
+
+                                  // Holiday rule: never flag as low time on holidays
+                                  if (isHolidayDay) return false;
 
                                   const recordDateStr = new Date(r.date).toDateString();
 
@@ -1277,10 +1385,19 @@ export const HRDashboard: React.FC = () => {
                                       </thead>
                                       <tbody>
                                         {lowTimeRecords.map(r => {
-                                          const checkIn = new Date(r.checkIn!).getTime();
+                                          const checkInDate = new Date(r.checkIn!);
                                           const checkOut = new Date(r.checkOut!).getTime();
                                           const breakSec = getBreakSeconds(r.breaks) || 0;
-                                          let netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+                                          const netWorkedRaw = Math.floor((checkOut - checkInDate.getTime()) / 1000) - breakSec;
+
+                                          const recordDateISO = typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0];
+                                          const isHolidayDay = companyHolidays.some(h => (typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0]) === recordDateISO);
+
+                                          // Late check-in penalty: 15 minutes if check-in > 9:00 AM
+                                          const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
+                                          const isLateCheckIn = !isHolidayDay && checkInSeconds > 9 * 3600;
+                                          const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+                                          let netWorked = Math.max(0, netWorkedRaw - penaltySeconds);
 
                                           const recordDateStr = new Date(r.date).toDateString();
                                           const extraTimeLeave = stat.allLeaves.find(leave =>
@@ -1327,10 +1444,20 @@ export const HRDashboard: React.FC = () => {
                               {(() => {
                                 const extraTimeRecords = stat.records.filter(r => {
                                   if (!r.checkIn || !r.checkOut) return false;
-                                  const checkIn = new Date(r.checkIn).getTime();
+                                  const checkInDate = new Date(r.checkIn).getTime();
+                                  const checkInDateObj = new Date(r.checkIn);
                                   const checkOut = new Date(r.checkOut).getTime();
                                   const breakSec = getBreakSeconds(r.breaks) || 0;
-                                  let netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+                                  const netWorkedRaw = Math.floor((checkOut - checkInDate) / 1000) - breakSec;
+
+                                  const recordDateISO = typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0];
+                                  const isHolidayDay = companyHolidays.some(h => (typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0]) === recordDateISO);
+
+                                  // Late check-in penalty: 15 minutes if check-in > 9:00 AM
+                                  const checkInSeconds = checkInDateObj.getHours() * 3600 + checkInDateObj.getMinutes() * 60 + checkInDateObj.getSeconds();
+                                  const isLateCheckIn = !isHolidayDay && checkInSeconds > 9 * 3600;
+                                  const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+                                  let netWorked = Math.max(0, netWorkedRaw - penaltySeconds);
 
                                   const recordDateStr = new Date(r.date).toDateString();
 
@@ -1372,10 +1499,19 @@ export const HRDashboard: React.FC = () => {
                                       </thead>
                                       <tbody>
                                         {extraTimeRecords.map(r => {
-                                          const checkIn = new Date(r.checkIn!).getTime();
+                                          const checkInDate = new Date(r.checkIn!);
                                           const checkOut = new Date(r.checkOut).getTime();
                                           const breakSec = getBreakSeconds(r.breaks) || 0;
-                                          let netWorked = Math.floor((checkOut - checkIn) / 1000) - breakSec;
+                                          const netWorkedRaw = Math.floor((checkOut - checkInDate.getTime()) / 1000) - breakSec;
+
+                                          const recordDateISO = typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0];
+                                          const isHolidayDay = companyHolidays.some(h => (typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0]) === recordDateISO);
+
+                                          // Late check-in penalty: 15 minutes if check-in > 9:00 AM
+                                          const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
+                                          const isLateCheckIn = !isHolidayDay && checkInSeconds > 9 * 3600;
+                                          const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+                                          let netWorked = Math.max(0, netWorkedRaw - penaltySeconds);
 
                                           const recordDateStr = new Date(r.date).toDateString();
                                           const extraTimeLeave = stat.allLeaves.find(leave =>
@@ -1752,16 +1888,34 @@ export const HRDashboard: React.FC = () => {
                         const breakSeconds = getBreakSeconds(record.breaks) || 0;
 
                         let netWorkedSeconds = 0;
-                        if (record.checkIn && record.checkOut) {
-                          const checkIn = new Date(record.checkIn).getTime();
-                          const checkOut = new Date(record.checkOut).getTime();
-                          const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
-                          netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
-                        }
+                        let netWorkedRawSeconds = 0;
+                        let isLateCheckIn = false;
+                        let isHolidayDay = false;
+                        let isLowTime = false;
+                        let isExtraTime = false;
 
-                        // Normal: 8:15 to 8:22, Low < 8:15, Extra > 8:22
-                        const isLowTime = netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
-                        const isExtraTime = netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL;
+                        if (record.checkIn && record.checkOut) {
+                          const checkInDate = new Date(record.checkIn);
+                          const checkOut = new Date(record.checkOut).getTime();
+                          const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
+                          netWorkedRawSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+
+                          // Check if this day is a company holiday
+                          const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
+                          isHolidayDay = companyHolidays.some(h => {
+                            const hDate = typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0];
+                            return hDate === recordDateISO;
+                          });
+
+                          // Use pre-calculated penalty fields from the record
+                          isLateCheckIn = !!record.lateCheckIn;
+                          const penaltySeconds = record.penaltySeconds || 0;
+                          netWorkedSeconds = Math.max(0, netWorkedRawSeconds - penaltySeconds);
+
+                          // On holidays: never Low Time, always Extra Time if worked
+                          isLowTime = !isHolidayDay && netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
+                          isExtraTime = isHolidayDay ? (netWorkedRawSeconds > 0) : (netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL);
+                        }
 
                         return (
                           <tr key={record.id} className={`hover:bg-gray-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
@@ -1773,6 +1927,11 @@ export const HRDashboard: React.FC = () => {
                               <span className="text-emerald-600 font-semibold">
                                 {formatTime(record.checkIn)}
                               </span>
+                              {isLateCheckIn && record.penaltySeconds > 0 && (
+                                <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
+                                  <AlertCircle size={10} /> Late Penalty: 15m
+                                </div>
+                              )}
                             </td>
                             <td className="px-6 py-4">
                               <span className="text-rose-600 font-semibold">
@@ -1799,14 +1958,21 @@ export const HRDashboard: React.FC = () => {
                             </td>
                             <td className="px-6 py-4">
                               <span className="font-bold text-gray-800">
-                                {netWorkedSeconds > 0 ? formatDuration(netWorkedSeconds) : '-'}
+                                {netWorkedRawSeconds > 0 ? formatDuration(netWorkedRawSeconds) : '-'}
                               </span>
+                              {isLateCheckIn && record.penaltySeconds > 0 && (
+                                <div className="text-[10px] text-gray-400 font-normal">
+                                  (-15m penalty applied)
+                                </div>
+                              )}
                             </td>
                             <td className="px-6 py-4">
                               {!record.checkIn ? (
                                 <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">Absent</span>
                               ) : !record.checkOut ? (
                                 <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">In Progress</span>
+                              ) : isHolidayDay && netWorkedSeconds > 0 ? (
+                                <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">🏖 Holiday OT</span>
                               ) : isLowTime ? (
                                 <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-100 text-rose-700">Low Time</span>
                               ) : isExtraTime ? (
@@ -3406,7 +3572,6 @@ export const HRDashboard: React.FC = () => {
           </div>
         </>
       )}
-
     </div>
   );
 };

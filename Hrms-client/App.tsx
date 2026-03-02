@@ -8,6 +8,7 @@ import { AdminDashboard } from './pages/AdminDashboard';
 import { TodayAttendance } from './pages/TodayAttendance';
 import { Holidays } from './pages/Holidays';
 import { Profile } from './pages/Profile';
+import { Analytics } from './pages/Analytics';
 import { Sidebar } from './components/Sidebar';
 import { Role } from './types';
 
@@ -96,6 +97,14 @@ const AppRoutes = () => {
         <PrivateRoute roles={[Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/admin-analytics" element={
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
+          <AppLayout>
+            <Analytics />
           </AppLayout>
         </PrivateRoute>
       } />

@@ -8,6 +8,7 @@ export enum LeaveStatus {
   PENDING = 'Pending',
   APPROVED = 'Approved',
   REJECTED = 'Rejected',
+  CANCELLED = 'Cancelled',
 }
 
 export enum LeaveCategory {
@@ -84,6 +85,9 @@ export interface Attendance {
   totalWorkedSeconds: number;
   lowTimeFlag: boolean;
   extraTimeFlag: boolean;
+  penaltySeconds?: number;
+  lateCheckIn?: boolean;
+  isManualFlag?: boolean;
   notes?: string;
 }
 

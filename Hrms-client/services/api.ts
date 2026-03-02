@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://82.112.226.75:5001/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
 
 // Helper to get auth token
 const getToken = (): string | null => {
@@ -208,6 +208,12 @@ export const attendanceAPI = {
       body: JSON.stringify(data),
     });
   },
+
+  deleteAttendance: async (recordId: string) => {
+    return apiRequest(`/attendance/${recordId}`, {
+      method: 'DELETE',
+    });
+  },
 };
 
 // Leave API
@@ -240,6 +246,19 @@ export const leaveAPI = {
     return apiRequest(`/leaves/${id}/status`, {
       method: 'PUT',
       body: JSON.stringify({ status, hrComment }),
+    });
+  },
+
+  updateLeaveRequest: async (id: string, leaveData: any) => {
+    return apiRequest(`/leaves/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(leaveData),
+    });
+  },
+
+  deleteLeaveRequest: async (id: string) => {
+    return apiRequest(`/leaves/${id}`, {
+      method: 'DELETE',
     });
   },
 };
@@ -323,6 +342,13 @@ export const holidayAPI = {
     return apiRequest('/holidays', {
       method: 'POST',
       body: JSON.stringify({ date, description }),
+    });
+  },
+
+  updateHoliday: async (id: string, holidayData: any) => {
+    return apiRequest(`/holidays/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(holidayData),
     });
   },
 

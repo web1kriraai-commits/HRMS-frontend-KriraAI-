@@ -7,6 +7,47 @@ import { Attendance, Bond, Break } from '../types';
 const LOW_TIME_THRESHOLD_MINUTES = 495; // 8h 15m
 const EXTRA_TIME_THRESHOLD_MINUTES = 502; // 8h 22m
 const HALF_DAY_THRESHOLD_MINUTES = 240; // 4h 00m
+export const PENALTY_EFFECTIVE_DATE = '2026-03-01';
+export const LATE_PENALTY_SECONDS = 900; // 15 minutes
+
+export const isLateCheckIn = (isoStr?: string): boolean => {
+  if (!isoStr) return false;
+  const d = new Date(isoStr);
+  const hours = d.getHours();
+  const minutes = d.getMinutes();
+  const seconds = d.getSeconds();
+  // Late if after exactly 09:00:00
+  return (hours > 9) || (hours === 9 && (minutes > 0 || seconds > 0));
+};
+
+export const isPenaltyEffective = (dateStr: string): boolean => {
+  if (!dateStr) return false;
+  // Handle both ISO strings and YYYY-MM-DD
+  const dateStrSimple = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr;
+  return dateStrSimple >= PENALTY_EFFECTIVE_DATE;
+};
+
+/**
+ * Calculates how many seconds late the check-in was relative to 09:00 AM.
+ * Minimum penalty is 15 minutes (900s).
+ */
+export const calculateLatenessPenaltySeconds = (checkInIso?: string): number => {
+  if (!checkInIso) return 0;
+
+  const d = new Date(checkInIso);
+  const cutoff = new Date(checkInIso);
+  cutoff.setHours(9, 0, 0, 0);
+
+  const diff = d.getTime() - cutoff.getTime();
+  const latenessSeconds = Math.max(0, Math.floor(diff / 1000));
+
+  if (latenessSeconds > 0) {
+    // Penalty is 15 minutes OR actual lateness, whichever is greater
+    return Math.max(LATE_PENALTY_SECONDS, latenessSeconds);
+  }
+
+  return 0;
+};
 
 export const calculateDurationSeconds = (start: string, end: string): number => {
   const s = new Date(start).getTime();

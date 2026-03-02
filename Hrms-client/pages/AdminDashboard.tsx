@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Role, LeaveCategory, LeaveStatus, User } from '../types';
-import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key } from 'lucide-react';
-import { formatDate, getTodayStr, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY } from '../services/utils';
+import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw } from 'lucide-react';
+import { formatDate, getTodayStr, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI } from '../services/api';
 
@@ -20,7 +20,7 @@ const formatHoursToHoursMinutes = (hours: number) => {
 };
 
 export const AdminDashboard: React.FC = () => {
-  const { auth, users, auditLogs, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, notifications, leaveRequests, updateUser } = useApp();
+  const { auth, users, auditLogs, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, notifications, leaveRequests, updateUser, updateLeaveStatus, deleteAttendance, updateLeaveRequest, deleteLeaveRequest, updateHoliday, deleteHoliday, adminUpdateAttendance } = useApp();
   const [activeTab, setActiveTab] = useState<'summary' | 'users' | 'audit' | 'reports' | 'settings' | 'guidance'>('summary');
 
   // User management states
@@ -43,6 +43,7 @@ export const AdminDashboard: React.FC = () => {
   const [forgetPassword, setForgetPassword] = useState({ email: '', username: '', otp: '', newPassword: '' });
   const [forgetPasswordOtpSent, setForgetPasswordOtpSent] = useState(false);
   const [forgetPasswordOtpEmail, setForgetPasswordOtpEmail] = useState('');
+  const [editingAttendance, setEditingAttendance] = useState<any>(null);
 
   const [newHoliday, setNewHoliday] = useState({ date: '', description: '' });
   const [correction, setCorrection] = useState({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '' });
@@ -85,14 +86,17 @@ export const AdminDashboard: React.FC = () => {
 
   const timezones = ['UTC', 'America/New_York', 'America/Los_Angeles', 'Europe/London', 'Asia/Tokyo', 'Asia/Kolkata', 'Australia/Sydney'];
 
-  // Get monthly attendance for selected user
-  const getMonthlyAttendance = () => {
-    if (!selectedUserId || !selectedMonth) return [];
+  // Memoized holiday date Set — shared across all computations, rebuilt only when holidays list changes
+  const holidayDateSet = useMemo(() => new Set(
+    companyHolidays.map(h => typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0])
+  ), [companyHolidays]);
 
+  // Get monthly attendance for selected user
+  const monthlyAttendance = useMemo(() => {
+    if (!selectedUserId || !selectedMonth) return [];
     const [year, month] = selectedMonth.split('-').map(Number);
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0);
-
     return attendanceRecords
       .filter(record => {
         if (record.userId !== selectedUserId) return false;
@@ -100,33 +104,27 @@ export const AdminDashboard: React.FC = () => {
         return recordDate >= startDate && recordDate <= endDate;
       })
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  };
+  }, [attendanceRecords, selectedUserId, selectedMonth]);
 
-  const monthlyAttendance = getMonthlyAttendance();
   const selectedUser = users.find(u => u.id === selectedUserId);
 
   // Get leaves for selected user in selected month
-  const getMonthlyLeaves = () => {
+  const monthlyLeaves = useMemo(() => {
     if (!selectedUserId || !selectedMonth) return [];
-
     const [year, month] = selectedMonth.split('-').map(Number);
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59);
-
     return leaveRequests
       .filter(leave => {
         if (leave.userId !== selectedUserId) return false;
         const leaveStart = new Date(leave.startDate);
         const leaveEnd = new Date(leave.endDate);
-        // Check if leave overlaps with selected month
         return (leaveStart >= startDate && leaveStart <= endDate) ||
           (leaveEnd >= startDate && leaveEnd <= endDate) ||
           (leaveStart <= startDate && leaveEnd >= endDate);
       })
       .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime());
-  };
-
-  const monthlyLeaves = getMonthlyLeaves();
+  }, [leaveRequests, selectedUserId, selectedMonth]);
   const [leaveStatusFilter, setLeaveStatusFilter] = useState<'All' | 'Approved' | 'Rejected' | 'Pending'>('All');
   const [leaveFilterDate, setLeaveFilterDate] = useState('');
   const [leaveFilterMonth, setLeaveFilterMonth] = useState('');
@@ -173,8 +171,8 @@ export const AdminDashboard: React.FC = () => {
     return user.paidLeaveAllocation || 0;
   };
 
-  // Calculate paid leave usage for all users
-  const paidLeaveData = users
+  // Calculate paid leave usage for all users — memoized to avoid recalc on every render
+  const paidLeaveData = useMemo(() => users
     .filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR)
     .map(user => {
       const userLeaves = leaveRequests.filter(l => l.userId === user.id);
@@ -187,10 +185,8 @@ export const AdminDashboard: React.FC = () => {
         .reduce((sum, leave) => {
           return sum + calculateLeaveDays(leave.startDate, leave.endDate);
         }, 0);
-
       const totalAllocated = getTotalPaidLeaves(user);
       const remaining = totalAllocated - usedPaidLeaves;
-
       return {
         user,
         allocated: totalAllocated,
@@ -198,45 +194,34 @@ export const AdminDashboard: React.FC = () => {
         remaining: Math.max(0, remaining)
       };
     })
-    .sort((a, b) => a.user.name.localeCompare(b.user.name));
+    .sort((a, b) => a.user.name.localeCompare(b.user.name)),
+    [users, leaveRequests, companyHolidays]);
 
-  const filteredMonthlyLeaves = monthlyLeaves.filter(leave => {
-    // Status filter
+  const filteredMonthlyLeaves = useMemo(() => monthlyLeaves.filter(leave => {
     if (leaveStatusFilter !== 'All') {
       const status = (leave.status || '').trim();
       if (status !== leaveStatusFilter) return false;
     }
-
-    // Date filter - check if leave overlaps with the selected date
     if (leaveFilterDate) {
       const filterDate = new Date(leaveFilterDate);
       const leaveStart = new Date(leave.startDate);
       const leaveEnd = new Date(leave.endDate);
-      // Check if filter date falls within leave range
-      if (filterDate < leaveStart || filterDate > leaveEnd) {
-        return false;
-      }
+      if (filterDate < leaveStart || filterDate > leaveEnd) return false;
     }
-
-    // Month filter - check if leave overlaps with the selected month
     if (leaveFilterMonth) {
       const [year, month] = leaveFilterMonth.split('-').map(Number);
       const monthStart = new Date(year, month - 1, 1);
       const monthEnd = new Date(year, month, 0, 23, 59, 59);
       const leaveStart = new Date(leave.startDate);
       const leaveEnd = new Date(leave.endDate);
-      // Check if leave overlaps with selected month
-      if (leaveEnd < monthStart || leaveStart > monthEnd) {
-        return false;
-      }
+      if (leaveEnd < monthStart || leaveStart > monthEnd) return false;
     }
-
     return true;
-  });
+  }), [monthlyLeaves, leaveStatusFilter, leaveFilterDate, leaveFilterMonth]);
 
-  const totalLeaveDays = filteredMonthlyLeaves.reduce((sum, leave) => {
+  const totalLeaveDays = useMemo(() => filteredMonthlyLeaves.reduce((sum, leave) => {
     return sum + calculateLeaveDays(leave.startDate, leave.endDate);
-  }, 0);
+  }, 0), [filteredMonthlyLeaves, companyHolidays]);
 
   const [showNotificationsPopup, setShowNotificationsPopup] = useState(false);
   const [bondModalUser, setBondModalUser] = useState<User | null>(null);
@@ -498,34 +483,44 @@ export const AdminDashboard: React.FC = () => {
     const MIN_NORMAL_SECONDS = 8 * 3600 + 15 * 60; // 8h 15m
     const MAX_NORMAL_SECONDS = 8 * 3600 + 22 * 60; // 8h 22m
 
+    // Use the shared memoized holidayDateSet (from outer scope)
     monthRecords.forEach(r => {
       if (r.checkIn && r.checkOut) {
-        const checkIn = new Date(r.checkIn).getTime();
+        const checkInDate = new Date(r.checkIn);
         const checkOut = new Date(r.checkOut).getTime();
-        const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
+        const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
         const breakSeconds = getBreakSeconds(r.breaks) || 0;
-        let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
+
+        const attendanceDate = typeof r.date === 'string' ? r.date.split('T')[0] : r.date;
+        const isHolidayDay = holidayDateSet.has(attendanceDate);
+
+        // Late check-in penalty: use centralized utility
+        const penaltySeconds = !isHolidayDay && isPenaltyEffective(attendanceDate)
+          ? calculateLatenessPenaltySeconds(r.checkIn)
+          : 0;
+        let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+
+        // Holiday rule: all worked time is overtime, never low time
+        if (isHolidayDay) {
+          if (netWorkedRaw > 0) totalExtraTimeSeconds += netWorkedRaw;
+          return;
+        }
 
         // Check if there's an approved Extra Time Leave for this attendance date
-        // Add the leave hours to worked hours for flag calculation
-        // Example: 1 hour leave + 7:15 work = 8:15 total (normal time)
-        const attendanceDate = r.date;
         const extraTimeLeaveForDate = monthLeaves.find(leave => {
           const status = (leave.status || '').trim();
           if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
           if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
-          // Check if leave date matches attendance date
           return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
             (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
         });
 
         if (extraTimeLeaveForDate && extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
-          // Calculate leave hours from startTime/endTime
           const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
           const leaveSeconds = leaveHours * 3600;
-          netWorkedSeconds += leaveSeconds; // Add leave time to worked time
+          netWorkedSeconds += leaveSeconds;
         } else if (extraTimeLeaveForDate) {
-          // Fallback if no specific time: add standard day calculation
           const leaveDays = calculateLeaveDays(extraTimeLeaveForDate.startDate, extraTimeLeaveForDate.endDate);
           netWorkedSeconds += leaveDays * 8.25 * 3600;
         }
@@ -535,7 +530,6 @@ export const AdminDashboard: React.FC = () => {
           const status = (leave.status || '').trim();
           if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
           if (leave.category !== LeaveCategory.HALF_DAY) return false;
-          // Check if leave date matches attendance date
           return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
             (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
         });
@@ -582,18 +576,6 @@ export const AdminDashboard: React.FC = () => {
 
 
 
-  // Helper to calculate breaks - duplicating from utils or need to import? 
-  // It is imported as calculateTotalBreakSeconds? No, exported from utils.
-  // Wait, line 529 used getBreakSeconds, which is local?
-  // Let's check getBreakSeconds in AdminDashboard (line 529 in original view).
-  // Assuming getBreakSeconds is defined locally or need to use calculateTotalBreakSeconds from utils.
-  // I will check imports. calculateTotalBreakSeconds NOT imported.
-  // Let's use formatDuration as imported.
-  // And use local getBreakSeconds if available or just simpler math if breaks not complex.
-  // Actually, let's assume getBreakSeconds is available near line 510 or inside calculateMonthlyStats? 
-  // Ah, line 529: const breakSeconds = getBreakSeconds(record.breaks) || ...
-  // Check if getBreakSeconds is defined locally. In line 490-600 view I didn't see it.
-  // I will check where getBreakSeconds is.
 
 
   // Helper to calculate stats for salary deduction specific to a user and month
@@ -617,13 +599,27 @@ export const AdminDashboard: React.FC = () => {
     let totalLowTimeSeconds = 0;
     const MIN_NORMAL_SECONDS = 8 * 3600 + 15 * 60; // 8h 15m
 
+    // Use the shared memoized holidayDateSet (from outer scope)
+    const deductHolidaySet = holidayDateSet;
+
     userAttendance.forEach(record => {
       if (record.checkIn && record.checkOut) {
-        const checkIn = new Date(record.checkIn).getTime();
+        const checkInDate = new Date(record.checkIn);
         const checkOut = new Date(record.checkOut).getTime();
-        const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
+        const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
         const breakSeconds = getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
-        const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
+        const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
+        const isHolidayDay = deductHolidaySet.has(recordDateISO);
+
+        // Late check-in penalty: 15 minutes if check-in > 9:00 AM
+        const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
+        const isLateCheckIn = !isHolidayDay && checkInSeconds > 9 * 3600;
+        const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+        const netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+
+        // Never count holiday days as low time
+        if (isHolidayDay) return;
 
         if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
           totalLowTimeSeconds += MIN_NORMAL_SECONDS - netWorkedSeconds;
@@ -660,24 +656,34 @@ export const AdminDashboard: React.FC = () => {
     monthlyAttendance.forEach(record => {
       if (record.checkIn && record.checkOut) {
         daysPresent++;
-        const checkIn = new Date(record.checkIn).getTime();
+        const checkInDate = new Date(record.checkIn);
         const checkOut = new Date(record.checkOut).getTime();
-        const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
+        const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
 
         // Get break time from breaks array or totalBreakDuration
         const breakSeconds = getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
-        let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+        const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
 
         const recordDateStr = new Date(record.date).toDateString();
+        const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
+
+        // Use the shared memoized holidayDateSet (from outer scope)
+        const isHolidayDay = holidayDateSet.has(recordDateISO as string);
+
+        // Late check-in penalty: 15 minutes if check-in > 9:00 AM
+        const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
+        const isLateCheckIn = !isHolidayDay && checkInSeconds > 9 * 3600;
+        const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+        let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+
 
         // Add Extra Time Leave
-        const extraTimeLeave = filteredMonthlyLeaves.find(leave =>
-          leave.userId === record.userId &&
-          new Date(leave.startDate).toDateString() === recordDateStr &&
-          (leave.category === LeaveCategory.EXTRA_TIME || (leave.category === LeaveCategory.HALF_DAY && leave.reason?.includes('[Extra Time Leave]'))) &&
-          (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED)
-        );
-
+        const extraTimeLeave = filteredMonthlyLeaves.find(leave => {
+          return leave.userId === record.userId &&
+            new Date(leave.startDate).toDateString() === recordDateStr &&
+            (leave.category === LeaveCategory.EXTRA_TIME || (leave.category === LeaveCategory.HALF_DAY && leave.reason?.includes('[Extra Time Leave]'))) &&
+            (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED)
+        });
         if (extraTimeLeave && extraTimeLeave.startTime && extraTimeLeave.endTime) {
           const [startH, startM] = extraTimeLeave.startTime.split(':').map(Number);
           const [endH, endM] = extraTimeLeave.endTime.split(':').map(Number);
@@ -687,17 +693,25 @@ export const AdminDashboard: React.FC = () => {
           netWorkedSeconds += leaveMinutes * 60;
         }
 
+        // Holiday rule: all worked time is overtime, never low time
+        if (isHolidayDay) {
+          totalWorkedSeconds += netWorkedRaw;
+          totalBreakSeconds += breakSeconds;
+          if (netWorkedRaw > 0) totalExtraTimeSeconds += netWorkedRaw;
+          return;
+        }
+
         totalWorkedSeconds += netWorkedSeconds;
         totalBreakSeconds += breakSeconds;
 
         // Check for Half Day Leave (Standard, not Extra Time Leave derived)
-        const hasHalfDay = filteredMonthlyLeaves.some(leave =>
-          leave.userId === record.userId &&
-          new Date(leave.startDate).toDateString() === recordDateStr &&
-          leave.category === LeaveCategory.HALF_DAY &&
-          !leave.reason?.includes('[Extra Time Leave]') &&
-          (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED)
-        );
+        const hasHalfDay = filteredMonthlyLeaves.some(leave => {
+          return leave.userId === record.userId &&
+            new Date(leave.startDate).toDateString() === recordDateStr &&
+            leave.category === LeaveCategory.HALF_DAY &&
+            !leave.reason?.includes('[Extra Time Leave]') &&
+            (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED)
+        });
 
         // Normal: 8:15 to 8:22, Low < 8:15, Extra > 8:22
         if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
@@ -707,7 +721,6 @@ export const AdminDashboard: React.FC = () => {
         } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
           totalExtraTimeSeconds += netWorkedSeconds - MAX_NORMAL_SECONDS;
         }
-        // If netWorkedSeconds is between 8:15 and 8:22, it's normal (no low/extra)
       }
     });
 
@@ -813,14 +826,48 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const getMonthName = () => {
+    if (!selectedMonth) return '';
+    return new Date(selectedMonth + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  };
+
   const formatTime = (isoString: string | undefined) => {
     if (!isoString) return '-';
     return new Date(isoString).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
   };
 
-  const getMonthName = () => {
-    if (!selectedMonth) return '';
-    return new Date(selectedMonth + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  const handleDirectStatusToggle = async (record: any) => {
+    if (!record.checkIn || !record.checkOut) return;
+
+    let nextManualFlag = true;
+    let nextLowTime = false;
+    let nextExtraTime = false;
+
+    if (!record.isManualFlag) {
+      // Automatic -> Manual Low Time
+      nextLowTime = true;
+    } else if (record.lowTimeFlag) {
+      // Low Time -> Extra Time
+      nextExtraTime = true;
+    } else if (record.extraTimeFlag) {
+      // Extra Time -> Automatic (Reset)
+      nextManualFlag = false;
+    } else {
+      // Manual On Time -> Low Time
+      nextLowTime = true;
+    }
+
+    try {
+      await adminUpdateAttendance(record.id, {
+        isManualFlag: nextManualFlag,
+        lowTimeFlag: nextLowTime,
+        extraTimeFlag: nextExtraTime
+      });
+      await refreshData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to toggle status');
+    }
   };
 
   // Format duration with small text for units
@@ -1323,6 +1370,7 @@ export const AdminDashboard: React.FC = () => {
                             <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Reason</th>
                             <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Days</th>
                             <th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Status</th>
+                            <th className="px-6 py-3 text-center text-xs font-black text-gray-500 uppercase">Action</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
@@ -1362,6 +1410,44 @@ export const AdminDashboard: React.FC = () => {
                                     {leave.status}
                                   </span>
                                 </td>
+                                <td className="px-6 py-4 text-center">
+                                  <div className="flex items-center justify-center gap-1">
+                                    {(leave.status === 'Approved' || leave.status === 'Rejected') && (
+                                      <button
+                                        onClick={async () => {
+                                          if (!confirm(`Are you sure you want to revert this ${leave.status.toLowerCase()} leave?`)) return;
+                                          try {
+                                            await updateLeaveStatus(leave.id, 'Pending', `Reverted from ${leave.status} by Admin`);
+                                            alert('Leave reverted to Pending status successfully');
+                                            await refreshData();
+                                          } catch (error: any) {
+                                            alert(error.message || 'Failed to revert leave');
+                                          }
+                                        }}
+                                        className="p-1 text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                                        title="Revert to Pending"
+                                      >
+                                        <RotateCcw size={16} />
+                                      </button>
+                                    )}
+                                    <button
+                                      onClick={async () => {
+                                        if (!confirm('Are you sure you want to delete this leave request?')) return;
+                                        try {
+                                          await deleteLeaveRequest(leave.id);
+                                          alert('Leave request deleted successfully');
+                                          await refreshData();
+                                        } catch (error: any) {
+                                          alert(error.message || 'Failed to delete leave request');
+                                        }
+                                      }}
+                                      className="p-1 text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                                      title="Delete Leave"
+                                    >
+                                      <Trash2 size={16} />
+                                    </button>
+                                  </div>
+                                </td>
                               </tr>
                             );
                           })}
@@ -1394,6 +1480,7 @@ export const AdminDashboard: React.FC = () => {
                         </th>
                         <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase tracking-wider">Worked</th>
                         <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase tracking-wider">Status</th>
+                        <th className="px-6 py-4 text-center text-xs font-black text-gray-500 uppercase tracking-wider">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
@@ -1413,16 +1500,39 @@ export const AdminDashboard: React.FC = () => {
                           const breakSeconds = getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
 
                           let netWorkedSeconds = 0;
-                          if (record.checkIn && record.checkOut) {
-                            const checkIn = new Date(record.checkIn).getTime();
-                            const checkOut = new Date(record.checkOut).getTime();
-                            const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
-                            netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
-                          }
+                          let netWorkedRawSeconds = 0;
+                          let isLateCheckIn = false;
+                          let isHolidayDay = false;
+                          let isLowTime = false;
+                          let isExtraTime = false;
 
-                          // Normal: 8:15 to 8:22, Low < 8:15, Extra > 8:22
-                          const isLowTime = netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
-                          const isExtraTime = netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL;
+                          if (record.checkIn && record.checkOut) {
+                            const checkInDate = new Date(record.checkIn);
+                            const checkOut = new Date(record.checkOut).getTime();
+                            const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
+                            netWorkedRawSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+
+                            // Check if this day is a company holiday
+                            const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
+                            isHolidayDay = companyHolidays.some(h => {
+                              const hDate = typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0];
+                              return hDate === recordDateISO;
+                            });
+
+                            // Use pre-calculated penalty fields from the record
+                            isLateCheckIn = !!record.lateCheckIn;
+                            const penaltySeconds = record.penaltySeconds || 0;
+                            netWorkedSeconds = Math.max(0, netWorkedRawSeconds - penaltySeconds);
+
+                            if (record.isManualFlag) {
+                              isLowTime = !!record.lowTimeFlag;
+                              isExtraTime = !!record.extraTimeFlag;
+                            } else {
+                              // On holidays: never Low Time, always Extra Time if worked
+                              isLowTime = !isHolidayDay && netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
+                              isExtraTime = isHolidayDay ? (netWorkedRawSeconds > 0) : (netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL);
+                            }
+                          }
 
                           return (
                             <tr key={record.id} className={`hover:bg-gray-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
@@ -1434,6 +1544,11 @@ export const AdminDashboard: React.FC = () => {
                                 <span className="text-emerald-600 font-semibold">
                                   {formatTime(record.checkIn)}
                                 </span>
+                                {isLateCheckIn && record.penaltySeconds > 0 && (
+                                  <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
+                                    <AlertCircle size={10} /> Late Penalty: 15m
+                                  </div>
+                                )}
                               </td>
                               <td className="px-6 py-4">
                                 <span className="text-rose-600 font-semibold">
@@ -1460,21 +1575,69 @@ export const AdminDashboard: React.FC = () => {
                               </td>
                               <td className="px-6 py-4">
                                 <span className="font-bold text-gray-800">
-                                  {netWorkedSeconds > 0 ? formatDuration(netWorkedSeconds) : '-'}
+                                  {netWorkedRawSeconds > 0 ? formatDuration(netWorkedRawSeconds) : '-'}
                                 </span>
+                                {isLateCheckIn && record.penaltySeconds > 0 && (
+                                  <div className="text-[10px] text-gray-400 font-normal">
+                                    (-15m penalty applied)
+                                  </div>
+                                )}
                               </td>
                               <td className="px-6 py-4">
-                                {!record.checkIn ? (
-                                  <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">Absent</span>
-                                ) : !record.checkOut ? (
-                                  <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">In Progress</span>
-                                ) : isLowTime ? (
-                                  <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-100 text-rose-700">Low Time</span>
-                                ) : isExtraTime ? (
-                                  <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700">Extra Time</span>
-                                ) : (
-                                  <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700">On Time</span>
-                                )}
+                                <button
+                                  onClick={() => handleDirectStatusToggle(record)}
+                                  className="hover:opacity-80 transition-opacity focus:outline-none flex flex-col items-center"
+                                  title="Click to toggle status manually"
+                                >
+                                  {!record.checkIn ? (
+                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">Absent</span>
+                                  ) : !record.checkOut ? (
+                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">In Progress</span>
+                                  ) : isHolidayDay && netWorkedSeconds > 0 ? (
+                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">🏖 Holiday OT</span>
+                                  ) : isLowTime ? (
+                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-100 text-rose-700 font-bold border-2 border-rose-200">Low Time</span>
+                                  ) : isExtraTime ? (
+                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700 font-bold border-2 border-emerald-200">Extra Time</span>
+                                  ) : (
+                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700">On Time</span>
+                                  )}
+                                  {record.isManualFlag && (
+                                    <div className="text-[9px] text-gray-400 mt-1 font-bold flex items-center gap-0.5 justify-center">
+                                      <Globe size={8} /> Manual Override
+                                    </div>
+                                  )}
+                                </button>
+                              </td>
+                              <td className="px-6 py-4 text-center">
+                                <div className="flex items-center justify-center gap-2">
+                                  <button
+                                    onClick={() => {
+                                      setEditingAttendance(record);
+                                      // Initialize edit form if needed, or just open modal
+                                    }}
+                                    className="p-1 text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                                    title="Edit Record"
+                                  >
+                                    <Edit2 size={14} />
+                                  </button>
+                                  <button
+                                    onClick={async () => {
+                                      if (!confirm(`Are you sure you want to delete the attendance record for ${formatDate(record.date)}?`)) return;
+                                      try {
+                                        await deleteAttendance(record.id);
+                                        alert('Attendance record deleted successfully');
+                                        await refreshData();
+                                      } catch (error: any) {
+                                        alert(error.message || 'Failed to delete record');
+                                      }
+                                    }}
+                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                                    title="Delete Record"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           );
@@ -1565,6 +1728,95 @@ export const AdminDashboard: React.FC = () => {
               </div>
             </div>
           )}
+
+          {/* Edit Attendance Modal */}
+          {editingAttendance && (
+            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <Card className="w-full max-w-lg">
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-xl bg-indigo-100 flex items-center justify-center">
+                      <Edit2 className="h-5 w-5 text-indigo-600" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-gray-800">Edit Attendance</h3>
+                      <p className="text-xs text-gray-500">Manual override for {formatDate(editingAttendance.date)}</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setEditingAttendance(null)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-400">
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <form onSubmit={async (e) => {
+                  e.preventDefault();
+                  const form = e.target as HTMLFormElement;
+                  const updates = {
+                    checkIn: (form.elements.namedItem('checkIn') as HTMLInputElement).value,
+                    checkOut: (form.elements.namedItem('checkOut') as HTMLInputElement).value,
+                    notes: (form.elements.namedItem('notes') as HTMLInputElement).value,
+                    isManualFlag: (form.elements.namedItem('isManualFlag') as HTMLInputElement).checked,
+                    lowTimeFlag: (form.elements.namedItem('lowTimeFlag') as HTMLInputElement).checked,
+                    extraTimeFlag: (form.elements.namedItem('extraTimeFlag') as HTMLInputElement).checked,
+                  };
+                  const breakMinutes = parseInt((form.elements.namedItem('breakDuration') as HTMLInputElement).value);
+
+                  try {
+                    await adminUpdateAttendance(editingAttendance.id, updates, isNaN(breakMinutes) ? undefined : breakMinutes);
+                    alert('Attendance record updated successfully');
+                    setEditingAttendance(null);
+                    await refreshData();
+                  } catch (error: any) {
+                    alert(error.message || 'Failed to update attendance');
+                  }
+                }} className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Check In</label>
+                      <input type="time" name="checkIn" defaultValue={editingAttendance.checkIn ? new Date(editingAttendance.checkIn).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''} className="w-full p-2 border rounded-lg" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Check Out</label>
+                      <input type="time" name="checkOut" defaultValue={editingAttendance.checkOut ? new Date(editingAttendance.checkOut).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''} className="w-full p-2 border rounded-lg" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Break Duration (mins)</label>
+                    <input type="number" name="breakDuration" defaultValue={editingAttendance.breakDurationMinutes || 0} className="w-full p-2 border rounded-lg" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Admin Notes</label>
+                    <input type="text" name="notes" defaultValue={editingAttendance.notes || ''} className="w-full p-2 border rounded-lg" />
+                  </div>
+
+                  <div className="p-4 bg-gray-50 rounded-xl space-y-3">
+                    <div className="flex items-center gap-2">
+                      <input type="checkbox" id="isManualFlag" name="isManualFlag" defaultChecked={editingAttendance.isManualFlag} className="rounded text-indigo-600" />
+                      <label htmlFor="isManualFlag" className="text-sm font-semibold text-gray-800">Manual Status Selection</label>
+                    </div>
+                    <p className="text-[10px] text-gray-400 -mt-1 ml-6">If enabled, automatic low/extra time calculation will be bypassed.</p>
+
+                    <div className="grid grid-cols-2 gap-4 ml-6">
+                      <div className="flex items-center gap-2">
+                        <input type="checkbox" id="lowTimeFlag" name="lowTimeFlag" defaultChecked={editingAttendance.lowTimeFlag} className="rounded text-indigo-600" />
+                        <label htmlFor="lowTimeFlag" className="text-xs text-gray-600">Low Time</label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input type="checkbox" id="extraTimeFlag" name="extraTimeFlag" defaultChecked={editingAttendance.extraTimeFlag} className="rounded text-indigo-600" />
+                        <label htmlFor="extraTimeFlag" className="text-xs text-gray-600">Extra Time</label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 pt-2">
+                    <Button type="button" onClick={() => setEditingAttendance(null)} className="flex-1 bg-gray-100 text-gray-800 hover:bg-gray-200">Cancel</Button>
+                    <Button type="submit" className="flex-1">Save Changes</Button>
+                  </div>
+                </form>
+              </Card>
+            </div>
+          )}
+
         </div>
       )}
 
@@ -2256,6 +2508,42 @@ export const AdminDashboard: React.FC = () => {
                             }`}>{holiday.description}</p>
                           <p className="text-xs text-gray-500">{formatDate(holiday.date)}</p>
                         </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => {
+                            const newDesc = prompt('Enter new holiday description:', holiday.description);
+                            const newDate = prompt('Enter new holiday date (YYYY-MM-DD):', typeof holiday.date === 'string' ? holiday.date.split('T')[0] : new Date(holiday.date).toISOString().split('T')[0]);
+                            if (newDesc && newDate) {
+                              updateHoliday(holiday.id, { description: newDesc, date: newDate })
+                                .then(() => {
+                                  alert('Holiday updated');
+                                  refreshData();
+                                })
+                                .catch((err: any) => alert(err.message || 'Update failed'));
+                            }
+                          }}
+                          className="p-1 text-indigo-600 hover:bg-indigo-50 rounded"
+                          title="Edit"
+                        >
+                          <Edit2 size={14} />
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (!confirm(`Delete holiday "${holiday.description}"?`)) return;
+                            try {
+                              await deleteHoliday(holiday.id);
+                              alert('Holiday deleted');
+                              await refreshData();
+                            } catch (err: any) {
+                              alert(err.message || 'Delete failed');
+                            }
+                          }}
+                          className="p-1 text-rose-600 hover:bg-rose-50 rounded"
+                          title="Delete"
+                        >
+                          <Trash2 size={14} />
+                        </button>
                       </div>
                       {holiday.status === 'past' && (
                         <span className="text-xs bg-gray-300 text-gray-600 px-2 py-1 rounded-full font-semibold">

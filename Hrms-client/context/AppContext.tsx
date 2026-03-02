@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useMemo } from 'react';
 import { User, Attendance, LeaveRequest, Role, LeaveStatus, Break, BreakType, AuthState, AuditLog, CompanyHoliday, Notification, LeaveCategory, SystemSettings } from '../types';
-import { downloadCSV, getTodayStr } from '../services/utils';
+import { downloadCSV, formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isLateCheckIn, isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
 import * as api from '../services/api';
 
 interface AppContextType {
@@ -40,7 +40,7 @@ interface AppContextType {
   updateSystemSettings: (settings: Partial<SystemSettings>) => Promise<void>;
 
   // Refresh functions
-  refreshData: () => Promise<void>;
+  refreshData: (silent?: boolean) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -85,27 +85,40 @@ const transformUser = (apiUser: any): User => ({
 });
 
 // Helper to transform API attendance to frontend Attendance type
-const transformAttendance = (apiAttendance: any): Attendance => ({
-  id: apiAttendance.id || apiAttendance._id,
-  userId: apiAttendance.userId?.id || apiAttendance.userId?._id || apiAttendance.userId,
-  date: apiAttendance.date,
-  checkIn: apiAttendance.checkIn,
-  checkOut: apiAttendance.checkOut,
-  location: apiAttendance.location,
-  breaks: (apiAttendance.breaks || []).map((b: any) => ({
-    id: b.id || b._id,
-    attendanceId: apiAttendance.id || apiAttendance._id,
-    start: b.start,
-    end: b.end,
-    type: b.type,
-    durationSeconds: b.durationSeconds,
-    reason: b.reason
-  })),
-  totalWorkedSeconds: apiAttendance.totalWorkedSeconds || 0,
-  lowTimeFlag: apiAttendance.lowTimeFlag || false,
-  extraTimeFlag: apiAttendance.extraTimeFlag || false,
-  notes: apiAttendance.notes
-});
+const transformAttendance = (apiAttendance: any): Attendance => {
+  const late = isLateCheckIn(apiAttendance.checkIn);
+  const penaltyEffective = isPenaltyEffective(apiAttendance.date);
+
+  // Use penalty from API if available and > 0, otherwise calculate dynamically
+  const penaltySeconds = (apiAttendance.penaltySeconds && apiAttendance.penaltySeconds > 0)
+    ? apiAttendance.penaltySeconds
+    : (late && penaltyEffective ? calculateLatenessPenaltySeconds(apiAttendance.checkIn) : 0);
+
+  return {
+    id: apiAttendance.id || apiAttendance._id,
+    userId: apiAttendance.userId?.id || apiAttendance.userId?._id || apiAttendance.userId,
+    date: apiAttendance.date,
+    checkIn: apiAttendance.checkIn,
+    checkOut: apiAttendance.checkOut,
+    location: apiAttendance.location,
+    breaks: (apiAttendance.breaks || []).map((b: any) => ({
+      id: b.id || b._id,
+      attendanceId: apiAttendance.id || apiAttendance._id,
+      start: b.start,
+      end: b.end,
+      type: b.type,
+      durationSeconds: b.durationSeconds,
+      reason: b.reason
+    })),
+    totalWorkedSeconds: apiAttendance.totalWorkedSeconds || 0,
+    lowTimeFlag: apiAttendance.lowTimeFlag || false,
+    extraTimeFlag: apiAttendance.extraTimeFlag || false,
+    penaltySeconds,
+    lateCheckIn: late,
+    isManualFlag: apiAttendance.isManualFlag || false,
+    notes: apiAttendance.notes
+  };
+};
 
 // Helper to transform API leave to frontend LeaveRequest type
 const transformLeave = (apiLeave: any): LeaveRequest => ({
@@ -180,11 +193,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [checkingAuth, setCheckingAuth] = useState(true);
 
   // Refresh all data
-  const refreshData = async () => {
+  const refreshData = React.useCallback(async (silent: boolean = false) => {
     if (!auth.isAuthenticated) return;
 
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
 
       // PRIORITY: Fetch today's attendance FIRST for Employee Dashboard (faster load)
       const todayAttendance = await api.attendanceAPI.getToday().catch(() => null);
@@ -260,9 +273,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch (error) {
       console.error('Error refreshing data:', error);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  };
+  }, [auth.isAuthenticated, auth.user?.id, auth.user?.role]);
 
   // Check for existing token on mount
   useEffect(() => {
@@ -317,10 +330,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (auth.isAuthenticated) {
       refreshData();
       // Set up periodic refresh every 30 seconds
-      const interval = setInterval(refreshData, 30000);
+      const interval = setInterval(() => refreshData(true), 30000);
       return () => clearInterval(interval);
     }
-  }, [auth.isAuthenticated]);
+  }, [auth.isAuthenticated, refreshData]); // Added refreshData to dependencies
 
   const login = async (username: string, password?: string): Promise<'success' | 'fail' | 'change_password'> => {
     try {
@@ -334,7 +347,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       // Don't refresh data if password change is required
       if (!requiresPasswordChange) {
-        await refreshData();
+        await refreshData(); // Manual login should show loader
       }
 
       return requiresPasswordChange ? 'change_password' : 'success';
@@ -487,6 +500,66 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const deleteAttendance = async (recordId: string): Promise<void> => {
+    try {
+      await api.attendanceAPI.deleteAttendance(recordId);
+      setAttendanceRecords(prev => prev.filter(r => r.id !== recordId));
+    } catch (error) {
+      console.error('Delete attendance error:', error);
+      throw error;
+    }
+  };
+
+  const updateLeaveRequest = async (id: string, leaveData: any): Promise<void> => {
+    try {
+      const data = await api.leaveAPI.updateLeaveRequest(id, leaveData) as any;
+      setLeaveRequests(prev => prev.map(l => l.id === id ? transformLeave(data) : l));
+    } catch (error) {
+      console.error('Update leave request error:', error);
+      throw error;
+    }
+  };
+
+  const deleteLeaveRequest = async (id: string): Promise<void> => {
+    try {
+      await api.leaveAPI.deleteLeaveRequest(id);
+      setLeaveRequests(prev => prev.filter(l => l.id !== id));
+    } catch (error) {
+      console.error('Delete leave request error:', error);
+      throw error;
+    }
+  };
+
+  const addHoliday = async (date: string, description: string): Promise<void> => {
+    try {
+      await api.holidayAPI.addHoliday(date, description);
+      await refreshData();
+    } catch (error) {
+      console.error('Add holiday error:', error);
+      throw error;
+    }
+  };
+
+  const updateHoliday = async (id: string, holidayData: any): Promise<void> => {
+    try {
+      await api.holidayAPI.updateHoliday(id, holidayData);
+      await refreshData();
+    } catch (error) {
+      console.error('Update holiday error:', error);
+      throw error;
+    }
+  };
+
+  const deleteHoliday = async (id: string): Promise<void> => {
+    try {
+      await api.holidayAPI.deleteHoliday(id);
+      await refreshData();
+    } catch (error) {
+      console.error('Delete holiday error:', error);
+      throw error;
+    }
+  };
+
   const adminUpdateAttendance = async (recordId: string, updates: Partial<Attendance>, breakDurationMinutes?: number): Promise<void> => {
     try {
       const updateData: any = { ...updates };
@@ -510,7 +583,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setCompanyHolidays(prev => [...prev, transformHoliday(data)].sort((a, b) =>
         new Date(a.date).getTime() - new Date(b.date).getTime()
       ));
-      await refreshData(); // Refresh to get notifications
+      await refreshData(true); // Refresh silently to get notifications
     } catch (error) {
       console.error('Add holiday error:', error);
       throw error;
@@ -567,6 +640,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       createUser,
       updateUser,
       adminUpdateAttendance,
+      deleteAttendance,
+      updateLeaveRequest,
+      deleteLeaveRequest,
+      addHoliday,
+      updateHoliday,
+      deleteHoliday,
       addCompanyHoliday,
       exportReports,
       updateSystemSettings,

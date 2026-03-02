@@ -3,8 +3,8 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
-import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY } from '../services/utils';
-import { Clock, Coffee, AlertCircle, Bell, Calendar, X } from 'lucide-react';
+import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
+import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
@@ -17,6 +17,15 @@ const formatDurationStyled = (seconds: number) => {
   if (h === 0) return <><span>{m}</span><span className="text-sm font-normal ml-1">minutes</span></>;
   if (m === 0) return <><span>{h}</span><span className="text-sm font-normal ml-1">hours</span></>;
   return <><span>{h}</span><span className="text-sm font-normal ml-1">hours</span> <span>{m}</span><span className="text-sm font-normal ml-1">min</span></>;
+};
+
+// Helper to format penalty duration (e.g. 900 -> 15m, 3720 -> 1h 2m)
+const formatPenaltyDisplay = (seconds: number) => {
+  const min = Math.floor(seconds / 60);
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
 };
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
@@ -37,7 +46,7 @@ const getTotalPaidLeaves = (user?: User | null) => {
 };
 
 export const EmployeeDashboard: React.FC = () => {
-  const { auth, attendanceRecords, clockIn, clockOut, startBreak, endBreak, requestLeave, leaveRequests, notifications, companyHolidays, systemSettings, refreshData } = useApp();
+  const { auth, attendanceRecords, clockIn, clockOut, startBreak, endBreak, requestLeave, leaveRequests, notifications, companyHolidays, systemSettings, refreshData, updateLeaveStatus } = useApp();
   const user = auth.user;
 
   // Real-time timer
@@ -61,6 +70,42 @@ export const EmployeeDashboard: React.FC = () => {
   const [extraBreakReason, setExtraBreakReason] = useState('');
   const [showExtraBreakReasonInput, setShowExtraBreakReasonInput] = useState(false);
 
+  // On mount: if page was reloaded (refresh), auto-cancel any lingering Pause break
+  useEffect(() => {
+    const cancelPauseOnReload = async () => {
+      try {
+        const navEntries = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+        const isReload = navEntries.length > 0 && navEntries[0].type === 'reload';
+        if (!isReload) return;
+
+        // Wait briefly for attendanceRecords to populate via the initial data fetch
+        const token = localStorage.getItem('token');
+        if (!token) return;
+
+        // Fetch today's record directly to check for an active Pause break
+        const res = await fetch('http://localhost:5001/api/attendance/today', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const todayData = await res.json();
+        const pauseBreak = (todayData?.breaks || []).find((b: any) => !b.end && b.type === 'Pause');
+        if (pauseBreak) {
+          await fetch('http://localhost:5001/api/attendance/break/cancel', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          setLocalBreakStartTime(null);
+          // Refresh data after canceling pause
+          await refreshData();
+        }
+      } catch (err) {
+        console.error('Auto-cancel pause on reload error:', err);
+      }
+    };
+    cancelPauseOnReload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run only once on mount
+
   useEffect(() => {
     const record = attendanceRecords.find(r => r.userId === user?.id && r.date === getTodayStr());
     setTodayRecord(record);
@@ -75,9 +120,12 @@ export const EmployeeDashboard: React.FC = () => {
     // Sync local break state with record
     const activeBreak = record?.breaks.find(b => !b.end);
     if (activeBreak) {
-      const breakStart = new Date(activeBreak.start);
-      if (!localBreakStartTime || Math.abs(breakStart.getTime() - localBreakStartTime.getTime()) > 2000) {
-        setLocalBreakStartTime(breakStart);
+      // Don't restore a Pause break on page load — it will be auto-canceled by the reload handler above
+      if (activeBreak.type !== 'Pause') {
+        const breakStart = new Date(activeBreak.start);
+        if (!localBreakStartTime || Math.abs(breakStart.getTime() - localBreakStartTime.getTime()) > 2000) {
+          setLocalBreakStartTime(breakStart);
+        }
       }
     } else if (!activeBreak && localBreakStartTime) {
       // Only clear if break was actually ended (not just missing from record)
@@ -143,43 +191,8 @@ export const EmployeeDashboard: React.FC = () => {
     return () => clearInterval(timer);
   }, [todayRecord, localCheckInTime, localBreakStartTime]);
 
-  // Auto-pause logic: Pause timer (Start Break) when tab is hidden or closed
-  useEffect(() => {
-    const triggerAutoPause = () => {
-      const record = attendanceRecords.find(r => r.userId === user?.id && r.date === getTodayStr());
-      // Check if checked in but NOT checked out
-      const isCheckedIn = !!record?.checkIn && !record?.checkOut;
-      // Check if NOT already on break
-      const isOnBreak = record?.breaks.some(b => !b.end) || !!localBreakStartTime;
-
-      if (isCheckedIn && !isOnBreak) {
-        setLocalBreakStartTime(new Date());
-
-        // Use fetch with keepalive to ensure request is sent
-        const token = localStorage.getItem('token');
-        fetch('http://localhost:5001/api/attendance/break/start', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ type: 'Pause' }),
-          keepalive: true
-        }).catch(err => console.error('Auto-pause error:', err));
-      }
-    };
-
-    // Handle beforeunload for window close/reload - always trigger pause if unloading
-    const handleBeforeUnload = () => {
-      triggerAutoPause();
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, [attendanceRecords, user?.id, localBreakStartTime]);
+  // Auto-pause logic: removed beforeunload trigger to prevent false pauses on page refresh.
+  // Users can manually use the "Resume Work" button if they need to cancel an accidental pause.
 
   // Resume (Mistake) handler
   const handleResumeMistake = useCallback(async () => {
@@ -454,13 +467,24 @@ export const EmployeeDashboard: React.FC = () => {
   // Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
   const MIN_NORMAL_SECONDS = (8 * 3600) + (15 * 60); // 8 hours 15 minutes = 29700 seconds
   const MAX_NORMAL_SECONDS = (8 * 3600) + (22 * 60); // 8 hours 22 minutes = 30120 seconds
+  const currentMonthStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
   const currentMonthAttendance = myAttendanceHistory.filter(r => {
-    const recordDate = new Date(r.date);
-    return recordDate.getMonth() === currentMonth && recordDate.getFullYear() === currentYear;
+    // Use string comparison to avoid timezone issues with new Date()
+    return typeof r.date === 'string' && r.date.startsWith(currentMonthStr);
   });
 
   let totalLowTimeSeconds = 0;
   let totalExtraTimeSeconds = 0;
+
+  // Build a Set of holiday dates (YYYY-MM-DD) for fast lookup
+  // Use h.date directly to avoid timezone shift issues (new Date() would shift IST dates)
+  const holidayDateSet = new Set(
+    companyHolidays.map(h => {
+      // h.date is stored as YYYY-MM-DD — use directly to avoid UTC/IST shift
+      const dateStr = typeof h.date === 'string' ? h.date : new Date(h.date).toISOString().split('T')[0];
+      return dateStr.split('T')[0]; // Ensure we only use the date portion
+    })
+  );
 
   currentMonthAttendance.forEach(record => {
     if (record.checkIn && record.checkOut) {
@@ -468,54 +492,36 @@ export const EmployeeDashboard: React.FC = () => {
       const checkOut = new Date(record.checkOut).getTime();
       const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
       const breakSeconds = getBreakSeconds(record.breaks) || 0;
-      let netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+      const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
 
-      // Check if there's an approved Extra Time Leave for this attendance date
-      // Add the leave hours to worked hours for flag calculation
-      // Example: 1 hour leave + 7:15 work = 8:15 total (normal time)
-      const attendanceDate = record.date;
-      const extraTimeLeaveForDate = myLeaves.find(leave => {
-        const status = (leave.status || '').trim();
-        if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
-        if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
-        // Check if leave date matches attendance date
-        return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
-          (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
-      });
+      const attendanceDate = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
+      const isHolidayDay = holidayDateSet.has(attendanceDate);
 
-      if (extraTimeLeaveForDate && extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
-        // Calculate leave hours from startTime/endTime
-        const parseTime = (timeStr: string) => {
-          const [h, m] = timeStr.split(':').map(Number);
-          return h * 60 + m;
-        };
-        const startMinutes = parseTime(extraTimeLeaveForDate.startTime);
-        const endMinutes = parseTime(extraTimeLeaveForDate.endTime);
-        const leaveMinutes = Math.max(0, endMinutes - startMinutes);
-        const leaveSeconds = leaveMinutes * 60;
-        netWorkedSeconds += leaveSeconds; // Add leave time to worked time
-      }
+      // Late check-in penalty: 15 minutes if check-in > 9:00 AM
+      const checkInOffset = 9 * 3600; // 9:00 AM
+      const checkInDate = new Date(record.checkIn);
+      const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
+      const isLateCheckIn = !isHolidayDay && checkInSeconds > checkInOffset;
+      const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+      const effectiveWorkedSeconds = Math.max(0, netWorkedSeconds - penaltySeconds);
 
-      // Check for Half Day Leave
-      const hasHalfDay = myLeaves.some(leave => {
-        const status = (leave.status || '').trim();
-        if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
-        if (leave.category !== LeaveCategory.HALF_DAY) return false;
-        // Check if leave date matches attendance date
-        return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
-          (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
-      });
-
-      if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
-        // Low time: less than 8:15
-        if (!hasHalfDay) {
-          totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
+      // Trust the DB flags — the backend calculates these correctly, including holiday/half-day/extra-time-leave logic
+      if (isHolidayDay) {
+        // Holiday: all worked time is overtime, never low time
+        if (netWorkedSeconds > 0) {
+          totalExtraTimeSeconds += netWorkedSeconds;
         }
-      } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
-        // Extra time: more than 8:22
-        totalExtraTimeSeconds += (netWorkedSeconds - MAX_NORMAL_SECONDS);
+        return;
       }
-      // If netWorkedSeconds is between 8:15 and 8:22, it's normal (no low/extra)
+
+      // For non-holiday days, use the DB flags which the backend computed correctly
+      if (record.lowTimeFlag) {
+        // Low time: add deficit based on effective worked seconds (including penalty)
+        totalLowTimeSeconds += Math.max(0, MIN_NORMAL_SECONDS - effectiveWorkedSeconds);
+      } else if (record.extraTimeFlag) {
+        // Extra time: add surplus based on effective worked seconds
+        totalExtraTimeSeconds += Math.max(0, effectiveWorkedSeconds - MAX_NORMAL_SECONDS);
+      }
     }
   });
 
@@ -682,11 +688,25 @@ export const EmployeeDashboard: React.FC = () => {
         }
       }
 
+      // Check if this attendance is on a company holiday
+      const attendanceDate = r.date;
+      const isHolidayWork = holidayDateSet.has(attendanceDate);
+
       // Calculate Total Seconds (Worked + Extra Time Leave)
       let totalSecondsForChart = r.totalWorkedSeconds || 0;
 
+      if (isHolidayWork) {
+        // Holiday: entire worked time is overtime
+        return {
+          date: dateLabel,
+          hours: +(totalSecondsForChart / 3600).toFixed(2),
+          isLow: false,
+          isExtra: totalSecondsForChart > 0,
+          isHoliday: true
+        };
+      }
+
       // Check for approved Extra Time Leave for this date
-      const attendanceDate = r.date;
       const extraTimeLeaveForDate = myLeaves.find(leave => {
         const status = (leave.status || '').trim();
         if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
@@ -729,7 +749,8 @@ export const EmployeeDashboard: React.FC = () => {
         date: dateLabel,
         hours: +(totalSecondsForChart / 3600).toFixed(2),
         isLow: finalIsLow,
-        isExtra: isExtra
+        isExtra: isExtra,
+        isHoliday: false
       };
     });
 
@@ -821,8 +842,18 @@ export const EmployeeDashboard: React.FC = () => {
                   <div className={`mt-2 ${isOnBreak ? 'text-amber-500' : 'text-blue-600'}`}>
                     <div className="flex items-center justify-center md:justify-start gap-1">
                       {(() => {
-                        // Show break timer when on break, work timer when not
-                        const displayTime = isOnBreak ? breakElapsed : elapsed;
+                        // Compute live penalty from check-in time (same rules as backend getFlags)
+                        const checkInTime = localCheckInTime || (todayRecord?.checkIn ? new Date(todayRecord.checkIn) : null);
+                        let livePenaltySeconds = 0;
+                        if (!isOnBreak && checkInTime && !todayRecord?.checkOut) {
+                          if (isPenaltyEffective(getTodayStr())) {
+                            livePenaltySeconds = calculateLatenessPenaltySeconds(checkInTime.toISOString());
+                          }
+                        }
+
+                        // Show break timer when on break, penalty-adjusted work timer when working
+                        const rawDisplay = isOnBreak ? breakElapsed : elapsed;
+                        const displayTime = isOnBreak ? rawDisplay : Math.max(0, rawDisplay - livePenaltySeconds);
                         const h = Math.floor(displayTime / 3600);
                         const m = Math.floor((displayTime % 3600) / 60);
                         const s = Math.floor(displayTime % 60);
@@ -842,6 +873,13 @@ export const EmployeeDashboard: React.FC = () => {
                               <span className="text-5xl font-bold font-mono">{s.toString().padStart(2, '0')}</span>
                               <p className="text-xs text-gray-400 mt-1">seconds</p>
                             </div>
+                            {!isOnBreak && livePenaltySeconds > 0 && (
+                              <div className="ml-2 self-center">
+                                <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-700 rounded-lg text-xs font-semibold border border-red-200" title={`Late check-in penalty: ${Math.round(livePenaltySeconds / 60)} min deducted`}>
+                                  -{Math.round(livePenaltySeconds / 60)}m penalty
+                                </span>
+                              </div>
+                            )}
                           </>
                         );
                       })()}
@@ -1110,7 +1148,7 @@ export const EmployeeDashboard: React.FC = () => {
                   />
                   <Bar dataKey="hours" radius={[4, 4, 0, 0]}>
                     {chartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.isLow ? '#ef4444' : entry.isExtra ? '#16a34a' : '#3b82f6'} />
+                      <Cell key={`cell-${index}`} fill={entry.isHoliday ? '#f59e0b' : entry.isLow ? '#ef4444' : entry.isExtra ? '#16a34a' : '#3b82f6'} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -1122,10 +1160,11 @@ export const EmployeeDashboard: React.FC = () => {
               <p className="text-sm">No attendance data for this week</p>
             </div>
           )}
-          <div className="flex justify-between text-xs text-gray-500 mt-2 px-2">
+          <div className="flex flex-wrap justify-between text-xs text-gray-500 mt-2 px-2 gap-2">
             <span className="flex items-center"><div className="w-2 h-2 bg-red-500 rounded-full mr-1"></div> Low</span>
             <span className="flex items-center"><div className="w-2 h-2 bg-blue-500 rounded-full mr-1"></div> Normal</span>
             <span className="flex items-center"><div className="w-2 h-2 bg-green-600 rounded-full mr-1"></div> Extra</span>
+            <span className="flex items-center"><div className="w-2 h-2 rounded-full mr-1" style={{ backgroundColor: '#f59e0b' }}></div> Holiday Work</span>
           </div>
         </Card>
 
@@ -1616,10 +1655,16 @@ export const EmployeeDashboard: React.FC = () => {
                       return leaveDate === r.date;
                     });
 
+                    // Check if this day is a company holiday
+                    const isHolidayWorkDay = holidayDateSet.has(r.date);
+
                     return (
-                      <tr key={r.id} className="bg-white border-b hover:bg-gray-50">
+                      <tr key={r.id} className={`bg-white border-b hover:bg-gray-50 ${isHolidayWorkDay ? 'bg-amber-50' : ''}`}>
                         <td className="px-4 py-3 font-medium text-gray-900">
                           <div>{formatDate(r.date)}</div>
+                          {isHolidayWorkDay && (
+                            <div className="text-xs text-amber-600 mt-1 font-semibold">🏖 Holiday Work</div>
+                          )}
                           {halfDayLeave && halfDayLeave.startTime && (
                             <div className="text-xs text-purple-600 mt-1 font-semibold">
                               Half Day Leave: {halfDayLeave.startTime}
@@ -1629,12 +1674,39 @@ export const EmployeeDashboard: React.FC = () => {
                         </td>
                         <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkIn, systemSettings.timezone)}</td>
                         <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkOut, systemSettings.timezone)}</td>
-                        <td className="px-4 py-3 text-xs">{r.breaks.length} breaks</td>
-                        <td className="px-4 py-3 font-mono font-bold">{formatDuration(r.totalWorkedSeconds)}</td>
+                        <td className="px-4 py-3 text-xs">
+                          <div>{r.breaks.length} breaks</div>
+                          {(() => {
+                            const isLate = !!r.lateCheckIn;
+                            const hasPenalty = (r.penaltySeconds || 0) > 0;
+                            return (isLate && hasPenalty) ? (
+                              <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
+                                <AlertCircle size={10} /> Late Penalty: {formatPenaltyDisplay(r.penaltySeconds || 0)}
+                              </div>
+                            ) : null;
+                          })()}
+                        </td>
+                        <td className="px-4 py-3 font-mono font-bold">
+                          {formatDuration(r.totalWorkedSeconds)}
+                          {(() => {
+                            const isLate = !!r.lateCheckIn;
+                            const hasPenalty = (r.penaltySeconds || 0) > 0;
+                            return (isLate && hasPenalty) ? (
+                              <div className="text-[10px] text-gray-400 font-normal">
+                                (-{formatPenaltyDisplay(r.penaltySeconds || 0)} penalty applied)
+                              </div>
+                            ) : null;
+                          })()}
+                        </td>
                         <td className="px-4 py-3">
-                          {r.lowTimeFlag && <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full">Low</span>}
-                          {r.extraTimeFlag && <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">Extra</span>}
-                          {!r.lowTimeFlag && !r.extraTimeFlag && <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Normal</span>}
+                          {isHolidayWorkDay && r.checkIn && r.checkOut
+                            ? <span className="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full font-semibold">Holiday OT</span>
+                            : r.lowTimeFlag
+                              ? <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full">Low</span>
+                              : r.extraTimeFlag
+                                ? <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">Extra</span>
+                                : <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Normal</span>
+                          }
                         </td>
                       </tr>
                     );
@@ -1699,6 +1771,9 @@ export const EmployeeDashboard: React.FC = () => {
                         <th className="px-4 py-3">Status</th>
                         <th className="px-4 py-3">Days</th>
                         <th className="px-4 py-3">Reason</th>
+                        {(user?.role === 'Admin' || user?.role === 'HR') && (
+                          <th className="px-4 py-3 text-center">Action</th>
+                        )}
                       </tr>
                     </thead>
                     <tbody>
@@ -1719,6 +1794,7 @@ export const EmployeeDashboard: React.FC = () => {
                         // Get end time for half day leave
                         const isHalfDay = leave.category === LeaveCategory.HALF_DAY;
                         const isApproved = (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED);
+                        const isRejected = (leave.status === 'Rejected' || leave.status === LeaveStatus.REJECTED);
                         const halfDayEndTime = isHalfDay && isApproved && leave.startTime
                           ? (leave.endTime || calculateHalfDayEndTime(leave.startTime))
                           : null;
@@ -1748,6 +1824,28 @@ export const EmployeeDashboard: React.FC = () => {
                             <td className="px-4 py-3 text-xs text-gray-600 max-w-xs truncate" title={leave.reason}>
                               {leave.reason}
                             </td>
+                            {(user?.role === 'Admin' || user?.role === 'HR') && (
+                              <td className="px-4 py-3 text-center">
+                                {(isApproved || isRejected) && (
+                                  <button
+                                    onClick={async () => {
+                                      if (!confirm(`Are you sure you want to revert this ${leave.status.toLowerCase()} leave?`)) return;
+                                      try {
+                                        await updateLeaveStatus(leave.id, LeaveStatus.PENDING, `Reverted from ${leave.status} by ${user?.role}`);
+                                        alert('Leave reverted to Pending status successfully');
+                                        await refreshData();
+                                      } catch (error: any) {
+                                        alert(error.message || 'Failed to revert leave');
+                                      }
+                                    }}
+                                    className="p-1 text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                                    title="Revert to Pending"
+                                  >
+                                    <RotateCcw size={16} />
+                                  </button>
+                                )}
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
