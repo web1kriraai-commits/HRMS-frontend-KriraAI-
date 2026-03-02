@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
-import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
+import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats } from '../services/utils';
 import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -505,26 +505,13 @@ export const EmployeeDashboard: React.FC = () => {
       const attendanceDate = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
       const isHolidayDay = holidayDateSet.has(attendanceDate);
 
-      // Late check-in penalty: 15 minutes if check-in > 9:00 AM
-      const checkInOffset = 9 * 3600; // 9:00 AM
-      const checkInDate = new Date(record.checkIn);
-      const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
-      const isLateCheckIn = !isHolidayDay && checkInSeconds > checkInOffset;
-      const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+      // Late check-in penalty: use centralized utility
+      const penaltySeconds = !isHolidayDay && isPenaltyEffective(attendanceDate)
+        ? calculateLatenessPenaltySeconds(record.checkIn)
+        : 0;
       const effectiveWorkedSeconds = Math.max(0, netWorkedSeconds - penaltySeconds);
 
-      // Trust the DB flags — the backend calculates these correctly, including holiday/half-day/extra-time-leave logic
-      if (isHolidayDay) {
-        // Holiday: all worked time is overtime, never low time
-        if (netWorkedSeconds > 0) {
-          totalExtraTimeSeconds += netWorkedSeconds;
-        }
-        return;
-      }
-
-      // For non-holiday days, use the DB flags which the backend computed correctly.
-      // Safety net: if an approved half-day leave exists for this date, never count as low
-      // time as long as the employee worked >= 4 hours (240 min = 14400 sec).
+      // Calculate approved half-day leave for this date
       const hasApprovedHalfDay = myLeaves.some(l => {
         const status = (l.status || '').trim();
         if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
@@ -532,16 +519,11 @@ export const EmployeeDashboard: React.FC = () => {
         const leaveDate = typeof l.startDate === 'string' ? l.startDate.split('T')[0] : l.startDate;
         return leaveDate === attendanceDate;
       });
-      const HALF_DAY_MIN_SECONDS = 4 * 3600; // 4 hours = 14400 seconds
-      const isHalfDayNormal = hasApprovedHalfDay && effectiveWorkedSeconds >= HALF_DAY_MIN_SECONDS;
 
-      if (record.lowTimeFlag && !isHalfDayNormal) {
-        // Low time: add deficit based on effective worked seconds (including penalty)
-        totalLowTimeSeconds += Math.max(0, MIN_NORMAL_SECONDS - effectiveWorkedSeconds);
-      } else if (record.extraTimeFlag) {
-        // Extra time: add surplus based on effective worked seconds
-        totalExtraTimeSeconds += Math.max(0, effectiveWorkedSeconds - MAX_NORMAL_SECONDS);
-      }
+      // Use unified calculation utility for consistency
+      const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(effectiveWorkedSeconds, hasApprovedHalfDay, isHolidayDay);
+      totalLowTimeSeconds += lowTimeSeconds;
+      totalExtraTimeSeconds += extraTimeSeconds;
     }
   });
 
@@ -1680,7 +1662,8 @@ export const EmployeeDashboard: React.FC = () => {
                           {(() => {
                             const isLate = !!r.lateCheckIn;
                             const hasPenalty = (r.penaltySeconds || 0) > 0;
-                            return (isLate && hasPenalty) ? (
+                            const shouldShowPenalty = isPenaltyEffective(r.date);
+                            return (isLate && hasPenalty && shouldShowPenalty) ? (
                               <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
                                 <AlertCircle size={10} /> Late Penalty: {formatPenaltyDisplay(r.penaltySeconds || 0)}
                               </div>
@@ -1692,7 +1675,8 @@ export const EmployeeDashboard: React.FC = () => {
                           {(() => {
                             const isLate = !!r.lateCheckIn;
                             const hasPenalty = (r.penaltySeconds || 0) > 0;
-                            return (isLate && hasPenalty) ? (
+                            const shouldShowPenalty = isPenaltyEffective(r.date);
+                            return (isLate && hasPenalty && shouldShowPenalty) ? (
                               <div className="text-[10px] text-gray-400 font-normal">
                                 (-{formatPenaltyDisplay(r.penaltySeconds || 0)} penalty applied)
                               </div>

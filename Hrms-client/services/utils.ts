@@ -6,7 +6,9 @@ import { Attendance, Bond, Break } from '../types';
 
 const LOW_TIME_THRESHOLD_MINUTES = 495; // 8h 15m
 const EXTRA_TIME_THRESHOLD_MINUTES = 502; // 8h 22m
-const HALF_DAY_THRESHOLD_MINUTES = 240; // 4h 00m
+const HALF_DAY_LEAVE_MINUTES = 240; // 4h 00m credit
+const HALF_DAY_LOW_THRESHOLD_MINUTES = 255; // (8h 15m - 4h) = 4h 15m
+const HALF_DAY_EXTRA_THRESHOLD_MINUTES = 262; // (8h 22m - 4h) = 4h 22m
 export const PENALTY_EFFECTIVE_DATE = '2026-03-01';
 export const LATE_PENALTY_SECONDS = 900; // 15 minutes
 
@@ -79,14 +81,39 @@ export const calculateWorkedSeconds = (attendance: Attendance, checkOutTime?: st
 export const getFlags = (workedSeconds: number, isHalfDayApproved: boolean) => {
   const workedMinutes = workedSeconds / 60;
 
-  // BR3: If Half-Day, use adjusted threshold
-  const lowThreshold = isHalfDayApproved ? HALF_DAY_THRESHOLD_MINUTES : LOW_TIME_THRESHOLD_MINUTES;
-  const extraThreshold = isHalfDayApproved ? HALF_DAY_THRESHOLD_MINUTES : EXTRA_TIME_THRESHOLD_MINUTES;
+  // If Half-Day, use adjusted threshold (Standard - 4h leave)
+  const lowThreshold = isHalfDayApproved ? HALF_DAY_LOW_THRESHOLD_MINUTES : LOW_TIME_THRESHOLD_MINUTES;
+  const extraThreshold = isHalfDayApproved ? HALF_DAY_EXTRA_THRESHOLD_MINUTES : EXTRA_TIME_THRESHOLD_MINUTES;
 
   return {
     lowTime: workedMinutes > 0 && workedMinutes < lowThreshold,
     extraTime: workedMinutes > extraThreshold
   };
+};
+
+/**
+ * Calculates deficit (low time) and surplus (extra time) in seconds.
+ * Deficit = Threshold - Worked (if Worked < Threshold)
+ * Surplus = Worked - Threshold (if Worked > Threshold)
+ */
+export const calculateDailyTimeStats = (effectiveWorkedSeconds: number, isHalfDayApproved: boolean, isHoliday: boolean) => {
+  if (isHoliday) {
+    return { lowTimeSeconds: 0, extraTimeSeconds: effectiveWorkedSeconds };
+  }
+
+  const lowThresholdSec = (isHalfDayApproved ? HALF_DAY_LOW_THRESHOLD_MINUTES : LOW_TIME_THRESHOLD_MINUTES) * 60;
+  const extraThresholdSec = (isHalfDayApproved ? HALF_DAY_EXTRA_THRESHOLD_MINUTES : EXTRA_TIME_THRESHOLD_MINUTES) * 60;
+
+  let lowTimeSeconds = 0;
+  let extraTimeSeconds = 0;
+
+  if (effectiveWorkedSeconds > 0 && effectiveWorkedSeconds < lowThresholdSec) {
+    lowTimeSeconds = lowThresholdSec - effectiveWorkedSeconds;
+  } else if (effectiveWorkedSeconds > extraThresholdSec) {
+    extraTimeSeconds = effectiveWorkedSeconds - extraThresholdSec;
+  }
+
+  return { lowTimeSeconds, extraTimeSeconds };
 };
 
 export const formatDuration = (seconds: number): string => {

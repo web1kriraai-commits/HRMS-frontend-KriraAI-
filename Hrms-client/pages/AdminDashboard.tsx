@@ -4,7 +4,7 @@ import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Role, LeaveCategory, LeaveStatus, User } from '../types';
 import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw } from 'lucide-react';
-import { formatDate, getTodayStr, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
+import { formatDate, getTodayStr, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI } from '../services/api';
 
@@ -525,7 +525,7 @@ export const AdminDashboard: React.FC = () => {
           netWorkedSeconds += leaveDays * 8.25 * 3600;
         }
 
-        // Check for Half Day Leave to suppress Low Time
+        // Check for Half Day Leave
         const hasHalfDay = monthLeaves.some(leave => {
           const status = (leave.status || '').trim();
           if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
@@ -534,13 +534,10 @@ export const AdminDashboard: React.FC = () => {
             (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
         });
 
-        if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
-          if (!hasHalfDay) {
-            totalLowTimeSeconds += (MIN_NORMAL_SECONDS - netWorkedSeconds);
-          }
-        } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
-          totalExtraTimeSeconds += (netWorkedSeconds - MAX_NORMAL_SECONDS);
-        }
+        // Use unified calculation utility for consistency
+        const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay);
+        totalLowTimeSeconds += lowTimeSeconds;
+        totalExtraTimeSeconds += extraTimeSeconds;
       }
     });
 
@@ -612,18 +609,27 @@ export const AdminDashboard: React.FC = () => {
         const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
         const isHolidayDay = deductHolidaySet.has(recordDateISO);
 
-        // Late check-in penalty: 15 minutes if check-in > 9:00 AM
-        const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
-        const isLateCheckIn = !isHolidayDay && checkInSeconds > 9 * 3600;
-        const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+        // Late check-in penalty: use centralized utility
+        const penaltySeconds = !isHolidayDay && isPenaltyEffective(recordDateISO as string)
+          ? calculateLatenessPenaltySeconds(record.checkIn)
+          : 0;
         const netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
 
-        // Never count holiday days as low time
+        // Never count holiday days as low time in this view
         if (isHolidayDay) return;
 
-        if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
-          totalLowTimeSeconds += MIN_NORMAL_SECONDS - netWorkedSeconds;
-        }
+        // Check for Half Day Leave
+        const hasHalfDay = userLeaves.some(leave => {
+          const status = (leave.status || '').trim();
+          const isApproved = status === 'Approved' || status === LeaveStatus.APPROVED;
+          if (!isApproved || leave.category !== LeaveCategory.HALF_DAY) return false;
+          const leaveDate = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : leave.startDate;
+          return leaveDate === recordDateISO;
+        });
+
+        // Use unified calculation utility
+        const { lowTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay);
+        totalLowTimeSeconds += lowTimeSeconds;
       }
     });
 
@@ -670,27 +676,22 @@ export const AdminDashboard: React.FC = () => {
         // Use the shared memoized holidayDateSet (from outer scope)
         const isHolidayDay = holidayDateSet.has(recordDateISO as string);
 
-        // Late check-in penalty: 15 minutes if check-in > 9:00 AM
-        const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
-        const isLateCheckIn = !isHolidayDay && checkInSeconds > 9 * 3600;
-        const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+        // Late check-in penalty: use centralized utility
+        const penaltySeconds = !isHolidayDay && isPenaltyEffective(recordDateISO as string)
+          ? calculateLatenessPenaltySeconds(record.checkIn)
+          : 0;
         let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
 
 
         // Add Extra Time Leave
-        const extraTimeLeave = filteredMonthlyLeaves.find(leave => {
+        const extraTimeLeave = approvedLeaves.find(leave => {
           return leave.userId === record.userId &&
             new Date(leave.startDate).toDateString() === recordDateStr &&
-            (leave.category === LeaveCategory.EXTRA_TIME || (leave.category === LeaveCategory.HALF_DAY && leave.reason?.includes('[Extra Time Leave]'))) &&
-            (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED)
+            (leave.category === LeaveCategory.EXTRA_TIME || (leave.category === LeaveCategory.HALF_DAY && leave.reason?.includes('[Extra Time Leave]')))
         });
         if (extraTimeLeave && extraTimeLeave.startTime && extraTimeLeave.endTime) {
-          const [startH, startM] = extraTimeLeave.startTime.split(':').map(Number);
-          const [endH, endM] = extraTimeLeave.endTime.split(':').map(Number);
-          const startMinutes = startH * 60 + startM;
-          const endMinutes = endH * 60 + endM;
-          const leaveMinutes = Math.max(0, endMinutes - startMinutes);
-          netWorkedSeconds += leaveMinutes * 60;
+          const leaveHours = calculateHoursPerDay(extraTimeLeave.startTime, extraTimeLeave.endTime);
+          netWorkedSeconds += leaveHours * 3600;
         }
 
         // Holiday rule: all worked time is overtime, never low time
@@ -705,22 +706,17 @@ export const AdminDashboard: React.FC = () => {
         totalBreakSeconds += breakSeconds;
 
         // Check for Half Day Leave (Standard, not Extra Time Leave derived)
-        const hasHalfDay = filteredMonthlyLeaves.some(leave => {
+        const hasHalfDay = approvedLeaves.some(leave => {
           return leave.userId === record.userId &&
             new Date(leave.startDate).toDateString() === recordDateStr &&
             leave.category === LeaveCategory.HALF_DAY &&
-            !leave.reason?.includes('[Extra Time Leave]') &&
-            (leave.status === 'Approved' || leave.status === LeaveStatus.APPROVED)
+            !leave.reason?.includes('[Extra Time Leave]')
         });
 
-        // Normal: 8:15 to 8:22, Low < 8:15, Extra > 8:22
-        if (netWorkedSeconds < MIN_NORMAL_SECONDS) {
-          if (!hasHalfDay) {
-            totalLowTimeSeconds += MIN_NORMAL_SECONDS - netWorkedSeconds;
-          }
-        } else if (netWorkedSeconds > MAX_NORMAL_SECONDS) {
-          totalExtraTimeSeconds += netWorkedSeconds - MAX_NORMAL_SECONDS;
-        }
+        // Use unified calculation utility
+        const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay);
+        totalLowTimeSeconds += lowTimeSeconds;
+        totalExtraTimeSeconds += extraTimeSeconds;
       }
     });
 
@@ -1544,7 +1540,7 @@ export const AdminDashboard: React.FC = () => {
                                 <span className="text-emerald-600 font-semibold">
                                   {formatTime(record.checkIn)}
                                 </span>
-                                {isLateCheckIn && record.penaltySeconds > 0 && (
+                                {isLateCheckIn && record.penaltySeconds > 0 && isPenaltyEffective(record.date) && (
                                   <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
                                     <AlertCircle size={10} /> Late Penalty: 15m
                                   </div>
@@ -1577,7 +1573,7 @@ export const AdminDashboard: React.FC = () => {
                                 <span className="font-bold text-gray-800">
                                   {netWorkedRawSeconds > 0 ? formatDuration(netWorkedRawSeconds) : '-'}
                                 </span>
-                                {isLateCheckIn && record.penaltySeconds > 0 && (
+                                {isLateCheckIn && record.penaltySeconds > 0 && isPenaltyEffective(record.date) && (
                                   <div className="text-[10px] text-gray-400 font-normal">
                                     (-15m penalty applied)
                                   </div>
