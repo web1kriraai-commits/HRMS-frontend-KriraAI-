@@ -6,33 +6,44 @@ import {
     AreaChart, Area, PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { Loader2, Search, TrendingUp, Clock, Calendar, Users, Briefcase, ArrowUpRight, ArrowDownRight, Award, AlertTriangle, CheckCircle, PieChart as PieIcon } from 'lucide-react';
+import { isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
 
 export const Analytics: React.FC = () => {
     const { users, attendanceRecords, leaveRequests, companyHolidays, loading } = useApp();
     const [searchQuery, setSearchQuery] = React.useState('');
-    const currentMonth = 1; // 0-indexed, so 1 = February
-    const currentYear = 2026;
+
+    // Dynamic month/year selection — defaults to the current real month (lazy initializer so Date is only called once)
+    const [selectedMonth, setSelectedMonth] = React.useState(() => {
+        const now = new Date();
+        return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    });
+
+    // Derive numeric month (0-indexed) and year from the selected value
+    const [selectedYear, selectedMonthIdx] = useMemo(() => {
+        const [y, m] = selectedMonth.split('-').map(Number);
+        return [y, m - 1]; // month is 0-indexed for consistency with previous code
+    }, [selectedMonth]);
 
     const MIN_NORMAL_SECONDS = (8 * 3600) + (15 * 60); // 8h 15m = 29700 seconds
     const MAX_NORMAL_SECONDS = (8 * 3600) + (22 * 60); // 8h 22m = 30120 seconds
 
-    // Filter data for the current month
+    // Filter data for the selected month
     const monthRecords = useMemo(() => {
         return attendanceRecords.filter(rec => {
             const [year, month] = rec.date.split('-').map(Number);
-            return year === currentYear && (month - 1) === currentMonth;
+            return year === selectedYear && (month - 1) === selectedMonthIdx;
         });
-    }, [attendanceRecords]);
+    }, [attendanceRecords, selectedYear, selectedMonthIdx]);
 
     const monthLeaves = useMemo(() => {
         return leaveRequests.filter(leave => {
             if (leave.status !== 'Approved') return false;
             const [year, month] = leave.startDate.split('-').map(Number);
-            return year === currentYear && (month - 1) === currentMonth;
+            return year === selectedYear && (month - 1) === selectedMonthIdx;
         });
-    }, [leaveRequests]);
+    }, [leaveRequests, selectedYear, selectedMonthIdx]);
 
-    // New: Calculate individual stats for each employee with exact dashboard logic
+    // Calculate individual stats for each employee
     const processedEmployeeStats = useMemo(() => {
         const holidayDates = new Set(
             companyHolidays.map(h => typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0])
@@ -62,13 +73,14 @@ export const Analytics: React.FC = () => {
                     }, 0);
 
                     const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
-                    const attendanceDate = r.date;
+                    const attendanceDate = typeof r.date === 'string' ? r.date.split('T')[0] : r.date;
                     const isHolidayDay = holidayDates.has(attendanceDate);
 
-                    const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
-                    const isLate = !isHolidayDay && checkInSeconds > 9 * 3600;
-                    if (isLate) lateCheckInCount++;
-                    const penaltySeconds = isLate ? (15 * 60) : 0;
+                    // Use the centralised penalty utility (same as AdminDashboard & EmployeeDashboard)
+                    const penaltySeconds = !isHolidayDay && isPenaltyEffective(attendanceDate)
+                        ? calculateLatenessPenaltySeconds(r.checkIn)
+                        : 0;
+                    if (penaltySeconds > 0) lateCheckInCount++;
 
                     let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
 
@@ -120,9 +132,9 @@ export const Analytics: React.FC = () => {
                 isActive: user.isActive
             };
         });
-    }, [users, monthRecords, monthLeaves, companyHolidays]);
+    }, [users, monthRecords, monthLeaves, companyHolidays, selectedYear, selectedMonthIdx]);
 
-    // 1. Summary Statistics Calculation
+    // 1. Summary Statistics
     const stats = useMemo(() => {
         const totalWorked = processedEmployeeStats.reduce((acc, s) => acc + s.workedHours, 0);
         const totalLeaves = processedEmployeeStats.reduce((acc, s) => acc + s.leaveCount, 0);
@@ -130,10 +142,9 @@ export const Analytics: React.FC = () => {
 
         const totalHolidays = companyHolidays.filter(h => {
             const [year, month] = h.date.split('-').map(Number);
-            return year === currentYear && (month - 1) === currentMonth;
+            return year === selectedYear && (month - 1) === selectedMonthIdx;
         }).length;
 
-        // Unique working days across all employees
         const uniqueDays = new Set(monthRecords.map(rec => rec.date)).size;
 
         return {
@@ -144,7 +155,7 @@ export const Analytics: React.FC = () => {
             activeUsers: processedEmployeeStats.filter(u => u.isActive).length,
             lateArrivals: totalLate
         };
-    }, [processedEmployeeStats, monthRecords, companyHolidays]);
+    }, [processedEmployeeStats, monthRecords, companyHolidays, selectedYear, selectedMonthIdx]);
 
     // 2. Daily Attendance Trend (Area Chart)
     const dailyTrendData = useMemo(() => {
@@ -157,7 +168,6 @@ export const Analytics: React.FC = () => {
         return Object.entries(dailyMap)
             .map(([date, hours]) => ({ date, hours: Math.round(hours * 10) / 10 }))
             .sort((a, b) => {
-                // Correct YYYY-MM-DD parsing
                 const parseDate = (d: string) => {
                     const [year, month, day] = d.split('-').map(Number);
                     return new Date(year, month - 1, day).getTime();
@@ -182,7 +192,7 @@ export const Analytics: React.FC = () => {
         }));
     }, [monthLeaves]);
 
-    // 4. Departmental Status Breakdown (Leaves, Extra, Low, Normal)
+    // 4. Departmental Status Breakdown
     const deptStatusData = useMemo(() => {
         const data: Record<string, { name: string; leaves: number; extra: number; low: number; normal: number }> = {};
 
@@ -227,7 +237,7 @@ export const Analytics: React.FC = () => {
         })).sort((a, b) => (b.overtime + b.lowTime) - (a.overtime + a.lowTime));
     }, [processedEmployeeStats]);
 
-    // 6. Dept Leave Breakdown (Leaves by Category)
+    // 6. Dept Leave Breakdown
     const deptLeaveTypeData = useMemo(() => {
         const data: Record<string, any> = {};
         const categories = ['Paid Leave', 'Unpaid Leave', 'Half Day Leave', 'Extra Time Leave', 'Other'];
@@ -301,6 +311,11 @@ export const Analytics: React.FC = () => {
         );
     }, [employeeWiseData, searchQuery]);
 
+    // Human-readable label for the selected month
+    const selectedMonthLabel = useMemo(() => {
+        return new Date(selectedYear, selectedMonthIdx).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    }, [selectedYear, selectedMonthIdx]);
+
     if (loading) {
         return (
             <div className="flex flex-col items-center justify-center min-h-[400px] space-y-4">
@@ -312,18 +327,31 @@ export const Analytics: React.FC = () => {
 
     return (
         <div className="space-y-6 animate-in fade-in duration-500 pb-10">
+            {/* Header with Month Filter */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                     <h2 className="text-2xl font-bold text-slate-800">HR Analytics Pro</h2>
                     <p className="text-slate-500 text-sm">Advanced insights into company-wide productivity and trends</p>
                 </div>
-                <div className="flex items-center gap-2 text-xs font-semibold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-full border border-blue-100 shadow-sm">
-                    <Calendar size={14} />
-                    {new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })} Report
+                <div className="flex items-center gap-3">
+                    {/* Month picker */}
+                    <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-sm">
+                        <Calendar size={16} className="text-blue-500 shrink-0" />
+                        <input
+                            type="month"
+                            value={selectedMonth}
+                            onChange={e => setSelectedMonth(e.target.value)}
+                            className="text-sm font-semibold text-slate-700 bg-transparent focus:outline-none cursor-pointer"
+                        />
+                    </div>
+                    <div className="flex items-center gap-2 text-xs font-semibold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-full border border-blue-100 shadow-sm whitespace-nowrap">
+                        <Calendar size={14} />
+                        {selectedMonthLabel} Report
+                    </div>
                 </div>
             </div>
 
-            {/* Enhanced Summary Stats */}
+            {/* Summary Stats */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
                     { label: 'Working Hours', value: stats.workingHours, icon: Clock, color: 'text-blue-600', bg: 'bg-blue-100', trend: 'Monthly Total' },
@@ -346,7 +374,7 @@ export const Analytics: React.FC = () => {
                 ))}
             </div>
 
-            {/* Daily Production Time Data (Table) - Relocated to Top */}
+            {/* Daily Production Time Data (Table) */}
             <Card className="p-6" title="Daily Company Production (Text)">
                 <div className="overflow-y-auto mt-4 max-h-[400px]">
                     <table className="w-full text-left text-xs">
@@ -358,7 +386,11 @@ export const Analytics: React.FC = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
-                            {dailyTrendData.map((d, i) => (
+                            {dailyTrendData.length === 0 ? (
+                                <tr>
+                                    <td colSpan={3} className="py-8 text-center text-slate-400 italic">No attendance data for {selectedMonthLabel}</td>
+                                </tr>
+                            ) : dailyTrendData.map((d, i) => (
                                 <tr key={i} className="hover:bg-slate-50 transition-colors group">
                                     <td className="py-2 px-4 font-bold text-slate-700">{d.date}</td>
                                     <td className="py-2 px-4 text-center text-blue-600 font-bold">{d.hours}h</td>
@@ -378,7 +410,7 @@ export const Analytics: React.FC = () => {
             </Card>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* 2. Departmental Status Data (Table) */}
+                {/* Departmental Status Data (Table) */}
                 <Card className="p-6" title="Departmental Status Analysis (Text)">
                     <div className="overflow-x-auto mt-4">
                         <table className="w-full text-left text-xs">
@@ -406,7 +438,7 @@ export const Analytics: React.FC = () => {
                     </div>
                 </Card>
 
-                {/* 3. Dept Time Analysis Data (Table) */}
+                {/* Dept Time Analysis Data (Table) */}
                 <Card className="p-6" title="Overtime vs Low Time Hours (Text)">
                     <div className="overflow-x-auto mt-4">
                         <table className="w-full text-left text-xs">
@@ -431,7 +463,7 @@ export const Analytics: React.FC = () => {
                 </Card>
             </div>
 
-            {/* 6. Departmental Leave Type Breakdown (Text) - NEW */}
+            {/* Departmental Leave Type Breakdown (Text) */}
             <Card className="p-6" title="Departmental Leave Type Breakdown (Text)">
                 <div className="overflow-x-auto mt-4">
                     <table className="w-full text-left text-xs">
@@ -462,7 +494,7 @@ export const Analytics: React.FC = () => {
             </Card>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* 4. Leave Distribution Data (Table) */}
+                {/* Leave Distribution Data (Table) */}
                 <Card className="p-6" title="Leave Distribution (Text)">
                     <div className="overflow-x-auto mt-4">
                         <table className="w-full text-left text-xs">
@@ -479,7 +511,7 @@ export const Analytics: React.FC = () => {
                                         <td className="py-2 font-bold text-slate-700">{d.name}</td>
                                         <td className="py-2 text-center font-black">{d.value}</td>
                                         <td className="py-2 text-center text-slate-400 font-medium">
-                                            {Math.round((d.value / stats.leaves) * 100)}%
+                                            {stats.leaves > 0 ? Math.round((d.value / stats.leaves) * 100) : 0}%
                                         </td>
                                     </tr>
                                 ))}
@@ -488,10 +520,12 @@ export const Analytics: React.FC = () => {
                     </div>
                 </Card>
 
-                {/* 5. Star Performers List */}
+                {/* Star Performers List */}
                 <Card className="p-6" title="Star Performers (Monthly)">
                     <div className="mt-4 space-y-3">
-                        {topPerformers.map((emp, i) => (
+                        {topPerformers.length === 0 ? (
+                            <p className="text-center text-slate-400 italic text-sm py-6">No data for {selectedMonthLabel}</p>
+                        ) : topPerformers.map((emp, i) => (
                             <div key={i} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100 hover:border-blue-200 transition-all hover:bg-white hover:shadow-sm">
                                 <div className="flex items-center gap-3">
                                     <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-blue-500 to-indigo-600 text-white flex items-center justify-center font-black text-xs shadow-sm">
@@ -641,11 +675,10 @@ export const Analytics: React.FC = () => {
                 </Card>
             </div>
 
-
-            {/* Employee Monthly Performance Detail - Relocated to End */}
+            {/* Employee Monthly Performance Detail */}
             <Card className="p-6 mt-6" title="Employee Monthly Performance Detail">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-                    <p className="text-sm text-slate-500">Individual performance metrics for {new Date(currentYear, currentMonth).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</p>
+                    <p className="text-sm text-slate-500">Individual performance metrics for {selectedMonthLabel}</p>
                     <div className="relative w-full md:w-72">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                         <input

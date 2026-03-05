@@ -659,6 +659,12 @@ export const AdminDashboard: React.FC = () => {
     const MIN_NORMAL_SECONDS = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
     const MAX_NORMAL_SECONDS = 8 * 3600 + 22 * 60; // 8h 22m = 30120 seconds
 
+    // Compute approvedLeaves up front so it can be referenced inside the forEach
+    const approvedLeaves = filteredMonthlyLeaves.filter(l => {
+      const status = (l.status || '').trim();
+      return status === 'Approved' || status === LeaveStatus.APPROVED;
+    });
+
     monthlyAttendance.forEach(record => {
       if (record.checkIn && record.checkOut) {
         daysPresent++;
@@ -721,10 +727,6 @@ export const AdminDashboard: React.FC = () => {
     });
 
     // Calculate Extra Time Leave hours for selected month
-    const approvedLeaves = filteredMonthlyLeaves.filter(l => {
-      const status = (l.status || '').trim();
-      return status === 'Approved' || status === LeaveStatus.APPROVED;
-    });
 
     const extraTimeLeaveHours = approvedLeaves
       .filter(leave => {
