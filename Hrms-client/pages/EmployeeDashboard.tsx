@@ -1059,8 +1059,8 @@ export const EmployeeDashboard: React.FC = () => {
                         <Button variant="danger" onClick={() => {
                           setConfirmationPopup({
                             show: true,
-                            title: 'Confirm Check Out',
-                            message: 'Are you sure you want to check out?',
+                            title: '📋 Task Sheet Reminder',
+                            message: 'Have you updated your task sheet for today? Please make sure all your tasks are recorded before checking out.',
                             onConfirm: async () => {
                               try {
                                 await clockOut();
@@ -1070,7 +1070,31 @@ export const EmployeeDashboard: React.FC = () => {
                                 throw error;
                               }
                             },
-                            onCancel: () => setConfirmationPopup(null)
+                            onCancel: () => setConfirmationPopup(null),
+                            customButtons: (
+                              <div className="flex gap-3 justify-end w-full">
+                                <Button
+                                  variant="secondary"
+                                  onClick={() => setConfirmationPopup(null)}
+                                >
+                                  No, Go Back
+                                </Button>
+                                <Button
+                                  variant="danger"
+                                  onClick={async () => {
+                                    try {
+                                      await clockOut();
+                                      setConfirmationPopup(null);
+                                    } catch (error) {
+                                      setConfirmationPopup(null);
+                                      throw error;
+                                    }
+                                  }}
+                                >
+                                  Yes, Check Out
+                                </Button>
+                              </div>
+                            )
                           });
                         }} className="w-full">Check Out</Button>
                       )}
