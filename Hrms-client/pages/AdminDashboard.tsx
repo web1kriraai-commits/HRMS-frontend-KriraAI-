@@ -1,27 +1,54 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Role, LeaveCategory, LeaveStatus, User } from '../types';
-import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw } from 'lucide-react';
+import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard } from 'lucide-react';
 import { formatDate, getTodayStr, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI } from '../services/api';
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
 const formatHoursToHoursMinutes = (hours: number) => {
-  const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
+  const isNegative = hours < 0;
+  const absHours = Math.abs(hours);
+  const h = Math.floor(absHours);
+  const m = Math.round((absHours - h) * 60);
 
+  let result = '';
   if (h === 0 && m === 0) return '0m';
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
+  if (h > 0 && m > 0) result = `${h}h ${m}m`;
+  else if (h > 0) result = `${h}h`;
+  else result = `${m}m`;
+
+  return isNegative ? `-${result}` : result;
 };
 
 export const AdminDashboard: React.FC = () => {
   const { auth, users, auditLogs, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, notifications, leaveRequests, updateUser, updateLeaveStatus, deleteAttendance, updateLeaveRequest, deleteLeaveRequest, updateHoliday, deleteHoliday, adminUpdateAttendance } = useApp();
-  const [activeTab, setActiveTab] = useState<'summary' | 'users' | 'audit' | 'reports' | 'settings' | 'guidance'>('summary');
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState<'consolidated' | 'summary' | 'users' | 'audit' | 'reports' | 'settings' | 'guidance'>(
+    location.pathname === '/admin-dashboard' ? 'consolidated' : 'summary'
+  );
+
+  useEffect(() => {
+    const path = location.pathname;
+    if (path === '/admin-dashboard' || path === '/') setActiveTab('consolidated');
+    else if (path === '/admin-summary') setActiveTab('summary');
+    else if (path === '/admin-users') setActiveTab('users');
+    else if (path === '/admin-audit') setActiveTab('audit');
+    else if (path === '/admin-system') setActiveTab('reports');
+    else if (path === '/admin-settings') setActiveTab('settings');
+    else if (path === '/admin-guidance') setActiveTab('guidance');
+
+    if (location.state?.openAddUserModal) {
+      setIsCreateUserModalOpen(true);
+      // Clear the state to prevent re-opening on manual refresh
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [location.pathname, location.state, navigate]);
 
   // User management states
   const [newUser, setNewUser] = useState({
@@ -39,14 +66,11 @@ export const AdminDashboard: React.FC = () => {
   });
   const [salaryBreakdownRows, setSalaryBreakdownRows] = useState<SalaryBreakdownRow[]>([]);
   const [salaryBreakdownData, setSalaryBreakdownData] = useState<{ [key: string]: number }>({});
-  const [paidLeaveAllocation, setPaidLeaveAllocation] = useState({ userId: '', allocation: '' });
-  const [forgetPassword, setForgetPassword] = useState({ email: '', username: '', otp: '', newPassword: '' });
-  const [forgetPasswordOtpSent, setForgetPasswordOtpSent] = useState(false);
-  const [forgetPasswordOtpEmail, setForgetPasswordOtpEmail] = useState('');
+
   const [editingAttendance, setEditingAttendance] = useState<any>(null);
 
   const [newHoliday, setNewHoliday] = useState({ date: '', description: '' });
-  const [correction, setCorrection] = useState({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '' });
+  const [correction, setCorrection] = useState({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '', isPenaltyDisabled: false });
   const [reportFilters, setReportFilters] = useState({ start: '', end: '', department: '' });
   const [resetPasswordModalOpen, setResetPasswordModalOpen] = useState(false);
   const [selectedUserForReset, setSelectedUserForReset] = useState<User | null>(null);
@@ -257,6 +281,7 @@ export const AdminDashboard: React.FC = () => {
   const [editSalaryBreakdownRows, setEditSalaryBreakdownRows] = useState<SalaryBreakdownRow[]>([]);
   const [editSalaryBreakdownData, setEditSalaryBreakdownData] = useState<{ [key: string]: number }>({});
   const [isCreateUserModalOpen, setIsCreateUserModalOpen] = useState(false);
+  const [isCorrectionModalOpen, setIsCorrectionModalOpen] = useState(false);
 
   // Show notifications popup only once per admin user per latest notification batch
   useEffect(() => {
@@ -495,8 +520,8 @@ export const AdminDashboard: React.FC = () => {
         const attendanceDate = typeof r.date === 'string' ? r.date.split('T')[0] : r.date;
         const isHolidayDay = holidayDateSet.has(attendanceDate);
 
-        // Late check-in penalty: use centralized utility
-        const penaltySeconds = !isHolidayDay && isPenaltyEffective(attendanceDate)
+        // Late check-in penalty: use centralized utility (skip if admin disabled penalty)
+        const penaltySeconds = !isHolidayDay && !r.isPenaltyDisabled && isPenaltyEffective(attendanceDate)
           ? calculateLatenessPenaltySeconds(r.checkIn)
           : 0;
         let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
@@ -545,19 +570,19 @@ export const AdminDashboard: React.FC = () => {
     const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds;
     const extraTimeWorkedHours = finalTimeDifference / 3600;
 
-    // Remaining extra time leave balance
-    const remainingExtraTimeLeaveHours = Math.max(0, extraTimeLeaveHours - Math.max(0, extraTimeWorkedHours));
+    // Remaining extra time balance
+    // This is the net extra time available after accounting for low time and any extra time leaves taken
+    const remainingExtraTimeLeaveHours = extraTimeWorkedHours - extraTimeLeaveHours;
 
     // Calculate carryover from previous month
-    // At month end, if balance is not covered, it carries over to next month
     const now = new Date();
     const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
 
     // Extra Time Leave Balance: If remaining > 0 at month end, it carries over
+    // If it's negative, it means there's a deficit
     const carryoverExtraTimeLeave = isMonthEnd && remainingExtraTimeLeaveHours > 0 ? remainingExtraTimeLeaveHours : 0;
 
     // Low Time: If there's low time that's not compensated by extra time, it carries over
-    // Only carry over if final difference is negative (more low time than extra time)
     const carryoverLowTime = isMonthEnd && finalTimeDifference < 0 ? Math.abs(finalTimeDifference) : 0;
 
     return {
@@ -609,8 +634,8 @@ export const AdminDashboard: React.FC = () => {
         const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
         const isHolidayDay = deductHolidaySet.has(recordDateISO);
 
-        // Late check-in penalty: use centralized utility
-        const penaltySeconds = !isHolidayDay && isPenaltyEffective(recordDateISO as string)
+        // Late check-in penalty: use centralized utility (skip if admin disabled penalty)
+        const penaltySeconds = !isHolidayDay && !record.isPenaltyDisabled && isPenaltyEffective(recordDateISO as string)
           ? calculateLatenessPenaltySeconds(record.checkIn)
           : 0;
         const netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
@@ -682,8 +707,8 @@ export const AdminDashboard: React.FC = () => {
         // Use the shared memoized holidayDateSet (from outer scope)
         const isHolidayDay = holidayDateSet.has(recordDateISO as string);
 
-        // Late check-in penalty: use centralized utility
-        const penaltySeconds = !isHolidayDay && isPenaltyEffective(recordDateISO as string)
+        // Late check-in penalty: use centralized utility (skip if admin disabled penalty)
+        const penaltySeconds = !isHolidayDay && !record.isPenaltyDisabled && isPenaltyEffective(recordDateISO as string)
           ? calculateLatenessPenaltySeconds(record.checkIn)
           : 0;
         let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
@@ -801,8 +826,8 @@ export const AdminDashboard: React.FC = () => {
     e.preventDefault();
     if (!correction.userId || !correction.date) return;
 
-    if (!correction.checkIn && !correction.checkOut) {
-      alert("Please provide at least Check In or Check Out time");
+    if (!correction.checkIn && !correction.checkOut && !correction.isPenaltyDisabled) {
+      alert("Please provide at least Check In time, Check Out time, or Disable Late Penalty");
       return;
     }
 
@@ -813,10 +838,11 @@ export const AdminDashboard: React.FC = () => {
         checkIn: correction.checkIn || undefined,
         checkOut: correction.checkOut || undefined,
         breakDurationMinutes: correction.breakDuration ? parseInt(correction.breakDuration) : undefined,
-        notes: correction.notes || undefined
+        notes: correction.notes || undefined,
+        isPenaltyDisabled: correction.isPenaltyDisabled
       });
       alert("Attendance saved successfully.");
-      setCorrection({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '' });
+      setCorrection({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '', isPenaltyDisabled: false });
       // Refresh data to show updated records
       await refreshData();
     } catch (error: any) {
@@ -956,27 +982,367 @@ export const AdminDashboard: React.FC = () => {
         </>
       )}
 
-      {/* Tabs */}
-      <div className="flex bg-white rounded-2xl shadow-sm border border-gray-100 p-1.5 overflow-x-auto">
-        <button onClick={() => setActiveTab('summary')} className={`flex items-center px-5 py-2.5 text-sm font-semibold rounded-xl whitespace-nowrap transition-all ${activeTab === 'summary' ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-200' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
-          <Clock size={16} className="mr-2" /> Monthly Summary
-        </button>
-        <button onClick={() => setActiveTab('users')} className={`flex items-center px-5 py-2.5 text-sm font-semibold rounded-xl whitespace-nowrap transition-all ${activeTab === 'users' ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-200' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
-          <Users size={16} className="mr-2" /> User Management
-        </button>
-        <button onClick={() => setActiveTab('audit')} className={`flex items-center px-5 py-2.5 text-sm font-semibold rounded-xl whitespace-nowrap transition-all ${activeTab === 'audit' ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-200' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
-          <Activity size={16} className="mr-2" /> Audit Logs
-        </button>
-        <button onClick={() => setActiveTab('reports')} className={`flex items-center px-5 py-2.5 text-sm font-semibold rounded-xl whitespace-nowrap transition-all ${activeTab === 'reports' ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-200' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
-          <FileText size={16} className="mr-2" /> System Management
-        </button>
-        <button onClick={() => setActiveTab('settings')} className={`flex items-center px-5 py-2.5 text-sm font-semibold rounded-xl whitespace-nowrap transition-all ${activeTab === 'settings' ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-200' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
-          <Globe size={16} className="mr-2" /> Settings
-        </button>
-        <button onClick={() => setActiveTab('guidance')} className={`flex items-center px-5 py-2.5 text-sm font-semibold rounded-xl whitespace-nowrap transition-all ${activeTab === 'guidance' ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-200' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
-          <BookOpen size={16} className="mr-2" /> Guidance
-        </button>
-      </div>
+
+      {/* CONSOLIDATED DASHBOARD TAB */}
+      {activeTab === 'consolidated' && (
+        <div className="space-y-8">
+          {/* Summary Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-5">
+              <div className="h-14 w-14 rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-600">
+                <Users size={28} />
+              </div>
+              <div>
+                <p className="text-gray-500 text-sm font-medium">Total Employees</p>
+                <h3 className="text-2xl font-bold text-gray-800">{users.filter(u => u.role !== Role.ADMIN).length}</h3>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-5">
+              <div className="h-14 w-14 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600">
+                <CheckCircle size={28} />
+              </div>
+              <div>
+                <p className="text-gray-500 text-sm font-medium">Today's Presence</p>
+                <h3 className="text-2xl font-bold text-gray-800">
+                  {attendanceRecords.filter(r => {
+                    const today = getTodayStr();
+                    return (typeof r.date === 'string' ? r.date.split('T')[0] : r.date) === today && r.checkIn;
+                  }).length}
+                </h3>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-5">
+              <div className="h-14 w-14 rounded-2xl bg-amber-50 flex items-center justify-center text-amber-600">
+                <Clock size={28} />
+              </div>
+              <div>
+                <p className="text-gray-500 text-sm font-medium">Today's On Time</p>
+                <h3 className="text-2xl font-bold text-gray-800">
+                  {attendanceRecords.filter(r => {
+                    const today = getTodayStr();
+                    return (typeof r.date === 'string' ? r.date.split('T')[0] : r.date) === today && r.checkIn && !r.lateCheckIn;
+                  }).length}
+                </h3>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-5">
+              <div className="h-14 w-14 rounded-2xl bg-rose-50 flex items-center justify-center text-rose-600">
+                <AlertCircle size={28} />
+              </div>
+              <div>
+                <p className="text-gray-500 text-sm font-medium">Pending Leaves</p>
+                <h3 className="text-2xl font-bold text-gray-800">{leaveRequests.filter(l => l.status === 'Pending').length}</h3>
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Actions */}
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2">
+              <Activity className="h-5 w-5 text-indigo-600" />
+              Quick Actions
+            </h3>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <button
+                onClick={() => navigate('/admin-users', { state: { openAddUserModal: true } })}
+                className="flex flex-col items-center justify-center p-6 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-700 hover:bg-indigo-100 transition-all gap-3"
+              >
+                <UserPlus size={24} />
+                <span className="font-bold text-sm">Add User</span>
+              </button>
+
+              <button
+                onClick={() => navigate('/holidays', { state: { openAddModal: true } })}
+                className="flex flex-col items-center justify-center p-6 rounded-2xl bg-purple-50 border border-purple-100 text-purple-700 hover:bg-purple-100 transition-all gap-3"
+              >
+                <Calendar size={24} />
+                <span className="font-bold text-sm">Add Holiday</span>
+              </button>
+
+              <button
+                onClick={() => navigate('/admin-leaves', { state: { openAllocationModal: true } })}
+                className="flex flex-col items-center justify-center p-6 rounded-2xl bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100 transition-all gap-3"
+              >
+                <DollarSign size={24} />
+                <span className="font-bold text-sm">Allocate Paid Leave</span>
+              </button>
+
+              <button
+                onClick={() => setIsCorrectionModalOpen(true)}
+                className="flex flex-col items-center justify-center p-6 rounded-2xl bg-amber-50 border border-amber-100 text-amber-700 hover:bg-amber-100 transition-all gap-3"
+              >
+                <PenTool size={24} />
+                <span className="font-bold text-sm">Correct Attendance</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Pending Leave Requests */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-6 py-5 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800">Pending Leave Requests</h3>
+                <p className="text-gray-500 text-sm">{leaveRequests.filter(l => l.status === 'Pending').length} requests needing approval</p>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50/50 text-gray-500 uppercase text-xs font-bold">
+                    <th className="px-6 py-4 text-left">Employee</th>
+                    <th className="px-6 py-4 text-left">Period</th>
+                    <th className="px-6 py-4 text-left">Type</th>
+                    <th className="px-6 py-4 text-left">Reason</th>
+                    <th className="px-6 py-4 text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {leaveRequests.filter(l => l.status === 'Pending').length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-10 text-center text-gray-400">No pending leave requests</td>
+                    </tr>
+                  ) : (
+                    leaveRequests.filter(l => l.status === 'Pending').slice(0, 5).map(leave => (
+                      <tr key={leave.id} className="hover:bg-gray-50/50">
+                        <td className="px-6 py-4">
+                          <p className="font-semibold text-gray-800">{leave.userName}</p>
+                          <p className="text-xs text-gray-400">{users.find(u => u.id === leave.userId)?.department}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="text-gray-700">{formatDate(leave.startDate)}</div>
+                          {leave.startDate !== leave.endDate && <div className="text-[10px] text-gray-400 uppercase font-bold">to {formatDate(leave.endDate)}</div>}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-600 font-bold text-[10px]">{leave.category}</span>
+                        </td>
+                        <td className="px-6 py-4 max-w-xs truncate text-gray-600">{leave.reason}</td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              onClick={() => updateLeaveStatus(leave.id, LeaveStatus.APPROVED)}
+                              className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 transition-colors"
+                              title="Approve"
+                            >
+                              <CheckCircle size={16} />
+                            </button>
+                            <button
+                              onClick={() => updateLeaveStatus(leave.id, LeaveStatus.REJECTED)}
+                              className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors"
+                              title="Reject"
+                            >
+                              <X size={16} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+              {leaveRequests.filter(l => l.status === 'Pending').length > 5 && (
+                <div className="px-6 py-3 bg-gray-50 text-center">
+                  <span className="text-xs text-gray-400">And {leaveRequests.filter(l => l.status === 'Pending').length - 5} more pending requests</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Monthly Performance Table */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-6 py-5 border-b border-gray-100 bg-indigo-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800">Monthly Performance Overview</h3>
+                <p className="text-gray-500 text-sm">Key attendance metrics for the selected month</p>
+              </div>
+              <input
+                type="month"
+                className="bg-white border border-indigo-200 text-indigo-700 px-4 py-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 font-bold"
+                value={selectedMonth}
+                onChange={e => setSelectedMonth(e.target.value)}
+              />
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 text-gray-500 uppercase text-xs font-bold">
+                    <th className="px-6 py-4 text-left">Employee</th>
+                    <th className="px-6 py-4 text-center">Worked</th>
+                    <th className="px-6 py-4 text-center">Present</th>
+                    <th className="px-6 py-4 text-center text-rose-600">Low Time</th>
+                    <th className="px-6 py-4 text-center text-emerald-600">Extra Time</th>
+                    <th className="px-6 py-4 text-center text-indigo-600">Leave (ET)</th>
+                    <th className="px-6 py-4 text-center">Net Balance</th>
+                    <th className="px-6 py-4 text-center text-blue-600">Total Leave</th>
+                    <th className="px-6 py-4 text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).map(emp => {
+                    // Calculate stats for each employee for the selected month
+                    const [year, month] = selectedMonth.split('-').map(Number);
+                    const empAttendance = attendanceRecords.filter(r => {
+                      const recDate = new Date(r.date);
+                      return r.userId === emp.id && recDate.getMonth() + 1 === month && recDate.getFullYear() === year;
+                    });
+
+                    // Filter approved leaves for this specific month ONLY
+                    const empLeavesInMonth = leaveRequests.filter(l => {
+                      if (l.userId !== emp.id) return false;
+                      const status = (l.status || '').trim();
+                      if (status !== 'Approved' && status !== LeaveStatus.APPROVED) return false;
+
+                      const startDate = new Date(l.startDate);
+                      const endDate = new Date(l.endDate);
+                      const monthStart = new Date(year, month - 1, 1);
+                      const monthEnd = new Date(year, month, 0);
+
+                      // Check if leave overlaps with the month
+                      return (startDate <= monthEnd && endDate >= monthStart);
+                    });
+
+                    const totalLeavesCount = empLeavesInMonth.reduce((sum, l) => sum + calculateLeaveDays(l.startDate, l.endDate), 0);
+                    const balance = calculateEmployeeBalance(emp.id, empAttendance, empLeavesInMonth);
+
+                    return (
+                      <tr key={emp.id} className="hover:bg-gray-50/50 transition-colors">
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="h-9 w-9 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold">
+                              {emp.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <p className="font-semibold text-gray-800">{emp.name}</p>
+                              <p className="text-[10px] text-gray-400 uppercase font-medium">{emp.department}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-center font-medium">
+                          {formatHoursToHoursMinutes(empAttendance.reduce((sum, r) => sum + (r.totalWorkedSeconds || 0), 0) / 3600)}
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 font-bold text-[10px]">
+                            {empAttendance.filter(r => r.checkIn && r.checkOut).length} Days
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-center text-rose-600 font-bold">
+                          {formatDuration(balance.totalLowTimeSeconds)}
+                        </td>
+                        <td className="px-6 py-4 text-center text-emerald-600 font-bold">
+                          {formatDuration(balance.totalExtraTimeSeconds)}
+                        </td>
+                        <td className="px-6 py-4 text-center text-indigo-600 font-bold">
+                          {formatHoursToHoursMinutes(balance.extraTimeLeaveHours)}
+                        </td>
+                        <td className={`px-6 py-4 text-center font-bold ${balance.remainingExtraTimeLeaveHours > 0 ? 'text-emerald-600' :
+                          balance.remainingExtraTimeLeaveHours < 0 ? 'text-rose-600' : 'text-gray-400'
+                          }`}>
+                          {formatHoursToHoursMinutes(balance.remainingExtraTimeLeaveHours)}
+                        </td>
+                        <td className="px-6 py-4 text-center text-blue-600 font-bold">
+                          {totalLeavesCount} Days
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          <div className="flex items-center justify-center">
+                            <button
+                              onClick={() => {
+                                setSelectedUserId(emp.id);
+                                setActiveTab('summary');
+                              }}
+                              className="px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-all font-bold text-xs"
+                            >
+                              View
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* All Leave Summary with Hover */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-6 py-5 border-b border-gray-100 bg-purple-50 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-gray-800">Full Leave History</h3>
+                <p className="text-gray-500 text-sm">Hover over rows to see detailed information</p>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 text-gray-500 uppercase text-xs font-bold">
+                    <th className="px-6 py-4 text-left">Employee</th>
+                    <th className="px-6 py-4 text-left">Leave Date</th>
+                    <th className="px-6 py-4 text-left">Type</th>
+                    <th className="px-6 py-4 text-center">Status</th>
+                    <th className="px-6 py-4 text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {leaveRequests.slice(0, 10).map(leave => (
+                    <tr key={leave.id} className="hover:bg-indigo-50/50 transition-all cursor-default group relative">
+                      <td className="px-6 py-4">
+                        <p className="font-semibold text-gray-800">{leave.userName}</p>
+                      </td>
+                      <td className="px-6 py-4 text-gray-600">
+                        {formatDate(leave.startDate)}
+                        <div className="absolute hidden group-hover:block z-50 bg-slate-900 text-white p-3 rounded-xl shadow-2xl min-w-[250px] left-1/2 -translate-x-1/2 -top-16 pointer-events-none">
+                          <div className="text-xs space-y-1">
+                            <p className="font-bold border-b border-slate-700 pb-1 mb-1">{leave.category}</p>
+                            <p><span className="text-slate-400">From:</span> {formatDate(leave.startDate)}</p>
+                            <p><span className="text-slate-400">To:</span> {formatDate(leave.endDate)}</p>
+                            <p className="italic text-indigo-300 mt-2">"{leave.reason}"</p>
+                          </div>
+                          <div className="absolute w-3 h-3 bg-slate-900 rotate-45 left-1/2 -translate-x-1/2 top-full -mt-1.5"></div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="px-2 py-1 rounded-lg bg-purple-100 text-purple-700 font-bold text-[10px]">{leave.category}</span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center justify-center">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${leave.status === 'Approved' ? 'bg-emerald-100 text-emerald-700' :
+                            leave.status === 'Rejected' ? 'bg-rose-100 text-rose-700' :
+                              'bg-amber-100 text-amber-700'
+                            }`}>
+                            {leave.status}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        {(leave.status === 'Approved' || leave.status === 'Rejected') && (
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Are you sure you want to revert this ${leave.status.toLowerCase()} leave?`)) return;
+                              try {
+                                await updateLeaveStatus(leave.id, 'Pending', `Reverted from ${leave.status} by Admin`);
+                                alert('Leave reverted to Pending status successfully');
+                                await refreshData();
+                              } catch (error: any) {
+                                alert(error.message || 'Failed to revert leave');
+                              }
+                            }}
+                            className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 transition-colors"
+                            title="Revert to Pending"
+                          >
+                            <RotateCcw size={16} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MONTHLY SUMMARY TAB */}
       {activeTab === 'summary' && (
@@ -1164,139 +1530,169 @@ export const AdminDashboard: React.FC = () => {
                 </div>
               )}
 
-              {/* Stats Grid */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Stats Grid - Matching Image 2 */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                 {/* Days Present */}
-                <div className="bg-blue-50 rounded-xl border border-blue-100 p-5">
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="h-10 w-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                <div className="bg-[#f0f7ff] rounded-2xl border border-blue-100 p-6 flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-xl bg-blue-100 flex items-center justify-center">
                       <CheckCircle className="h-5 w-5 text-blue-600" />
                     </div>
-                    <span className="text-xs font-semibold text-blue-600 uppercase">Days</span>
+                    <span className="text-xs font-bold text-blue-600 uppercase tracking-wider">Days</span>
                   </div>
-                  <p className="text-3xl font-bold text-gray-800">{stats.daysPresent}</p>
-                  <p className="text-gray-500 text-sm mt-1">Days Present</p>
+                  <div>
+                    <h3 className="text-2xl font-black text-gray-800">{stats.daysPresent}</h3>
+                    <p className="text-gray-500 text-sm font-medium mt-1">Days Present</p>
+                  </div>
                 </div>
 
                 {/* Total Worked */}
-                <div className="bg-emerald-50 rounded-xl border border-emerald-100 p-5">
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="h-10 w-10 rounded-lg bg-emerald-100 flex items-center justify-center">
+                <div className="bg-[#f2fdf6] rounded-2xl border border-emerald-100 p-6 flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
                       <Timer className="h-5 w-5 text-emerald-600" />
                     </div>
-                    <span className="text-xs font-semibold text-emerald-600 uppercase">Hours</span>
+                    <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Hours</span>
                   </div>
-                  <p className="text-3xl font-bold text-gray-800">{formatDurationStyled(stats.totalWorkedSeconds)}</p>
-                  <p className="text-gray-500 text-sm mt-1">Total Worked</p>
+                  <div>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalWorkedSeconds / 3600)}</span>
+                      <span className="text-sm font-bold text-gray-500">hours</span>
+                      <span className="text-2xl font-black text-gray-800 ml-2">{Math.floor((stats.totalWorkedSeconds % 3600) / 60)}</span>
+                      <span className="text-sm font-bold text-gray-500">min</span>
+                    </div>
+                    <p className="text-gray-500 text-sm font-medium mt-1">Total Worked</p>
+                  </div>
                 </div>
 
                 {/* Low Time */}
-                <div className="bg-rose-50 rounded-xl border border-rose-100 p-5">
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="h-10 w-10 rounded-lg bg-rose-100 flex items-center justify-center">
+                <div className="bg-[#fff5f5] rounded-2xl border border-rose-100 p-6 flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-xl bg-rose-100 flex items-center justify-center">
                       <TrendingDown className="h-5 w-5 text-rose-600" />
                     </div>
-                    <span className="text-xs font-semibold text-rose-600 uppercase">Deficit</span>
+                    <span className="text-xs font-bold text-rose-600 uppercase tracking-wider">Deficit</span>
                   </div>
-                  <p className="text-3xl font-bold text-gray-800">{formatDurationStyled(stats.totalLowTimeSeconds)}</p>
-                  <p className="text-gray-500 text-sm mt-1">Low Time</p>
+                  <div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalLowTimeSeconds / 60)}</span>
+                      <span className="text-sm font-bold text-gray-500">minutes</span>
+                    </div>
+                    <p className="text-gray-500 text-sm font-medium mt-1">Low Time</p>
+                  </div>
                 </div>
 
                 {/* Extra Time */}
-                <div className="bg-violet-50 rounded-xl border border-violet-100 p-5">
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="h-10 w-10 rounded-lg bg-violet-100 flex items-center justify-center">
-                      <TrendingUp className="h-5 w-5 text-violet-600" />
+                <div className="bg-[#f8f7ff] rounded-2xl border border-indigo-100 p-6 flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-xl bg-indigo-100 flex items-center justify-center">
+                      <TrendingUp className="h-5 w-5 text-indigo-600" />
                     </div>
-                    <span className="text-xs font-semibold text-violet-600 uppercase">Bonus</span>
+                    <span className="text-xs font-bold text-indigo-600 uppercase tracking-wider">Bonus</span>
                   </div>
-                  <p className="text-3xl font-bold text-gray-800">{formatDurationStyled(stats.totalExtraTimeSeconds)}</p>
-                  <p className="text-gray-500 text-sm mt-1">Extra Time</p>
+                  <div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalExtraTimeSeconds / 60)}</span>
+                      <span className="text-sm font-bold text-gray-500">minutes</span>
+                    </div>
+                    <p className="text-gray-500 text-sm font-medium mt-1">Extra Time</p>
+                  </div>
                 </div>
               </div>
 
-              {/* Net Time Balance Card */}
-              <div className={`rounded-xl p-6 border ${stats.finalDifference >= 0
-                ? 'bg-green-50 border-green-200'
-                : 'bg-red-50 border-red-200'
+              {/* Net Time Balance Banner - Matching Image 2 */}
+              <div className={`rounded-2xl p-8 border-2 shadow-sm transition-all ${stats.finalDifference >= 0
+                ? 'bg-[#f0fdf4] border-emerald-100'
+                : 'bg-[#fff5f5] border-rose-100'
                 }`}>
-                <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-                  <div className="flex items-center gap-4">
-                    <div className={`h-14 w-14 rounded-xl flex items-center justify-center ${stats.finalDifference >= 0 ? 'bg-green-100' : 'bg-red-100'
+                <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                  <div className="flex items-center gap-5">
+                    <div className={`h-16 w-16 rounded-2xl flex items-center justify-center shadow-sm ${stats.finalDifference >= 0 ? 'bg-emerald-100' : 'bg-rose-100'
                       }`}>
                       {stats.finalDifference >= 0 ? (
-                        <TrendingUp className={`h-7 w-7 text-green-600`} />
+                        <TrendingUp className={`h-8 w-8 text-emerald-600`} />
                       ) : (
-                        <TrendingDown className="h-7 w-7 text-red-600" />
+                        <TrendingDown className="h-8 w-8 text-rose-600" />
                       )}
                     </div>
                     <div>
-                      <p className={`text-sm font-semibold ${stats.finalDifference >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                      <h4 className={`text-xl font-bold ${stats.finalDifference >= 0 ? 'text-emerald-800' : 'text-rose-800'}`}>
                         Net Time Balance
-                      </p>
-                      <p className="text-gray-500 text-xs">Extra Time - (Extra Time Leave + Low Time)</p>
+                      </h4>
+                      <p className="text-gray-500 text-sm font-medium">Extra Time - (Extra Time Leave + Low Time)</p>
                     </div>
                   </div>
                   <div className="text-center md:text-right">
-                    <p className={`text-4xl font-bold ${stats.finalDifference >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    <div className={`text-4xl font-black tracking-tighter ${stats.finalDifference >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                       {stats.finalDifference >= 0 ? '+' : '-'}{formatDuration(Math.abs(stats.finalDifference))}
-                    </p>
-                    <p className={`text-sm mt-1 ${stats.finalDifference >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-                      {stats.finalDifference >= 0 ? '✅ Good Performance' : '⚠️ Needs Improvement'}
-                    </p>
+                    </div>
+                    <div className={`flex items-center justify-center md:justify-end gap-2 mt-2 font-bold ${stats.finalDifference >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {stats.finalDifference >= 0 ? (
+                        <CheckCircle size={18} />
+                      ) : (
+                        <AlertCircle size={18} />
+                      )}
+                      <span>{stats.finalDifference >= 0 ? 'Good Performance' : 'Needs Improvement'}</span>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Balance & Carryover Card */}
-              {selectedUserBalance && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="rounded-xl p-6 border bg-orange-50 border-orange-200">
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="h-10 w-10 rounded-lg bg-orange-100 flex items-center justify-center">
-                        <Timer className="h-5 w-5 text-orange-600" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-orange-700">Extra Time Leave Balance</p>
-                        <p className="text-xs text-orange-600">Remaining to be worked</p>
-                      </div>
+              {/* Bottom Cards Row - Matching Image 2 */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Extra Time Leave Balance Card */}
+                <div className="bg-[#fff9f2] rounded-2xl p-8 border border-orange-100 shadow-sm">
+                  <div className="flex items-center gap-4 mb-6">
+                    <div className="h-12 w-12 rounded-xl bg-orange-100 flex items-center justify-center">
+                      <Timer className="h-6 w-6 text-orange-600" />
                     </div>
-                    <p className={`text-3xl font-bold ${selectedUserBalance.remainingExtraTimeLeaveHours > 0 ? 'text-orange-600' : 'text-green-600'
-                      }`}>
-                      {selectedUserBalance.remainingExtraTimeLeaveHours > 0
-                        ? formatHoursToHoursMinutes(selectedUserBalance.remainingExtraTimeLeaveHours)
-                        : '0h'}
-                    </p>
-                    {(() => {
-                      const now = new Date();
-                      const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-                      if (isMonthEnd && selectedUserBalance.carryoverExtraTimeLeave > 0) {
-                        return (
-                          <p className="text-xs text-orange-600 mt-2 font-semibold">
-                            → {formatHoursToHoursMinutes(selectedUserBalance.carryoverExtraTimeLeave)} will carry over to next month
-                          </p>
-                        );
-                      }
-                      return null;
-                    })()}
+                    <div>
+                      <h4 className="font-bold text-orange-800">Extra Time Balance</h4>
+                      <p className="text-sm text-orange-600/70 font-medium">
+                        {selectedUserBalance?.remainingExtraTimeLeaveHours && selectedUserBalance.remainingExtraTimeLeaveHours >= 0
+                          ? 'Available for leaves'
+                          : 'Deficit to be worked'}
+                      </p>
+                    </div>
                   </div>
+                  <div className="flex items-baseline gap-2">
+                    <span className={`text-3xl font-black ${selectedUserBalance?.remainingExtraTimeLeaveHours && selectedUserBalance.remainingExtraTimeLeaveHours > 0 ? 'text-emerald-600' :
+                      selectedUserBalance?.remainingExtraTimeLeaveHours && selectedUserBalance.remainingExtraTimeLeaveHours < 0 ? 'text-rose-600' : 'text-gray-400'
+                      }`}>
+                      {selectedUserBalance?.remainingExtraTimeLeaveHours ? formatHoursToHoursMinutes(selectedUserBalance.remainingExtraTimeLeaveHours) : '0m'}
+                    </span>
+                  </div>
+                  {(() => {
+                    const now = new Date();
+                    const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                    if (isMonthEnd && selectedUserBalance?.carryoverExtraTimeLeave && selectedUserBalance.carryoverExtraTimeLeave > 0) {
+                      return (
+                        <div className="mt-4 flex items-center gap-2 text-sm text-orange-600 font-bold bg-orange-100/50 py-2 px-3 rounded-lg w-fit">
+                          <ArrowRight size={14} />
+                          <span>{formatHoursToHoursMinutes(selectedUserBalance.carryoverExtraTimeLeave)} carries to next month</span>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                </div>
 
-                  <div className="rounded-xl p-6 border bg-red-50 border-red-200">
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="h-10 w-10 rounded-lg bg-red-100 flex items-center justify-center">
-                        <TrendingDown className="h-5 w-5 text-red-600" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-red-700">Low Time</p>
-                        <p className="text-xs text-red-600">Total deficit (auto-carries over if not covered)</p>
-                      </div>
+                {/* Low Time Card */}
+                <div className="bg-[#fff5f5] rounded-2xl p-8 border border-rose-100 shadow-sm">
+                  <div className="flex items-center gap-4 mb-6">
+                    <div className="h-12 w-12 rounded-xl bg-rose-100 flex items-center justify-center">
+                      <TrendingDown className="h-6 w-6 text-rose-600" />
                     </div>
-                    <p className="text-3xl font-bold text-red-600">
-                      {formatDuration(selectedUserBalance.totalLowTimeSeconds)}
-                    </p>
+                    <div>
+                      <h4 className="font-bold text-rose-800">Low Time</h4>
+                      <p className="text-sm text-rose-600/70 font-medium">Total deficit (auto-carries over if not covered)</p>
+                    </div>
+                  </div>
+                  <div className="text-3xl font-black text-rose-600">
+                    {formatDuration(stats.totalLowTimeSeconds)}
                   </div>
                 </div>
-              )}
+              </div>
 
               {/* Leave Records */}
               {monthlyLeaves.length > 0 && (
@@ -1458,9 +1854,11 @@ export const AdminDashboard: React.FC = () => {
 
               {/* Attendance Table */}
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                <div className="px-6 py-4 border-b border-gray-100 bg-gray-50">
-                  <h3 className="text-lg font-bold text-gray-800">Daily Attendance Log</h3>
-                  <p className="text-gray-500 text-sm">{getMonthName()} • {monthlyAttendance.length} records</p>
+                <div className="px-6 py-5 border-b border-gray-100 bg-gray-50/80 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-black text-gray-800">Daily Attendance Log</h3>
+                    <p className="text-gray-500 text-sm font-medium">{getMonthName()} • {monthlyAttendance.length} records</p>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full">
@@ -1591,12 +1989,18 @@ export const AdminDashboard: React.FC = () => {
                                     <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">Absent</span>
                                   ) : !record.checkOut ? (
                                     <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">In Progress</span>
-                                  ) : isHolidayDay && netWorkedSeconds > 0 ? (
-                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">🏖 Holiday OT</span>
+                                  ) : isHolidayDay && netWorkedRawSeconds > 0 ? (
+                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700 font-bold border-2 border-emerald-200">
+                                      +{formatDuration(netWorkedRawSeconds)}
+                                    </span>
                                   ) : isLowTime ? (
-                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-100 text-rose-700 font-bold border-2 border-rose-200">Low Time</span>
+                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-100 text-rose-700 font-bold border-2 border-rose-200">
+                                      -{formatDuration(MIN_NORMAL_SECONDS_LOCAL - netWorkedSeconds)}
+                                    </span>
                                   ) : isExtraTime ? (
-                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700 font-bold border-2 border-emerald-200">Extra Time</span>
+                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700 font-bold border-2 border-emerald-200">
+                                      +{formatDuration(netWorkedSeconds - MAX_NORMAL_SECONDS_LOCAL)}
+                                    </span>
                                   ) : (
                                     <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700">On Time</span>
                                   )}
@@ -1737,7 +2141,7 @@ export const AdminDashboard: React.FC = () => {
                       <Edit2 className="h-5 w-5 text-indigo-600" />
                     </div>
                     <div>
-                      <h3 className="font-bold text-gray-800">Edit Attendance</h3>
+                      <h3 className="font-bold text-lg text-gray-800">Edit Attendance</h3>
                       <p className="text-xs text-gray-500">Manual override for {formatDate(editingAttendance.date)}</p>
                     </div>
                   </div>
@@ -1756,6 +2160,7 @@ export const AdminDashboard: React.FC = () => {
                     isManualFlag: (form.elements.namedItem('isManualFlag') as HTMLInputElement).checked,
                     lowTimeFlag: (form.elements.namedItem('lowTimeFlag') as HTMLInputElement).checked,
                     extraTimeFlag: (form.elements.namedItem('extraTimeFlag') as HTMLInputElement).checked,
+                    isPenaltyDisabled: (form.elements.namedItem('isPenaltyDisabled') as HTMLInputElement).checked,
                   };
                   const breakMinutes = parseInt((form.elements.namedItem('breakDuration') as HTMLInputElement).value);
 
@@ -1804,6 +2209,10 @@ export const AdminDashboard: React.FC = () => {
                         <label htmlFor="extraTimeFlag" className="text-xs text-gray-600">Extra Time</label>
                       </div>
                     </div>
+                    <div className="flex items-center gap-2 pt-1 border-t border-gray-100">
+                      <input type="checkbox" id="isPenaltyDisabled" name="isPenaltyDisabled" defaultChecked={editingAttendance.isPenaltyDisabled} className="rounded text-rose-600" />
+                      <label htmlFor="isPenaltyDisabled" className="text-sm font-semibold text-rose-700">Disable Late Penalty</label>
+                    </div>
                   </div>
 
                   <div className="flex gap-2 pt-2">
@@ -1821,535 +2230,162 @@ export const AdminDashboard: React.FC = () => {
       {/* USER MANAGEMENT TAB */}
       {activeTab === 'users' && (
         <div className="space-y-6">
-          {/* Top Row: Create User Form and All Users Table */}
-          <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6">
-            {/* Create User Button - Replaces old sidebar form */}
-            <div className="lg:col-span-1">
+          {/* All Users Table */}
+          <Card className="overflow-hidden p-0">
+            <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
+                  <Users className="h-5 w-5 text-emerald-600" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-800">All Users</h3>
+                  <p className="text-xs text-gray-500">{users.length} users</p>
+                </div>
+              </div>
               <button
                 onClick={() => setIsCreateUserModalOpen(true)}
-                className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white p-6 rounded-2xl shadow-lg border border-indigo-200 transition-all flex flex-col items-center justify-center gap-3 group"
+                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white rounded-xl shadow-md shadow-indigo-100 hover:shadow-indigo-200 transition-all active:scale-95 group"
               >
-                <div className="h-14 w-14 rounded-full bg-white/20 flex items-center justify-center group-hover:scale-110 transition-transform">
-                  <UserPlus size={28} className="text-white" />
-                </div>
-                <div className="text-center">
-                  <h3 className="font-bold text-xl">Add New User</h3>
-                  <p className="text-indigo-100 text-sm mt-1">Create Admin, HR, or Employee account</p>
-                </div>
+                <UserPlus size={18} className="group-hover:rotate-12 transition-transform" />
+                <span className="font-bold text-sm">Add New User</span>
               </button>
             </div>
-
-            {/* All Users Table */}
-            <Card className="lg:col-span-1 overflow-hidden p-0">
-              <div className="p-5 border-b border-gray-100 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
-                    <Users className="h-5 w-5 text-emerald-600" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-800">All Users</h3>
-                    <p className="text-xs text-gray-500">{users.length} users</p>
-                  </div>
-                </div>
-              </div>
-              <div className="overflow-x-auto max-h-[600px]">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-xs text-gray-500 uppercase sticky top-0">
+            <div className="overflow-x-auto max-h-[600px]">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs text-gray-500 uppercase sticky top-0">
+                  <tr>
+                    <th className="px-5 py-3 text-left">User</th>
+                    <th className="px-5 py-3 text-left">Role</th>
+                    <th className="px-5 py-3 text-left">Department</th>
+                    <th className="px-5 py-3 text-left">Joining Date</th>
+                    <th className="px-5 py-3 text-left">Bond Period</th>
+                    <th className="px-5 py-3 text-center">Status</th>
+                    <th className="px-5 py-3 text-center">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {users.length === 0 ? (
                     <tr>
-                      <th className="px-5 py-3 text-left">User</th>
-                      <th className="px-5 py-3 text-left">Role</th>
-                      <th className="px-5 py-3 text-left">Department</th>
-                      <th className="px-5 py-3 text-left">Joining Date</th>
-                      <th className="px-5 py-3 text-left">Bond Period</th>
-                      <th className="px-5 py-3 text-center">Status</th>
-                      <th className="px-5 py-3 text-center">Actions</th>
+                      <td colSpan={7} className="px-5 py-8 text-center text-gray-400">
+                        No users found
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {users.length === 0 ? (
-                      <tr>
-                        <td colSpan={7} className="px-5 py-8 text-center text-gray-400">
-                          No users found
-                        </td>
-                      </tr>
-                    ) : (
-                      users.map(user => {
-                        const bondInfo = calculateBondRemaining(user.bonds, user.joiningDate);
-                        return (
-                          <tr key={user.id} className="hover:bg-gray-50">
-                            <td className="px-5 py-4">
-                              <div className="flex items-center gap-3">
-                                <div className={`h-9 w-9 rounded-lg flex items-center justify-center text-white font-bold text-sm ${user.role === Role.ADMIN ? 'bg-purple-500' :
-                                  user.role === Role.HR ? 'bg-blue-500' : 'bg-emerald-500'
-                                  }`}>
-                                  {user.name.charAt(0).toUpperCase()}
-                                </div>
-                                <div>
-                                  <p className="font-semibold text-gray-800">{user.name}</p>
-                                  <p className="text-xs text-gray-400">{user.email}</p>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-5 py-4">
-                              <span className={`px-2 py-1 rounded text-xs font-semibold ${user.role === Role.ADMIN ? 'bg-purple-100 text-purple-700' :
-                                user.role === Role.HR ? 'bg-blue-100 text-blue-700' :
-                                  'bg-emerald-100 text-emerald-700'
-                                }`}>
-                                {user.role}
-                              </span>
-                            </td>
-                            <td className="px-5 py-4 text-gray-600">{user.department}</td>
-                            <td className="px-5 py-4 text-gray-600 text-xs">
-                              {user.joiningDate || '-'}
-                            </td>
-                            <td className="px-5 py-4 text-xs">
-                              {bondInfo.currentBond || bondInfo.totalRemaining.display !== '-' ? (
-                                <button
-                                  onClick={() => setBondModalUser(user)}
-                                  className="text-blue-600 hover:text-blue-800 font-semibold text-xs underline"
-                                >
-                                  View Bond Details
-                                </button>
-                              ) : (
-                                <span className="text-gray-400">-</span>
-                              )}
-                            </td>
-                            <td className="px-5 py-4 text-center">
-                              <span className={`px-2 py-1 rounded text-xs font-semibold ${user.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-                                }`}>
-                                {user.isActive ? 'Active' : 'Inactive'}
-                              </span>
-                            </td>
-                            <td className="px-5 py-4 text-center">
-                              <div className="flex items-center justify-center gap-2">
-                                <button
-                                  onClick={() => {
-                                    setEditingUser(user);
-                                    setEditUserForm({
-                                      name: user.name,
-                                      email: user.email,
-                                      department: user.department,
-                                      joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
-                                      bonds: (user.bonds || []).map(b => ({
-                                        type: b.type,
-                                        periodMonths: b.periodMonths.toString(),
-                                        startDate: b.startDate,
-                                        endDate: '',
-                                        salary: (b.salary || 0).toString()
-                                      })),
-                                      aadhaarNumber: user.aadhaarNumber || '',
-                                      guardianName: user.guardianName || '',
-                                      mobileNumber: user.mobileNumber || '',
-                                      guardianMobileNumber: user.guardianMobileNumber || '',
-                                      paidLeaveAllocation: (user.paidLeaveAllocation || 0).toString()
-                                    });
-                                  }}
-                                  className="text-gray-400 hover:text-blue-500 transition-colors p-2 rounded-lg hover:bg-blue-50"
-                                  title="Edit User"
-                                >
-                                  <PenTool size={16} />
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setSelectedUserForReset(user);
-                                    setResetPasswordModalOpen(true);
-                                    setNewEmployeePassword('');
-                                  }}
-                                  className="text-gray-400 hover:text-purple-500 transition-colors p-2 rounded-lg hover:bg-purple-50"
-                                  title="Reset Password"
-                                >
-                                  <Key size={16} />
-                                </button>
-                                {user.id !== auth.user?.id && (
-                                  <button
-                                    onClick={async () => {
-                                      if (confirm(`Are you sure you want to delete ${user.name}?`)) {
-                                        try {
-                                          await userAPI.deleteUser(user.id);
-                                          alert(`User ${user.name} deleted successfully`);
-                                          await refreshData();
-                                        } catch (error: any) {
-                                          alert(error.message || 'Failed to delete user');
-                                        }
-                                      }
-                                    }}
-                                    className="text-gray-400 hover:text-red-500 transition-colors p-2 rounded-lg hover:bg-red-50"
-                                    title="Delete User"
-                                  >
-                                    <Trash2 size={16} />
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </div>
-
-          {/* Paid Leave Allocation Section */}
-          <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6">
-            {/* Add Paid Leave Form */}
-            <Card className="h-fit">
-              <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-100">
-                <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center shadow-sm">
-                  <Calendar className="h-6 w-6 text-white" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-gray-800 text-lg">Update Paid Leave Allocation</h3>
-                  <p className="text-xs text-gray-500 mt-0.5">Set total paid leave allocation for employees</p>
-                </div>
-              </div>
-              <form onSubmit={async (e) => {
-                e.preventDefault();
-                if (!paidLeaveAllocation.userId) {
-                  alert("Please select a user");
-                  return;
-                }
-                if (!paidLeaveAllocation.allocation || paidLeaveAllocation.allocation === '') {
-                  alert("Please enter a number");
-                  return;
-                }
-                try {
-                  const allocation = parseInt(paidLeaveAllocation.allocation);
-                  if (isNaN(allocation) || allocation < 0) {
-                    alert("Please enter a valid positive number");
-                    return;
-                  }
-                  // Use 'set' action to overwrite the allocation instead of adding to it
-                  await updateUser(paidLeaveAllocation.userId, {
-                    paidLeaveAllocation: allocation,
-                    paidLeaveAction: 'set'
-                  });
-                  alert(`Updated paid leave allocation to ${allocation} successfully.`);
-                  setPaidLeaveAllocation({ userId: '', allocation: '' });
-                  await refreshData();
-                } catch (error: any) {
-                  alert(error.message || "Failed to update paid leave allocation");
-                }
-              }} className="space-y-5">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Select Employee *</label>
-                  <select
-                    className="w-full p-3 border-2 border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all bg-white"
-                    value={paidLeaveAllocation.userId}
-                    onChange={e => {
-                      // Find current allocation for selected user to pre-fill? 
-                      // For now just clear allocation to reset input
-                      setPaidLeaveAllocation({
-                        userId: e.target.value,
-                        allocation: ''
-                      });
-                    }}
-                    required
-                  >
-                    <option value="">Choose an employee...</option>
-                    {users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).map(u => (
-                      <option key={u.id} value={u.id}>
-                        {u.name} - {u.department} (Current: {u.paidLeaveAllocation || 0})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">New Allocation (Total Year)</label>
-                  <input
-                    type="number"
-                    placeholder="e.g., 12"
-                    className="w-full p-3 border-2 border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all"
-                    value={paidLeaveAllocation.allocation}
-                    onChange={e => setPaidLeaveAllocation({ ...paidLeaveAllocation, allocation: e.target.value })}
-                    min="0"
-                    required
-                  />
-                  <div className="mt-2 p-3 bg-blue-50 border border-blue-100 rounded-lg">
-                    <p className="text-xs text-blue-700 leading-relaxed">
-                      <span className="font-semibold">Note:</span> This will <strong>overwrite</strong> the existing allocation.
-                      If an employee has 5 and you enter 12, the new total will be 12.
-                    </p>
-                  </div>
-                </div>
-                <Button type="submit" className="w-full bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 shadow-md">
-                  <Calendar size={18} className="mr-2" /> Update Paid Leave Allocation
-                </Button>
-              </form>
-              <div className="mt-6 pt-6 border-t border-gray-200">
-                <Button
-                  type="button"
-                  onClick={async () => {
-                    if (!confirm('Are you sure you want to reset all employees\' paid leave allocation to 0? This will set all additional allocations to 0.')) {
-                      return;
-                    }
-                    try {
-                      await userAPI.resetAllPaidLeaveAllocation();
-                      alert('All paid leave allocations have been reset to 0 successfully.');
-                      await refreshData();
-                    } catch (error: any) {
-                      alert(error.message || "Failed to reset paid leave allocations");
-                    }
-                  }}
-                  className="w-full bg-red-500 hover:bg-red-600 shadow-md"
-                >
-                  <Trash2 size={18} className="mr-2" /> Reset All Allocations to 0
-                </Button>
-              </div>
-            </Card>
-
-            {/* Yearly Paid Leave Summary Table */}
-            <Card className="h-fit">
-              <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-100">
-                <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm">
-                  <FileText className="h-6 w-6 text-white" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-gray-800 text-lg">Yearly Summary</h3>
-                  <p className="text-xs text-gray-500 mt-0.5">Current year paid leave overview</p>
-                </div>
-              </div>
-              <div className="overflow-x-auto -mx-6 px-6">
-                <table className="w-full text-sm min-w-[600px]">
-                  <thead>
-                    <tr className="bg-gradient-to-r from-gray-50 to-gray-100 border-b-2 border-gray-200">
-                      <th className="px-4 py-3 text-left text-xs font-bold text-gray-700 uppercase tracking-wider w-[200px]">Employee</th>
-                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Allocated</th>
-                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Used</th>
-                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Remaining</th>
-                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[120px]">Last Allocated</th>
-                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider w-[100px]">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {paidLeaveData.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="px-4 py-8 text-center">
-                          <div className="flex flex-col items-center justify-center text-gray-400">
-                            <Users className="h-12 w-12 mb-2 opacity-50" />
-                            <p className="text-sm">No employees found</p>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : (
-                      paidLeaveData.map(({ user, allocated, used, remaining }) => (
-                        <tr key={user.id} className="hover:bg-gray-50 transition-colors">
-                          <td className="px-4 py-4 w-[200px]">
+                  ) : (
+                    users.map(user => {
+                      const bondInfo = calculateBondRemaining(user.bonds, user.joiningDate);
+                      return (
+                        <tr key={user.id} className="hover:bg-gray-50">
+                          <td className="px-5 py-4">
                             <div className="flex items-center gap-3">
-                              <div className="h-10 w-10 rounded-lg flex items-center justify-center text-white font-bold text-sm bg-gradient-to-br from-emerald-500 to-emerald-600 shadow-sm flex-shrink-0">
+                              <div className={`h-9 w-9 rounded-lg flex items-center justify-center text-white font-bold text-sm ${user.role === Role.ADMIN ? 'bg-purple-500' :
+                                user.role === Role.HR ? 'bg-blue-500' : 'bg-emerald-500'
+                                }`}>
                                 {user.name.charAt(0).toUpperCase()}
                               </div>
-                              <div className="min-w-0">
-                                <p className="font-semibold text-gray-800 truncate">{user.name}</p>
-                                <p className="text-xs text-gray-500 mt-0.5 truncate">{user.department}</p>
+                              <div>
+                                <p className="font-semibold text-gray-800">{user.name}</p>
+                                <p className="text-xs text-gray-400">{user.email}</p>
                               </div>
                             </div>
                           </td>
-                          <td className="px-4 py-4 text-center w-[100px]">
-                            <span className="inline-flex items-center justify-center px-3 py-1 rounded-full bg-gray-100 text-gray-800 font-bold text-sm whitespace-nowrap">
-                              {allocated}
-                            </span>
-                          </td>
-                          <td className="px-4 py-4 text-center w-[100px]">
-                            <span className="inline-flex items-center justify-center px-3 py-1 rounded-full bg-orange-100 text-orange-700 font-semibold text-sm whitespace-nowrap">
-                              {used}
-                            </span>
-                          </td>
-                          <td className="px-4 py-4 text-center w-[100px]">
-                            <span className={`inline-flex items-center justify-center px-3 py-1 rounded-full font-bold text-sm whitespace-nowrap ${remaining > 0
-                              ? 'bg-green-100 text-green-700'
-                              : 'bg-red-100 text-red-700'
+                          <td className="px-5 py-4">
+                            <span className={`px-2 py-1 rounded text-xs font-semibold ${user.role === Role.ADMIN ? 'bg-purple-100 text-purple-700' :
+                              user.role === Role.HR ? 'bg-blue-100 text-blue-700' :
+                                'bg-emerald-100 text-emerald-700'
                               }`}>
-                              {remaining}
+                              {user.role}
                             </span>
                           </td>
-                          <td className="px-4 py-4 text-center w-[120px]">
-                            <span className="text-xs text-gray-600 font-medium whitespace-nowrap">
-                              {user.paidLeaveLastAllocatedDate
-                                ? formatDate(user.paidLeaveLastAllocatedDate)
-                                : <span className="text-gray-400 italic">Never</span>}
+                          <td className="px-5 py-4 text-gray-600">{user.department}</td>
+                          <td className="px-5 py-4 text-gray-600 text-xs">
+                            {user.joiningDate || '-'}
+                          </td>
+                          <td className="px-5 py-4 text-xs">
+                            {bondInfo.currentBond || bondInfo.totalRemaining.display !== '-' ? (
+                              <button
+                                onClick={() => setBondModalUser(user)}
+                                className="text-blue-600 hover:text-blue-800 font-semibold text-xs underline"
+                              >
+                                View Bond Details
+                              </button>
+                            ) : (
+                              <span className="text-gray-400">-</span>
+                            )}
+                          </td>
+                          <td className="px-5 py-4 text-center">
+                            <span className={`px-2 py-1 rounded text-xs font-semibold ${user.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                              }`}>
+                              {user.isActive ? 'Active' : 'Inactive'}
                             </span>
                           </td>
-                          <td className="px-4 py-4 text-center w-[100px]">
-                            <button
-                              onClick={() => {
-                                setEditingUser(user);
-                                setEditUserForm({
-                                  name: user.name,
-                                  email: user.email,
-                                  department: user.department,
-                                  paidLeaveAllocation: (user.paidLeaveAllocation || 0).toString(),
-                                  aadhaarNumber: user.aadhaarNumber || '',
-                                  guardianName: user.guardianName || '',
-                                  mobileNumber: user.mobileNumber || '',
-                                  guardianMobileNumber: user.guardianMobileNumber || '',
-                                  joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
-                                  bonds: (user.bonds || []).map(b => ({
-                                    type: b.type,
-                                    periodMonths: b.periodMonths.toString(),
-                                    startDate: b.startDate,
-                                    endDate: '',
-                                    salary: (b.salary || 0).toString()
-                                  }))
-                                });
-                              }}
-                              className="p-2 hover:bg-indigo-50 text-indigo-600 rounded-lg transition-colors group"
-                              title="Edit Paid Leave"
-                            >
-                              <PenTool size={16} className="group-hover:scale-110 transition-transform" />
-                            </button>
+                          <td className="px-5 py-4 text-center">
+                            <div className="flex items-center justify-center gap-2">
+                              <button
+                                onClick={() => {
+                                  setEditingUser(user);
+                                  setEditUserForm({
+                                    name: user.name,
+                                    email: user.email,
+                                    department: user.department,
+                                    joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
+                                    bonds: (user.bonds || []).map(b => ({
+                                      type: b.type,
+                                      periodMonths: b.periodMonths.toString(),
+                                      startDate: b.startDate,
+                                      endDate: '',
+                                      salary: (b.salary || 0).toString()
+                                    })),
+                                    aadhaarNumber: user.aadhaarNumber || '',
+                                    guardianName: user.guardianName || '',
+                                    mobileNumber: user.mobileNumber || '',
+                                    guardianMobileNumber: user.guardianMobileNumber || '',
+                                    paidLeaveAllocation: (user.paidLeaveAllocation || 0).toString()
+                                  });
+                                }}
+                                className="text-gray-400 hover:text-blue-500 transition-colors p-2 rounded-lg hover:bg-blue-50"
+                                title="Edit User"
+                              >
+                                <PenTool size={16} />
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setSelectedUserForReset(user);
+                                  setResetPasswordModalOpen(true);
+                                  setNewEmployeePassword('');
+                                }}
+                                className="text-gray-400 hover:text-purple-500 transition-colors p-2 rounded-lg hover:bg-purple-50"
+                                title="Reset Password"
+                              >
+                                <Key size={16} />
+                              </button>
+                              {user.id !== auth.user?.id && (
+                                <button
+                                  onClick={async () => {
+                                    if (confirm(`Are you sure you want to delete ${user.name}?`)) {
+                                      try {
+                                        await userAPI.deleteUser(user.id);
+                                        alert(`User ${user.name} deleted successfully`);
+                                        await refreshData();
+                                      } catch (error: any) {
+                                        alert(error.message || 'Failed to delete user');
+                                      }
+                                    }
+                                  }}
+                                  className="text-gray-400 hover:text-red-500 transition-colors p-2 rounded-lg hover:bg-red-50"
+                                  title="Delete User"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </div>
-
-          {/* Forget Password Form - Bottom */}
-          <Card>
-            <div className="flex items-center gap-3 mb-6">
-              <div className="h-10 w-10 rounded-xl bg-orange-100 flex items-center justify-center">
-                <Mail className="h-5 w-5 text-orange-600" />
-              </div>
-              <div>
-                <h3 className="font-bold text-gray-800">Forget Password</h3>
-                <p className="text-xs text-gray-500">
-                  {forgetPasswordOtpSent ? 'Enter OTP and new password' : 'Reset user password with OTP verification'}
-                </p>
-              </div>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
             </div>
-
-            {!forgetPasswordOtpSent ? (
-              <form onSubmit={async (e) => {
-                e.preventDefault();
-                if (!forgetPassword.email || !forgetPassword.username || !forgetPassword.newPassword) {
-                  alert('Please fill all required fields');
-                  return;
-                }
-                if (forgetPassword.newPassword.length < 4) {
-                  alert('Password must be at least 4 characters');
-                  return;
-                }
-                try {
-                  const result = await authAPI.sendResetPasswordOTP(
-                    forgetPassword.email.trim(),
-                    forgetPassword.username.trim(),
-                    forgetPassword.newPassword
-                  );
-                  alert(result.message || 'OTP sent successfully!');
-                  setForgetPasswordOtpSent(true);
-                  setForgetPasswordOtpEmail(result.email || forgetPassword.email.trim());
-                } catch (error: any) {
-                  alert(error.message || 'Failed to send OTP');
-                }
-              }} className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Admin Email *</label>
-                    <input
-                      type="email"
-                      className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-orange-200 focus:border-orange-400"
-                      value={forgetPassword.email}
-                      onChange={e => setForgetPassword({ ...forgetPassword, email: e.target.value })}
-                      placeholder="admin@example.com"
-                      required
-                    />
-                    <p className="text-xs text-gray-500 mt-1">Email must belong to an Admin account (OTP will be sent here)</p>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Username *</label>
-                    <input
-                      type="text"
-                      className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-orange-200 focus:border-orange-400"
-                      value={forgetPassword.username}
-                      onChange={e => setForgetPassword({ ...forgetPassword, username: e.target.value })}
-                      placeholder="username"
-                      required
-                    />
-                    <p className="text-xs text-gray-500 mt-1">Username of the user whose password needs to be reset</p>
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-600 uppercase mb-1">New Password *</label>
-                  <input
-                    type="password"
-                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-orange-200 focus:border-orange-400"
-                    value={forgetPassword.newPassword}
-                    onChange={e => setForgetPassword({ ...forgetPassword, newPassword: e.target.value })}
-                    placeholder="Enter new password (min 4 characters)"
-                    minLength={4}
-                    required
-                  />
-                </div>
-                <p className="text-xs text-gray-500 bg-orange-50 p-2 rounded-lg">Enter admin email, username, and new password. OTP will be sent to the admin email.</p>
-                <Button type="submit" className="w-full bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700">
-                  <Mail size={16} className="mr-2" /> Send OTP
-                </Button>
-              </form>
-            ) : (
-              <form onSubmit={async (e) => {
-                e.preventDefault();
-                if (!forgetPassword.otp) {
-                  alert('Please enter OTP');
-                  return;
-                }
-                try {
-                  await authAPI.resetPassword(
-                    forgetPasswordOtpEmail || forgetPassword.email.trim(),
-                    forgetPassword.otp.trim()
-                  );
-                  alert('Password reset successfully!');
-                  setForgetPassword({ email: '', username: '', otp: '', newPassword: '' });
-                  setForgetPasswordOtpSent(false);
-                  setForgetPasswordOtpEmail('');
-                  await refreshData();
-                } catch (error: any) {
-                  alert(error.message || 'Failed to reset password');
-                }
-              }} className="space-y-4">
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
-                  <p className="text-sm text-blue-800">
-                    <strong>OTP sent to:</strong> {forgetPasswordOtpEmail}
-                  </p>
-                  <p className="text-xs text-blue-600 mt-1">Please check your email for the 6-digit OTP code</p>
-                  <p className="text-xs text-blue-600 mt-1">
-                    <strong>Resetting password for:</strong> {forgetPassword.username}
-                  </p>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-600 uppercase mb-1">OTP *</label>
-                  <input
-                    type="text"
-                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-orange-200 focus:border-orange-400 text-center text-xl tracking-widest font-mono"
-                    value={forgetPassword.otp}
-                    onChange={e => setForgetPassword({ ...forgetPassword, otp: e.target.value.replace(/\D/g, '').slice(0, 6) })}
-                    placeholder="000000"
-                    maxLength={6}
-                    required
-                  />
-                </div>
-                <p className="text-xs text-gray-500 bg-orange-50 p-2 rounded-lg">Enter the OTP received in your email to verify and reset the password.</p>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    onClick={() => {
-                      setForgetPasswordOtpSent(false);
-                      setForgetPassword({ ...forgetPassword, otp: '' });
-                    }}
-                    className="flex-1 bg-gray-500 hover:bg-gray-600"
-                  >
-                    Back
-                  </Button>
-                  <Button type="submit" className="flex-1 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700">
-                    <Mail size={16} className="mr-2" /> Verify OTP & Reset Password
-                  </Button>
-                </div>
-              </form>
-            )}
           </Card>
         </div>
       )}
@@ -2445,45 +2481,6 @@ export const AdminDashboard: React.FC = () => {
               </div>
             </Card>
 
-            {/* Correction */}
-            <Card title="Correct Attendance" className="lg:col-span-1 h-fit">
-              <form onSubmit={handleCorrection} className="space-y-3">
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Employee</label>
-                  <select className="w-full p-2 border rounded text-sm" value={correction.userId} onChange={e => setCorrection({ ...correction, userId: e.target.value })} required>
-                    <option value="">Select Employee</option>
-                    {users.filter(u => u.role === Role.EMPLOYEE).map(u => (
-                      <option key={u.id} value={u.id}>{u.name} ({u.username})</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Date</label>
-                  <input type="date" className="w-full p-2 border rounded text-sm" value={correction.date} onChange={e => setCorrection({ ...correction, date: e.target.value })} required />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Check In</label>
-                    <input type="time" className="w-full p-2 border rounded text-sm" value={correction.checkIn} onChange={e => setCorrection({ ...correction, checkIn: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Check Out</label>
-                    <input type="time" className="w-full p-2 border rounded text-sm" value={correction.checkOut} onChange={e => setCorrection({ ...correction, checkOut: e.target.value })} />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Total Break Deduction (mins)</label>
-                  <input type="number" placeholder="Override break time" className="w-full p-2 border rounded text-sm" value={correction.breakDuration} onChange={e => setCorrection({ ...correction, breakDuration: e.target.value })} />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Admin Notes</label>
-                  <input type="text" placeholder="Reason for correction" className="w-full p-2 border rounded text-sm" value={correction.notes} onChange={e => setCorrection({ ...correction, notes: e.target.value })} />
-                </div>
-                <Button type="submit" className="w-full" variant="secondary">
-                  <PenTool size={16} className="mr-2" /> Update Record
-                </Button>
-              </form>
-            </Card>
 
             {/* List Holidays */}
             <Card title="Scheduled Holidays" className="lg:col-span-1">
@@ -2656,7 +2653,8 @@ export const AdminDashboard: React.FC = () => {
             </Card>
           </div>
         </div>
-      )}
+      )
+      }
 
       {/* SETTINGS TAB */}
       {activeTab === 'settings' && (
@@ -2676,7 +2674,8 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </div>
         </Card>
-      )}
+      )
+      }
 
       {/* GUIDANCE TAB */}
       {activeTab === 'guidance' && (
@@ -2732,15 +2731,7 @@ export const AdminDashboard: React.FC = () => {
                   </p>
                   <p className="flex items-start gap-2">
                     <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
-                    <span><strong>Reset Password:</strong> Use the Forget Password form at the bottom. Enter username and new password (minimum 4 characters) to reset any user's password.</span>
-                  </p>
-                  <p className="flex items-start gap-2">
-                    <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
-                    <span><strong>Paid Leave Allocation:</strong> Add paid leaves to employees. The number you enter will be added to their existing allocation. Use "Reset All Allocations" to set all to 0.</span>
-                  </p>
-                  <p className="flex items-start gap-2">
-                    <ArrowRight className="h-4 w-4 text-purple-500 mt-1 flex-shrink-0" />
-                    <span><strong>Yearly Summary:</strong> View yearly paid leave overview showing allocated, used, and remaining leaves for all employees.</span>
+                    <span><strong>User Actions:</strong> Edit user details, reset passwords, or delete accounts directly from the users table.</span>
                   </p>
                 </div>
               </section>
@@ -2831,6 +2822,79 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </Card>
         </div>
+      )
+      }
+
+      {/* Correction Modal */}
+      {isCorrectionModalOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-lg">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-amber-100 flex items-center justify-center">
+                  <PenTool className="h-5 w-5 text-amber-600" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-gray-800">Correct Attendance</h3>
+                  <p className="text-xs text-gray-500">Manual update for employee records</p>
+                </div>
+              </div>
+              <button onClick={() => setIsCorrectionModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-400">
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={async (e) => {
+              await handleCorrection(e);
+              setIsCorrectionModalOpen(false);
+            }} className="space-y-4 font-sans">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Employee</label>
+                <select className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-200" value={correction.userId} onChange={e => setCorrection({ ...correction, userId: e.target.value })} required>
+                  <option value="">Select Employee</option>
+                  {users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).map(u => (
+                    <option key={u.id} value={u.id}>{u.name} ({u.username})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Date</label>
+                <input type="date" className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-200" value={correction.date} onChange={e => setCorrection({ ...correction, date: e.target.value })} required />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Check In</label>
+                  <input type="time" className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-200" value={correction.checkIn} onChange={e => setCorrection({ ...correction, checkIn: e.target.value })} />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Check Out</label>
+                  <input type="time" className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-200" value={correction.checkOut} onChange={e => setCorrection({ ...correction, checkOut: e.target.value })} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Total Break Deduction (mins)</label>
+                <input type="number" placeholder="Override break time" className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-200" value={correction.breakDuration} onChange={e => setCorrection({ ...correction, breakDuration: e.target.value })} />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Admin Notes</label>
+                <input type="text" placeholder="Reason for correction" className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-200" value={correction.notes} onChange={e => setCorrection({ ...correction, notes: e.target.value })} />
+              </div>
+              <div className="flex items-center gap-2 p-3 bg-rose-50 rounded-lg border border-rose-100">
+                <input
+                  type="checkbox"
+                  id="correctIsPenaltyDisabled"
+                  className="rounded text-rose-600 focus:ring-rose-200"
+                  checked={correction.isPenaltyDisabled}
+                  onChange={e => setCorrection({ ...correction, isPenaltyDisabled: e.target.checked })}
+                />
+                <label htmlFor="correctIsPenaltyDisabled" className="text-sm font-bold text-rose-700">Disable Late Check-in Penalty</label>
+              </div>
+              <div className="flex gap-2 pt-2">
+                <Button type="button" onClick={() => setIsCorrectionModalOpen(false)} className="flex-1 bg-gray-100 text-gray-800 hover:bg-gray-200">Cancel</Button>
+                <Button type="submit" className="flex-1 bg-amber-600 hover:bg-amber-700">Update Record</Button>
+              </div>
+            </form>
+          </Card>
+        </div>
       )}
 
       {/* Create User Modal - Replaced Sidebar Form */}
@@ -2841,7 +2905,7 @@ export const AdminDashboard: React.FC = () => {
             onClick={() => setIsCreateUserModalOpen(false)}
           />
           <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6 pointer-events-none">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col pointer-events-auto animate-scale-in">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col pointer-events-auto animate-scale-in">
               {/* Modal Header */}
               <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
                 <div className="flex items-center gap-3">
@@ -2849,7 +2913,7 @@ export const AdminDashboard: React.FC = () => {
                     <UserPlus className="h-5 w-5 text-indigo-600" />
                   </div>
                   <div>
-                    <h3 className="font-bold text-xl text-gray-900">Create New User</h3>
+                    <h3 className="font-bold text-lg text-gray-900">Create New User</h3>
                     <p className="text-sm text-gray-500">Add a new employee, HR, or admin to the system</p>
                   </div>
                 </div>
@@ -2862,7 +2926,7 @@ export const AdminDashboard: React.FC = () => {
               </div>
 
               {/* Modal Body - Scrollable */}
-              <div className="p-6 overflow-y-auto custom-scrollbar">
+              <div className="p-5 overflow-y-auto custom-scrollbar">
                 <form id="createUserForm" onSubmit={async (e) => {
                   e.preventDefault();
                   if (!newUser.name || !newUser.username || !newUser.email || !newUser.department) {
@@ -2954,23 +3018,23 @@ export const AdminDashboard: React.FC = () => {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Full Name *</label>
-                        <input type="text" className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.name} onChange={e => setNewUser({ ...newUser, name: e.target.value })} placeholder="e.g. John Doe" required />
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.name} onChange={e => setNewUser({ ...newUser, name: e.target.value })} placeholder="e.g. John Doe" required />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Email Address *</label>
-                        <input type="email" className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.email} onChange={e => setNewUser({ ...newUser, email: e.target.value })} placeholder="john@example.com" required />
+                        <input type="email" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.email} onChange={e => setNewUser({ ...newUser, email: e.target.value })} placeholder="john@example.com" required />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Username *</label>
-                        <input type="text" className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} placeholder="johndoe" required />
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.username} onChange={e => setNewUser({ ...newUser, username: e.target.value })} placeholder="johndoe" required />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Department *</label>
-                        <input type="text" className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.department} onChange={e => setNewUser({ ...newUser, department: e.target.value })} placeholder="e.g. Engineering" required />
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.department} onChange={e => setNewUser({ ...newUser, department: e.target.value })} placeholder="e.g. Engineering" required />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Role *</label>
-                        <select className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
+                        <select className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
                           <option value="Employee">Employee</option>
                           <option value="HR">HR</option>
                           <option value="Admin">Admin</option>
@@ -2978,23 +3042,23 @@ export const AdminDashboard: React.FC = () => {
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Joining Date</label>
-                        <input type="date" className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''} onChange={e => setNewUser({ ...newUser, joiningDate: e.target.value })} />
+                        <input type="date" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''} onChange={e => setNewUser({ ...newUser, joiningDate: e.target.value })} />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Mobile Number</label>
-                        <input type="tel" className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.mobileNumber} onChange={e => setNewUser({ ...newUser, mobileNumber: e.target.value })} placeholder="Optional" />
+                        <input type="tel" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.mobileNumber} onChange={e => setNewUser({ ...newUser, mobileNumber: e.target.value })} placeholder="Optional" />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Aadhaar Number</label>
-                        <input type="text" className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.aadhaarNumber} onChange={e => setNewUser({ ...newUser, aadhaarNumber: e.target.value })} placeholder="Optional" />
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.aadhaarNumber} onChange={e => setNewUser({ ...newUser, aadhaarNumber: e.target.value })} placeholder="Optional" />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Guardian Name</label>
-                        <input type="text" className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.guardianName} onChange={e => setNewUser({ ...newUser, guardianName: e.target.value })} placeholder="Optional" />
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.guardianName} onChange={e => setNewUser({ ...newUser, guardianName: e.target.value })} placeholder="Optional" />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Guardian Mobile Number</label>
-                        <input type="tel" className="w-full p-3 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.guardianMobileNumber} onChange={e => setNewUser({ ...newUser, guardianMobileNumber: e.target.value })} placeholder="Optional" />
+                        <input type="tel" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.guardianMobileNumber} onChange={e => setNewUser({ ...newUser, guardianMobileNumber: e.target.value })} placeholder="Optional" />
                       </div>
                     </div>
                   </div>
@@ -3189,7 +3253,7 @@ export const AdminDashboard: React.FC = () => {
               </div>
 
               {/* Modal Footer - Fixed */}
-              <div className="p-6 border-t border-gray-100 bg-gray-50 flex items-center justify-between gap-4">
+              <div className="p-5 border-t border-gray-100 bg-gray-50 flex items-center justify-between gap-4">
                 <div className="text-xs text-gray-500">
                   <span className="font-bold text-gray-700">Note:</span> User will receive temporary password <code className="bg-gray-200 px-1 py-0.5 rounded font-mono text-gray-800">tempPassword123</code>
                 </div>
@@ -3204,7 +3268,7 @@ export const AdminDashboard: React.FC = () => {
                   <button
                     type="submit"
                     form="createUserForm"
-                    className="px-8 py-2.5 rounded-xl text-sm font-bold text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg shadow-indigo-200 transform hover:scale-[1.02] transition-all"
+                    className="px-8 py-2 rounded-xl text-sm font-bold text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg shadow-indigo-200 transform hover:scale-[1.02] transition-all"
                   >
                     Create User
                   </button>
@@ -3213,158 +3277,161 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </div>
         </>
-      )}
+      )
+      }
 
       {/* Bond Details Modal (Existing) */}
-      {bondModalUser && (() => {
-        const bondInfo = calculateBondRemaining(bondModalUser.bonds, bondModalUser.joiningDate);
-        if (!bondInfo.currentBond && bondInfo.totalRemaining.display === '-') {
-          return null;
-        }
+      {
+        bondModalUser && (() => {
+          const bondInfo = calculateBondRemaining(bondModalUser.bonds, bondModalUser.joiningDate);
+          if (!bondInfo.currentBond && bondInfo.totalRemaining.display === '-') {
+            return null;
+          }
 
-        // Calculate total duration in months
-        const totalMonths = bondInfo.allBonds.map(b => b.periodMonths).reduce((sum, months) => sum + months, 0);
-        const totalYears = Math.floor(totalMonths / 12);
-        const remainingMonths = totalMonths % 12;
-        const totalDurationDisplay = totalYears > 0
-          ? `${totalYears} year${totalYears > 1 ? 's' : ''} ${remainingMonths > 0 ? `${remainingMonths} month${remainingMonths > 1 ? 's' : ''}` : ''}`
-          : `${totalMonths} month${totalMonths > 1 ? 's' : ''}`;
+          // Calculate total duration in months
+          const totalMonths = bondInfo.allBonds.map(b => b.periodMonths).reduce((sum, months) => sum + months, 0);
+          const totalYears = Math.floor(totalMonths / 12);
+          const remainingMonths = totalMonths % 12;
+          const totalDurationDisplay = totalYears > 0
+            ? `${totalYears} year${totalYears > 1 ? 's' : ''} ${remainingMonths > 0 ? `${remainingMonths} month${remainingMonths > 1 ? 's' : ''}` : ''}`
+            : `${totalMonths} month${totalMonths > 1 ? 's' : ''}`;
 
-        return (
-          <>
-            <div
-              className="fixed inset-0 bg-black/50 z-50"
-              onClick={() => setBondModalUser(null)}
-            />
-            <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-              <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h3 className="text-2xl font-bold text-gray-900">Bond Details</h3>
-                    <p className="text-sm text-gray-500 mt-1">{bondModalUser.name}</p>
-                  </div>
-                  <button
-                    onClick={() => setBondModalUser(null)}
-                    className="text-gray-400 hover:text-gray-600 transition-colors"
-                  >
-                    <X size={24} />
-                  </button>
-                </div>
-
-                <div className="space-y-6">
-                  {/* Joining Date */}
-                  {bondModalUser.joiningDate && (
-                    <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
-                      <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-1">Joining Date</p>
-                      <p className="text-lg font-bold text-blue-900">{bondModalUser.joiningDate}</p>
-                    </div>
-                  )}
-
-                  {/* Total Duration */}
-                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                    <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Total Bond Duration</p>
-                    <p className="text-xl font-bold text-gray-900">{totalDurationDisplay}</p>
-                  </div>
-
-                  {/* All Bonds */}
-                  {bondInfo.allBonds.length > 0 && (
+          return (
+            <>
+              <div
+                className="fixed inset-0 bg-black/50 z-50"
+                onClick={() => setBondModalUser(null)}
+              />
+              <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+                <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
+                  <div className="flex items-center justify-between mb-6">
                     <div>
-                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">
-                        All Bonds ({bondInfo.allBonds.length})
-                      </p>
-                      <div className="space-y-3">
-                        {bondInfo.allBonds.map((bond, index) => (
-                          <div key={index} className="bg-white border-2 border-gray-200 rounded-lg p-4">
-                            <div className="flex items-start justify-between mb-2">
-                              <div>
-                                <p className="font-bold text-gray-900 text-lg">{bond.type}</p>
-                                <p className="text-sm text-gray-600 mt-1">
-                                  Period: {bond.periodMonths} month{bond.periodMonths > 1 ? 's' : ''}
-                                </p>
-                              </div>
-                              <span className={`px-2 py-1 rounded text-xs font-semibold ${bond.remaining.isExpired
-                                ? 'bg-red-100 text-red-700'
-                                : bond.remaining.isActive
-                                  ? 'bg-green-100 text-green-700'
-                                  : 'bg-gray-100 text-gray-700'
-                                }`}>
-                                {bond.remaining.isExpired ? 'Expired' : bond.remaining.isActive ? 'Active' : 'Future'}
-                              </span>
-                            </div>
-                            <div className="grid grid-cols-2 gap-3 mt-3 text-sm">
-                              <div>
-                                <p className="text-xs text-gray-500">Start Date</p>
-                                <p className="font-semibold text-gray-800">{bond.startDate || bondModalUser.joiningDate || '-'}</p>
-                              </div>
-                              <div>
-                                <p className="text-xs text-gray-500">End Date</p>
-                                <p className="font-semibold text-gray-800">
-                                  {bond.endDate ? convertToDDMMYYYY(bond.endDate.toISOString().split('T')[0]) : '-'}
-                                </p>
-                              </div>
-                            </div>
-                            {bond.salary && bond.salary > 0 && (
-                              <div className="mt-3 pt-3 border-t border-gray-200">
-                                <p className="text-xs text-gray-500">{bond.type === 'Internship' ? 'Stipend' : 'Salary'}</p>
-                                <p className="font-semibold text-green-600">₹{bond.salary.toLocaleString('en-IN')}</p>
-                              </div>
-                            )}
-                            {bond.remaining.isActive && (
-                              <div className="mt-3 pt-3 border-t border-gray-200">
-                                <p className="text-xs text-gray-500">Remaining</p>
-                                <p className="font-semibold text-blue-600">{bond.remaining.display}</p>
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
+                      <h3 className="text-lg font-bold text-gray-900">Bond Details</h3>
+                      <p className="text-sm text-gray-500 mt-1">{bondModalUser.name}</p>
                     </div>
-                  )}
-
-                  {/* First Completion Date */}
-                  {bondInfo.firstCompletionDate && (
-                    <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
-                      <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-1">
-                        {bondInfo.firstCompletionBondType} Bond Completion Date
-                      </p>
-                      <p className="text-xl font-bold text-purple-900">
-                        {convertToDDMMYYYY(bondInfo.firstCompletionDate.toISOString().split('T')[0])}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Current Bond Remaining */}
-                  <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
-                    <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">
-                      {bondInfo.currentBond ? `${bondInfo.currentBond.type} Bond Remaining` : 'Total Remaining'}
-                    </p>
-                    <p className="text-xl font-bold text-emerald-900">{bondInfo.currentBondRemaining?.display || bondInfo.totalRemaining.display}</p>
+                    <button
+                      onClick={() => setBondModalUser(null)}
+                      className="text-gray-400 hover:text-gray-600 transition-colors"
+                    >
+                      <X size={24} />
+                    </button>
                   </div>
 
-                  {/* Current Salary/Stipend */}
-                  {bondInfo.currentSalary > 0 && (
-                    <div className="bg-green-50 rounded-lg p-4 border border-green-200">
-                      <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-1">
-                        Current {bondInfo.currentBond?.type === 'Internship' ? 'Stipend' : 'Salary'}
-                      </p>
-                      <p className="text-xl font-bold text-green-900">₹{bondInfo.currentSalary.toLocaleString('en-IN')}</p>
-                    </div>
-                  )}
-                </div>
+                  <div className="space-y-6">
+                    {/* Joining Date */}
+                    {bondModalUser.joiningDate && (
+                      <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+                        <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-1">Joining Date</p>
+                        <p className="text-lg font-bold text-blue-900">{bondModalUser.joiningDate}</p>
+                      </div>
+                    )}
 
-                <div className="mt-6 flex justify-end">
-                  <Button
-                    variant="primary"
-                    onClick={() => setBondModalUser(null)}
-                  >
-                    Close
-                  </Button>
+                    {/* Total Duration */}
+                    <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Total Bond Duration</p>
+                      <p className="text-xl font-bold text-gray-900">{totalDurationDisplay}</p>
+                    </div>
+
+                    {/* All Bonds */}
+                    {bondInfo.allBonds.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">
+                          All Bonds ({bondInfo.allBonds.length})
+                        </p>
+                        <div className="space-y-3">
+                          {bondInfo.allBonds.map((bond, index) => (
+                            <div key={index} className="bg-white border-2 border-gray-200 rounded-lg p-4">
+                              <div className="flex items-start justify-between mb-2">
+                                <div>
+                                  <p className="font-bold text-gray-900 text-lg">{bond.type}</p>
+                                  <p className="text-sm text-gray-600 mt-1">
+                                    Period: {bond.periodMonths} month{bond.periodMonths > 1 ? 's' : ''}
+                                  </p>
+                                </div>
+                                <span className={`px-2 py-1 rounded text-xs font-semibold ${bond.remaining.isExpired
+                                  ? 'bg-red-100 text-red-700'
+                                  : bond.remaining.isActive
+                                    ? 'bg-green-100 text-green-700'
+                                    : 'bg-gray-100 text-gray-700'
+                                  }`}>
+                                  {bond.remaining.isExpired ? 'Expired' : bond.remaining.isActive ? 'Active' : 'Future'}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-3 mt-3 text-sm">
+                                <div>
+                                  <p className="text-xs text-gray-500">Start Date</p>
+                                  <p className="font-semibold text-gray-800">{bond.startDate || bondModalUser.joiningDate || '-'}</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-gray-500">End Date</p>
+                                  <p className="font-semibold text-gray-800">
+                                    {bond.endDate ? convertToDDMMYYYY(bond.endDate.toISOString().split('T')[0]) : '-'}
+                                  </p>
+                                </div>
+                              </div>
+                              {bond.salary && bond.salary > 0 && (
+                                <div className="mt-3 pt-3 border-t border-gray-200">
+                                  <p className="text-xs text-gray-500">{bond.type === 'Internship' ? 'Stipend' : 'Salary'}</p>
+                                  <p className="font-semibold text-green-600">₹{bond.salary.toLocaleString('en-IN')}</p>
+                                </div>
+                              )}
+                              {bond.remaining.isActive && (
+                                <div className="mt-3 pt-3 border-t border-gray-200">
+                                  <p className="text-xs text-gray-500">Remaining</p>
+                                  <p className="font-semibold text-blue-600">{bond.remaining.display}</p>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* First Completion Date */}
+                    {bondInfo.firstCompletionDate && (
+                      <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
+                        <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-1">
+                          {bondInfo.firstCompletionBondType} Bond Completion Date
+                        </p>
+                        <p className="text-xl font-bold text-purple-900">
+                          {convertToDDMMYYYY(bondInfo.firstCompletionDate.toISOString().split('T')[0])}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Current Bond Remaining */}
+                    <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
+                      <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">
+                        {bondInfo.currentBond ? `${bondInfo.currentBond.type} Bond Remaining` : 'Total Remaining'}
+                      </p>
+                      <p className="text-xl font-bold text-emerald-900">{bondInfo.currentBondRemaining?.display || bondInfo.totalRemaining.display}</p>
+                    </div>
+
+                    {/* Current Salary/Stipend */}
+                    {bondInfo.currentSalary > 0 && (
+                      <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+                        <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-1">
+                          Current {bondInfo.currentBond?.type === 'Internship' ? 'Stipend' : 'Salary'}
+                        </p>
+                        <p className="text-xl font-bold text-green-900">₹{bondInfo.currentSalary.toLocaleString('en-IN')}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-6 flex justify-end">
+                    <Button
+                      variant="primary"
+                      onClick={() => setBondModalUser(null)}
+                    >
+                      Close
+                    </Button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </>
-        );
-      })()}
+            </>
+          );
+        })()
+      }
 
       {/* Edit User Modal */}
       {editingUser && (
@@ -3379,7 +3446,7 @@ export const AdminDashboard: React.FC = () => {
           <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
             <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between mb-6">
-                <h3 className="text-2xl font-bold text-gray-900">Edit User: {editingUser.name}</h3>
+                <h3 className="text-lg font-bold text-gray-900">Edit User: {editingUser.name}</h3>
                 <button
                   onClick={() => {
                     setEditingUser(null);
@@ -3830,143 +3897,146 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </div>
         </>
-      )}
+      )
+      }
 
       {/* Deduct Salary Modal */}
-      {deductSalaryUser && (
-        <>
-          <div className="fixed inset-0 bg-black/50 z-50" onClick={() => setDeductSalaryUser(null)} />
-          <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h3 className="text-xl font-bold text-gray-900">Deduct Salary</h3>
-                  <p className="text-sm text-gray-500">for {deductSalaryUser.name}</p>
-                </div>
-                <button onClick={() => setDeductSalaryUser(null)} className="text-gray-400 hover:text-gray-600">
-                  <X size={24} />
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+      {
+        deductSalaryUser && (
+          <>
+            <div className="fixed inset-0 bg-black/50 z-50" onClick={() => setDeductSalaryUser(null)} />
+            <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+              <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+                <div className="flex items-center justify-between mb-6">
                   <div>
-                    <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Month</label>
-                    <select
-                      className="w-full p-2 border border-gray-200 rounded-lg text-sm"
-                      value={deductSalaryMonth}
-                      onChange={e => setDeductSalaryMonth(parseInt(e.target.value))}
-                    >
-                      {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
-                        <option key={m} value={m}>{new Date(2000, m - 1, 1).toLocaleString('default', { month: 'long' })}</option>
-                      ))}
-                    </select>
+                    <h3 className="text-lg font-bold text-gray-900">Deduct Salary</h3>
+                    <p className="text-sm text-gray-500">for {deductSalaryUser.name}</p>
                   </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Year</label>
-                    <select
-                      className="w-full p-2 border border-gray-200 rounded-lg text-sm"
-                      value={deductSalaryYear}
-                      onChange={e => setDeductSalaryYear(parseInt(e.target.value))}
-                    >
-                      {[2024, 2025, 2026, 2027].map(y => (
-                        <option key={y} value={y}>{y}</option>
-                      ))}
-                    </select>
-                  </div>
+                  <button onClick={() => setDeductSalaryUser(null)} className="text-gray-400 hover:text-gray-600">
+                    <X size={24} />
+                  </button>
                 </div>
 
-                {(() => {
-                  const stats = getStatsForDeduction(deductSalaryUser.id, deductSalaryMonth, deductSalaryYear);
-                  return (
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="bg-orange-50 p-3 rounded-lg border border-orange-100">
-                        <p className="text-xs text-orange-600 font-semibold uppercase">Low Time</p>
-                        <p className="text-lg font-bold text-orange-800">{stats.lowTimeDisplay}</p>
-                      </div>
-                      <div className="bg-red-50 p-3 rounded-lg border border-red-100">
-                        <p className="text-xs text-red-600 font-semibold uppercase">Unpaid Leaves</p>
-                        <p className="text-lg font-bold text-red-800">{stats.unpaidLeaveDays} days</p>
-                      </div>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Month</label>
+                      <select
+                        className="w-full p-2 border border-gray-200 rounded-lg text-sm"
+                        value={deductSalaryMonth}
+                        onChange={e => setDeductSalaryMonth(parseInt(e.target.value))}
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                          <option key={m} value={m}>{new Date(2000, m - 1, 1).toLocaleString('default', { month: 'long' })}</option>
+                        ))}
+                      </select>
                     </div>
-                  );
-                })()}
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Deduction Amount (₹)</label>
-                  <div className="mb-2 text-sm text-gray-600">
-                    Current Salary: <span className="font-bold text-gray-900">
-                      ₹{(() => {
-                        const breakdown = deductSalaryUser.salaryBreakdown || [];
-                        const entry = breakdown.find(b => b.month === deductSalaryMonth && b.year === deductSalaryYear);
-                        return (entry?.amount || 0).toLocaleString('en-IN');
-                      })()}
-                    </span>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Year</label>
+                      <select
+                        className="w-full p-2 border border-gray-200 rounded-lg text-sm"
+                        value={deductSalaryYear}
+                        onChange={e => setDeductSalaryYear(parseInt(e.target.value))}
+                      >
+                        {[2024, 2025, 2026, 2027].map(y => (
+                          <option key={y} value={y}>{y}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
-                  <input
-                    type="number"
-                    min="0"
-                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-red-200 focus:border-red-400"
-                    value={deductionAmount}
-                    onChange={e => setDeductionAmount(e.target.value)}
-                    placeholder="Enter amount to deduct"
-                  />
-                  <p className="text-xs text-gray-400 mt-1">This amount will be subtracted from the salary breakdown for {new Date(2000, deductSalaryMonth - 1, 1).toLocaleString('default', { month: 'long' })} {deductSalaryYear}.</p>
-                </div>
 
-                <div className="pt-4 flex justify-end gap-3">
-                  <button
-                    onClick={() => setDeductSalaryUser(null)}
-                    className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={async () => {
-                      if (!deductionAmount || parseFloat(deductionAmount) <= 0) {
-                        alert('Please enter a valid deduction amount');
-                        return;
-                      }
+                  {(() => {
+                    const stats = getStatsForDeduction(deductSalaryUser.id, deductSalaryMonth, deductSalaryYear);
+                    return (
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-orange-50 p-3 rounded-lg border border-orange-100">
+                          <p className="text-xs text-orange-600 font-semibold uppercase">Low Time</p>
+                          <p className="text-lg font-bold text-orange-800">{stats.lowTimeDisplay}</p>
+                        </div>
+                        <div className="bg-red-50 p-3 rounded-lg border border-red-100">
+                          <p className="text-xs text-red-600 font-semibold uppercase">Unpaid Leaves</p>
+                          <p className="text-lg font-bold text-red-800">{stats.unpaidLeaveDays} days</p>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
-                      try {
-                        const currentBreakdown = deductSalaryUser.salaryBreakdown || [];
-                        const existingIndex = currentBreakdown.findIndex(
-                          b => b.month === deductSalaryMonth && b.year === deductSalaryYear
-                        );
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Deduction Amount (₹)</label>
+                    <div className="mb-2 text-sm text-gray-600">
+                      Current Salary: <span className="font-bold text-gray-900">
+                        ₹{(() => {
+                          const breakdown = deductSalaryUser.salaryBreakdown || [];
+                          const entry = breakdown.find(b => b.month === deductSalaryMonth && b.year === deductSalaryYear);
+                          return (entry?.amount || 0).toLocaleString('en-IN');
+                        })()}
+                      </span>
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-red-200 focus:border-red-400"
+                      value={deductionAmount}
+                      onChange={e => setDeductionAmount(e.target.value)}
+                      placeholder="Enter amount to deduct"
+                    />
+                    <p className="text-xs text-gray-400 mt-1">This amount will be subtracted from the salary breakdown for {new Date(2000, deductSalaryMonth - 1, 1).toLocaleString('default', { month: 'long' })} {deductSalaryYear}.</p>
+                  </div>
 
-                        let updatedBreakdown = [...currentBreakdown];
-                        if (existingIndex >= 0) {
-                          const existingSalary = updatedBreakdown[existingIndex].amount;
-                          const newSalary = Math.max(0, existingSalary - parseFloat(deductionAmount));
-                          updatedBreakdown[existingIndex] = {
-                            ...updatedBreakdown[existingIndex],
-                            amount: newSalary
-                          };
-
-                          await userAPI.updateUser(deductSalaryUser.id, {
-                            salaryBreakdown: updatedBreakdown
-                          });
-
-                          alert(`Successfully deducted ₹${deductionAmount}. New salary: ₹${newSalary}`);
-                          setDeductSalaryUser(null);
-                          await refreshData();
-                        } else {
-                          alert(`No salary record found for ${new Date(2000, deductSalaryMonth - 1, 1).toLocaleString('default', { month: 'long' })} ${deductSalaryYear}. Please ensure salary breakdown exists before deducting.`);
+                  <div className="pt-4 flex justify-end gap-3">
+                    <button
+                      onClick={() => setDeductSalaryUser(null)}
+                      className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-100"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!deductionAmount || parseFloat(deductionAmount) <= 0) {
+                          alert('Please enter a valid deduction amount');
+                          return;
                         }
-                      } catch (error: any) {
-                        alert(error.message || 'Failed to deduct salary');
-                      }
-                    }}
-                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 text-white hover:bg-red-700 shadow-md"
-                  >
-                    Confirm Deduction
-                  </button>
+
+                        try {
+                          const currentBreakdown = deductSalaryUser.salaryBreakdown || [];
+                          const existingIndex = currentBreakdown.findIndex(
+                            b => b.month === deductSalaryMonth && b.year === deductSalaryYear
+                          );
+
+                          let updatedBreakdown = [...currentBreakdown];
+                          if (existingIndex >= 0) {
+                            const existingSalary = updatedBreakdown[existingIndex].amount;
+                            const newSalary = Math.max(0, existingSalary - parseFloat(deductionAmount));
+                            updatedBreakdown[existingIndex] = {
+                              ...updatedBreakdown[existingIndex],
+                              amount: newSalary
+                            };
+
+                            await userAPI.updateUser(deductSalaryUser.id, {
+                              salaryBreakdown: updatedBreakdown
+                            });
+
+                            alert(`Successfully deducted ₹${deductionAmount}. New salary: ₹${newSalary}`);
+                            setDeductSalaryUser(null);
+                            await refreshData();
+                          } else {
+                            alert(`No salary record found for ${new Date(2000, deductSalaryMonth - 1, 1).toLocaleString('default', { month: 'long' })} ${deductSalaryYear}. Please ensure salary breakdown exists before deducting.`);
+                          }
+                        } catch (error: any) {
+                          alert(error.message || 'Failed to deduct salary');
+                        }
+                      }}
+                      className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 text-white hover:bg-red-700 shadow-md"
+                    >
+                      Confirm Deduction
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        </>
-      )}
+          </>
+        )
+      }
 
       {/* Reset Password Modal */}
       {resetPasswordModalOpen && selectedUserForReset && (
@@ -3976,7 +4046,7 @@ export const AdminDashboard: React.FC = () => {
             <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
               <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
                 <div>
-                  <h3 className="text-xl font-bold text-gray-900">Reset Password</h3>
+                  <h3 className="text-lg font-bold text-gray-900">Reset Password</h3>
                   <p className="text-sm text-gray-500 mt-1">Set a new password for {selectedUserForReset.name}</p>
                 </div>
                 <button
@@ -4024,8 +4094,9 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </div>
         </>
-      )}
+      )
+      }
 
-    </div>
+    </div >
   );
 };

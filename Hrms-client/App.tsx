@@ -1,14 +1,15 @@
 import React from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider, useApp } from './context/AppContext';
-import { Login } from './pages/Login';
-import { EmployeeDashboard } from './pages/EmployeeDashboard';
-import { HRDashboard } from './pages/HRDashboard';
-import { AdminDashboard } from './pages/AdminDashboard';
-import { TodayAttendance } from './pages/TodayAttendance';
-import { Holidays } from './pages/Holidays';
-import { Profile } from './pages/Profile';
-import { Analytics } from './pages/Analytics';
+import { Login } from '@/pages/Login';
+import { EmployeeDashboard } from '@/pages/EmployeeDashboard';
+import { HRDashboard } from '@/pages/HRDashboard';
+import { AdminDashboard } from '@/pages/AdminDashboard';
+import { LeaveManagement } from '@/pages/LeaveManagement';
+import { TodayAttendance } from '@/pages/TodayAttendance';
+import { Holidays } from '@/pages/Holidays';
+import { Profile } from '@/pages/Profile';
+import { Analytics } from '@/pages/Analytics';
 import { Sidebar } from './components/Sidebar';
 import { Role } from './types';
 
@@ -93,7 +94,55 @@ const AppRoutes = () => {
         </PrivateRoute>
       } />
 
+      <Route path="/admin-dashboard" element={
+        <PrivateRoute roles={[Role.ADMIN]}>
+          <AppLayout>
+            <AdminDashboard />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/admin-summary" element={
+        <PrivateRoute roles={[Role.ADMIN]}>
+          <AppLayout>
+            <AdminDashboard />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/admin-users" element={
+        <PrivateRoute roles={[Role.ADMIN]}>
+          <AppLayout>
+            <AdminDashboard />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/admin-audit" element={
+        <PrivateRoute roles={[Role.ADMIN]}>
+          <AppLayout>
+            <AdminDashboard />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/admin-system" element={
+        <PrivateRoute roles={[Role.ADMIN]}>
+          <AppLayout>
+            <AdminDashboard />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
       <Route path="/admin-settings" element={
+        <PrivateRoute roles={[Role.ADMIN]}>
+          <AppLayout>
+            <AdminDashboard />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/admin-guidance" element={
         <PrivateRoute roles={[Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
@@ -113,6 +162,14 @@ const AppRoutes = () => {
         <PrivateRoute>
           <AppLayout>
             <Holidays />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/admin-leaves" element={
+        <PrivateRoute roles={[Role.ADMIN]}>
+          <AppLayout>
+            <LeaveManagement />
           </AppLayout>
         </PrivateRoute>
       } />

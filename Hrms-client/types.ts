@@ -88,6 +88,7 @@ export interface Attendance {
   penaltySeconds?: number;
   lateCheckIn?: boolean;
   isManualFlag?: boolean;
+  isPenaltyDisabled?: boolean;
   notes?: string;
 }
 

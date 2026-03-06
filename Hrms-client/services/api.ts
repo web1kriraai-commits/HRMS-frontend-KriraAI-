@@ -202,7 +202,7 @@ export const attendanceAPI = {
     });
   },
 
-  adminCreateOrUpdate: async (data: { userId: string; date: string; checkIn?: string; checkOut?: string; breakDurationMinutes?: number; notes?: string }) => {
+  adminCreateOrUpdate: async (data: { userId: string; date: string; checkIn?: string; checkOut?: string; breakDurationMinutes?: number; notes?: string; isPenaltyDisabled?: boolean }) => {
     return apiRequest('/attendance/admin-create', {
       method: 'POST',
       body: JSON.stringify(data),

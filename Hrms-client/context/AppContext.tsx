@@ -36,6 +36,7 @@ interface AppContextType {
   // Admin/HR Actions
   adminUpdateAttendance: (recordId: string, updates: Partial<Attendance>, breakDurationMinutes?: number) => Promise<void>;
   addCompanyHoliday: (date: string, description: string) => Promise<void>;
+  autoAddSundays: () => Promise<void>;
   exportReports: (filters?: { start?: string; end?: string; department?: string }) => Promise<void>;
   updateSystemSettings: (settings: Partial<SystemSettings>) => Promise<void>;
 
@@ -88,11 +89,15 @@ const transformUser = (apiUser: any): User => ({
 const transformAttendance = (apiAttendance: any): Attendance => {
   const late = isLateCheckIn(apiAttendance.checkIn);
   const penaltyEffective = isPenaltyEffective(apiAttendance.date);
+  const penaltyDisabled = !!apiAttendance.isPenaltyDisabled;
 
-  // Use penalty from API if available and > 0, otherwise calculate dynamically
-  const penaltySeconds = (apiAttendance.penaltySeconds && apiAttendance.penaltySeconds > 0)
-    ? apiAttendance.penaltySeconds
-    : (late && penaltyEffective ? calculateLatenessPenaltySeconds(apiAttendance.checkIn) : 0);
+  // If penalty is disabled by admin, penaltySeconds must be 0
+  // Otherwise use penalty from API if available and > 0, or calculate dynamically
+  const penaltySeconds = penaltyDisabled
+    ? 0
+    : (apiAttendance.penaltySeconds && apiAttendance.penaltySeconds > 0)
+      ? apiAttendance.penaltySeconds
+      : (late && penaltyEffective ? calculateLatenessPenaltySeconds(apiAttendance.checkIn) : 0);
 
   return {
     id: apiAttendance.id || apiAttendance._id,
@@ -116,6 +121,7 @@ const transformAttendance = (apiAttendance: any): Attendance => {
     penaltySeconds,
     lateCheckIn: late,
     isManualFlag: apiAttendance.isManualFlag || false,
+    isPenaltyDisabled: penaltyDisabled,
     notes: apiAttendance.notes
   };
 };
@@ -647,6 +653,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       updateHoliday,
       deleteHoliday,
       addCompanyHoliday,
+      autoAddSundays: async () => {
+        try {
+          await api.holidayAPI.autoAddSundays();
+          await refreshData();
+        } catch (error) {
+          console.error('Auto add Sundays error:', error);
+          throw error;
+        }
+      },
       exportReports,
       updateSystemSettings,
       refreshData

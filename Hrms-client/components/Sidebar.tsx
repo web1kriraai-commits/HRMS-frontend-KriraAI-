@@ -2,7 +2,7 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Role } from '../types';
-import { LayoutDashboard, Users, Settings, LogOut, CheckSquare, Calendar, CalendarDays, UserCircle, TrendingUp } from 'lucide-react';
+import { LayoutDashboard, Users, Settings, LogOut, CheckSquare, Calendar, CalendarDays, UserCircle, TrendingUp, Clock, FileText, Activity, Globe, BookOpen } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
   const { auth, logout } = useApp();
@@ -25,10 +25,22 @@ export const Sidebar: React.FC = () => {
           Dashboard
         </NavLink>
 
-        <NavLink to="/profile" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
-          <UserCircle size={18} />
-          Profile
-        </NavLink>
+        {user.role === Role.ADMIN && (
+          <div className="space-y-1">
+            <NavLink to="/admin-users" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+              <Users size={18} />
+              Users
+            </NavLink>
+            <NavLink to="/admin-audit" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+              <Activity size={18} />
+              Audit Logs
+            </NavLink>
+            <NavLink to="/admin-leaves" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+              <CalendarDays size={18} />
+              Leave Mgmt
+            </NavLink>
+          </div>
+        )}
 
         <NavLink to="/holidays" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
           <CalendarDays size={18} />
@@ -37,10 +49,6 @@ export const Sidebar: React.FC = () => {
 
         {user.role !== Role.EMPLOYEE && (
           <>
-            <NavLink to="/hr-approvals" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
-              <CheckSquare size={18} />
-              Approvals
-            </NavLink>
             <NavLink to="/hr-today" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
               <Calendar size={18} />
               Today

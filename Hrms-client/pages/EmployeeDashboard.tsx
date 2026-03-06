@@ -30,13 +30,18 @@ const formatPenaltyDisplay = (seconds: number) => {
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
 const formatHoursToHoursMinutes = (hours: number) => {
-  const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
+  const isNegative = hours < 0;
+  const absHours = Math.abs(hours);
+  const h = Math.floor(absHours);
+  const m = Math.round((absHours - h) * 60);
 
+  let result = '';
   if (h === 0 && m === 0) return '0m';
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
+  if (h > 0 && m > 0) result = `${h}h ${m}m`;
+  else if (h > 0) result = `${h}h`;
+  else result = `${m}m`;
+
+  return isNegative ? `-${result}` : result;
 };
 
 // Get total paid leaves for a user (only admin allocated)
@@ -340,6 +345,48 @@ export const EmployeeDashboard: React.FC = () => {
     return days;
   };
 
+  // Helper function to calculate hours per day from start and end time
+  const calculateHoursPerDay = (startTime: string, endTime: string): number => {
+    // Validate inputs
+    if (!startTime || !endTime || startTime.trim() === '' || endTime.trim() === '') {
+      return 0;
+    }
+
+    // Parse time strings (expecting HH:mm format)
+    const parseTime = (timeStr: string): { hours: number; minutes: number } | null => {
+      const trimmed = timeStr.trim();
+      // Handle HH:mm format
+      const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+      if (match) {
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+          return { hours, minutes };
+        }
+      }
+      return null;
+    };
+
+    const start = parseTime(startTime);
+    const end = parseTime(endTime);
+
+    if (!start || !end) {
+      return 0;
+    }
+
+    const startMinutes = start.hours * 60 + start.minutes;
+    const endMinutes = end.hours * 60 + end.minutes;
+
+    // Calculate difference: end time - start time
+    let diffMinutes = endMinutes - startMinutes;
+    // Handle case where end time is next day (e.g., 22:00 to 02:00)
+    if (diffMinutes < 0) {
+      diffMinutes += 24 * 60; // Add 24 hours
+    }
+
+    return diffMinutes / 60; // Convert to hours
+  };
+
   // Compute leaves to show based on date/month filters
   const leavesForPeriod = (() => {
     // If month filter selected, show leaves overlapping that month (any year)
@@ -500,16 +547,38 @@ export const EmployeeDashboard: React.FC = () => {
       const checkOut = new Date(record.checkOut).getTime();
       const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
       const breakSeconds = getBreakSeconds(record.breaks) || 0;
-      const netWorkedSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+      const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
 
       const attendanceDate = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
       const isHolidayDay = holidayDateSet.has(attendanceDate);
 
-      // Late check-in penalty: use centralized utility
-      const penaltySeconds = !isHolidayDay && isPenaltyEffective(attendanceDate)
+      // Late check-in penalty: use centralized utility (skip if admin disabled penalty)
+      const penaltySeconds = !isHolidayDay && !record.isPenaltyDisabled && isPenaltyEffective(attendanceDate)
         ? calculateLatenessPenaltySeconds(record.checkIn)
         : 0;
-      const effectiveWorkedSeconds = Math.max(0, netWorkedSeconds - penaltySeconds);
+      let effectiveWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+
+      // Check for approved Extra Time Leave (Full Day category) for this date
+      const extraTimeLeaveForDate = myLeaves.find(leave => {
+        const status = (leave.status || '').trim();
+        if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+        // Admin alignment: only add EXTRA_TIME category leaves to worked seconds here.
+        // HALF_DAY leaves are handled by threshold adjustment below.
+        if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
+        const leaveStart = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : leave.startDate;
+        const leaveEnd = typeof leave.endDate === 'string' ? leave.endDate.split('T')[0] : leave.endDate;
+        return attendanceDate >= leaveStart && attendanceDate <= leaveEnd;
+      });
+
+      if (extraTimeLeaveForDate) {
+        if (extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
+          const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
+          effectiveWorkedSeconds += leaveHours * 3600;
+        } else {
+          // Fallback for full extra time leave without specific hours
+          effectiveWorkedSeconds += 8.25 * 3600;
+        }
+      }
 
       // Calculate approved half-day leave for this date
       const hasApprovedHalfDay = myLeaves.some(l => {
@@ -535,6 +604,15 @@ export const EmployeeDashboard: React.FC = () => {
       const status = (leave.status || '').trim();
       if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
 
+      // Filter by selected month
+      const [year, month] = timeSummaryMonth.split('-').map(Number);
+      const mStart = new Date(year, month - 1, 1);
+      const mEnd = new Date(year, month, 0, 23, 59, 59);
+      const s = new Date(leave.startDate);
+      const e = new Date(leave.endDate);
+      const overlaps = (s <= mEnd && e >= mStart);
+      if (!overlaps) return false;
+
       // Full extra time leaves
       if (leave.category === LeaveCategory.EXTRA_TIME) return true;
 
@@ -556,47 +634,6 @@ export const EmployeeDashboard: React.FC = () => {
       return sum;
     }, 0);
 
-  // Helper function to calculate hours per day from start and end time
-  const calculateHoursPerDay = (startTime: string, endTime: string): number => {
-    // Validate inputs
-    if (!startTime || !endTime || startTime.trim() === '' || endTime.trim() === '') {
-      return 0;
-    }
-
-    // Parse time strings (expecting HH:mm format)
-    const parseTime = (timeStr: string): { hours: number; minutes: number } | null => {
-      const trimmed = timeStr.trim();
-      // Handle HH:mm format
-      const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
-      if (match) {
-        const hours = parseInt(match[1], 10);
-        const minutes = parseInt(match[2], 10);
-        if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
-          return { hours, minutes };
-        }
-      }
-      return null;
-    };
-
-    const start = parseTime(startTime);
-    const end = parseTime(endTime);
-
-    if (!start || !end) {
-      return 0;
-    }
-
-    const startMinutes = start.hours * 60 + start.minutes;
-    const endMinutes = end.hours * 60 + end.minutes;
-
-    // Calculate difference: end time - start time
-    let diffMinutes = endMinutes - startMinutes;
-    // Handle case where end time is next day (e.g., 22:00 to 02:00)
-    if (diffMinutes < 0) {
-      diffMinutes += 24 * 60; // Add 24 hours
-    }
-
-    return diffMinutes / 60; // Convert to hours
-  };
 
   // Convert Extra Time Leave to hours
   // For extra time leave: calculate actual hours from start and end time
@@ -605,6 +642,15 @@ export const EmployeeDashboard: React.FC = () => {
     .filter(leave => {
       const status = (leave.status || '').trim();
       if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+
+      // Filter by selected month
+      const [year, month] = timeSummaryMonth.split('-').map(Number);
+      const mStart = new Date(year, month - 1, 1);
+      const mEnd = new Date(year, month, 0, 23, 59, 59);
+      const s = new Date(leave.startDate);
+      const e = new Date(leave.endDate);
+      const overlaps = (s <= mEnd && e >= mStart);
+      if (!overlaps) return false;
 
       if (leave.category === LeaveCategory.EXTRA_TIME) return true;
 
@@ -648,21 +694,18 @@ export const EmployeeDashboard: React.FC = () => {
   const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds;
 
   // Extra Time Worked = Final Time (convert from seconds to hours)
-  // Final Time is the net difference: Extra Time - Low Time
   const extraTimeWorkedHours = finalTimeDifference / 3600;
 
-  // Remaining extra time leave balance (in hours)
-  // Balance = Extra Time Leave Taken - Extra Time Worked
-  // If Extra Time Worked is negative (more low time than extra time), balance = full leave taken
-  const remainingExtraTimeLeaveHours = Math.max(0, extraTimeLeaveHours - Math.max(0, extraTimeWorkedHours));
+  // Remaining extra time balance (in hours)
+  const remainingExtraTimeLeaveHours = extraTimeWorkedHours - extraTimeLeaveHours;
 
   // At month end, if there's remaining balance, it should be added to low time
   const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const remainingExtraTimeLeaveSeconds = remainingExtraTimeLeaveHours * 3600;
 
-  // Add uncompleted extra time leave to low time at month end
-  const adjustedLowTimeSeconds = isMonthEnd && remainingExtraTimeLeaveHours > 0
-    ? totalLowTimeSeconds + remainingExtraTimeLeaveSeconds
+  // If deficit at month end, adjust low time
+  const adjustedLowTimeSeconds = isMonthEnd && remainingExtraTimeLeaveHours < 0
+    ? totalLowTimeSeconds + Math.abs(remainingExtraTimeLeaveSeconds)
     : totalLowTimeSeconds;
 
   // Final time difference with adjusted low time
@@ -847,7 +890,7 @@ export const EmployeeDashboard: React.FC = () => {
                         // Compute live penalty from check-in time (same rules as backend getFlags)
                         const checkInTime = localCheckInTime || (todayRecord?.checkIn ? new Date(todayRecord.checkIn) : null);
                         let livePenaltySeconds = 0;
-                        if (!isOnBreak && checkInTime && !todayRecord?.checkOut) {
+                        if (!isOnBreak && checkInTime && !todayRecord?.checkOut && !todayRecord?.isPenaltyDisabled) {
                           if (isPenaltyEffective(getTodayStr())) {
                             livePenaltySeconds = calculateLatenessPenaltySeconds(checkInTime.toISOString());
                           }
@@ -1209,8 +1252,8 @@ export const EmployeeDashboard: React.FC = () => {
             <form onSubmit={(e) => {
               e.preventDefault();
               if (!leaveForm.start || !leaveForm.reason) return;
-              // For non-half-day leaves, end date is required
-              if (leaveForm.type !== LeaveCategory.HALF_DAY && !leaveForm.end) return;
+              // For non-half-day/non-extra-time leaves, end date is required
+              if (leaveForm.type !== LeaveCategory.HALF_DAY && leaveForm.type !== LeaveCategory.EXTRA_TIME && !leaveForm.end) return;
 
               // Prevent submitting Paid Leave if exhausted
               if (leaveForm.type === LeaveCategory.PAID && isPaidLeaveExhausted) {
@@ -1236,16 +1279,15 @@ export const EmployeeDashboard: React.FC = () => {
                 }
               }
 
+              const isSingleDay = leaveForm.type === LeaveCategory.HALF_DAY || leaveForm.type === LeaveCategory.EXTRA_TIME;
+
               const leaveData: any = {
                 startDate: leaveForm.start,
-                endDate: leaveForm.start, // For half-day, start and end are same
+                endDate: isSingleDay ? leaveForm.start : leaveForm.end,
                 category: leaveForm.type,
                 reason: leaveForm.reason
               };
-              // For non-half-day leaves, use the end date
-              if (leaveForm.type !== LeaveCategory.HALF_DAY) {
-                leaveData.endDate = leaveForm.end;
-              } else {
+              if (leaveForm.type === LeaveCategory.HALF_DAY) {
                 // Add half day leave type info to reason
                 const halfDayTypeLabel = leaveForm.halfDayLeaveType === 'paid' ? 'Paid Leave' : 'Extra Time Leave';
                 leaveData.reason = `[${halfDayTypeLabel}] ${leaveForm.reason}`;
@@ -1276,12 +1318,12 @@ export const EmployeeDashboard: React.FC = () => {
                 endTime: ''
               });
             }} className="space-y-4">
-              <div className={`grid gap-4 ${leaveForm.type === LeaveCategory.HALF_DAY ? 'grid-cols-1' : 'grid-cols-2'}`}>
+              <div className={`grid gap-4 ${leaveForm.type === LeaveCategory.HALF_DAY || leaveForm.type === LeaveCategory.EXTRA_TIME ? 'grid-cols-1' : 'grid-cols-2'}`}>
                 <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">{leaveForm.type === LeaveCategory.HALF_DAY ? 'Date' : 'From'}</label>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">{leaveForm.type === LeaveCategory.HALF_DAY || leaveForm.type === LeaveCategory.EXTRA_TIME ? 'Date' : 'From'}</label>
                   <input type="date" className="w-full p-2 border rounded text-sm" required value={leaveForm.start} onChange={e => setLeaveForm({ ...leaveForm, start: e.target.value })} />
                 </div>
-                {leaveForm.type !== LeaveCategory.HALF_DAY && (
+                {leaveForm.type !== LeaveCategory.HALF_DAY && leaveForm.type !== LeaveCategory.EXTRA_TIME && (
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">To</label>
                     <input type="date" className="w-full p-2 border rounded text-sm" required value={leaveForm.end} onChange={e => setLeaveForm({ ...leaveForm, end: e.target.value })} />
@@ -1448,24 +1490,29 @@ export const EmployeeDashboard: React.FC = () => {
             {/* Extra Time Leave Balance */}
             {extraTimeLeaveDays > 0 && (
               <Card title="Extra Time Leave Balance" className="h-fit">
-                <div className={`p-4 rounded-lg border ${remainingExtraTimeLeaveHours > 0
-                  ? 'bg-orange-50 border-orange-100'
-                  : 'bg-green-50 border-green-100'
+                <div className={`p-4 rounded-lg border ${remainingExtraTimeLeaveHours < 0
+                  ? 'bg-rose-50 border-rose-100'
+                  : remainingExtraTimeLeaveHours > 0
+                    ? 'bg-emerald-50 border-emerald-100'
+                    : 'bg-gray-50 border-gray-100'
                   }`}>
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Remaining Extra Time</p>
+                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Extra Time Balance</p>
                       <p className="text-xs text-gray-600 mt-1">
-                        You must work extra time to compensate for Extra Time Leave
+                        {remainingExtraTimeLeaveHours >= 0
+                          ? 'Your net surplus of extra time'
+                          : 'Extra work needed to compensate for leaves'}
                       </p>
                     </div>
                     <div className="text-right">
-                      <p className={`text-3xl font-bold ${remainingExtraTimeLeaveHours > 0 ? 'text-orange-700' : 'text-green-700'
+                      <p className={`text-3xl font-bold ${remainingExtraTimeLeaveHours < 0 ? 'text-rose-700' :
+                        remainingExtraTimeLeaveHours > 0 ? 'text-emerald-700' : 'text-gray-400'
                         }`}>
                         {formatHoursToHoursMinutes(remainingExtraTimeLeaveHours)}
                       </p>
                       <p className="text-xs text-gray-500 mt-1">
-                        Remaining
+                        {remainingExtraTimeLeaveHours >= 0 ? 'Surplus' : 'Deficit'}
                       </p>
                     </div>
                   </div>
@@ -1482,23 +1529,24 @@ export const EmployeeDashboard: React.FC = () => {
                     </div>
                     <div className="flex justify-between text-xs">
                       <span className="text-gray-600">Remaining Balance:</span>
-                      <span className={`font-semibold ${remainingExtraTimeLeaveHours > 0 ? 'text-orange-700' : 'text-green-700'
+                      <span className={`font-semibold ${remainingExtraTimeLeaveHours < 0 ? 'text-rose-700' :
+                        remainingExtraTimeLeaveHours > 0 ? 'text-emerald-700' : 'text-gray-400'
                         }`}>
                         {formatHoursToHoursMinutes(remainingExtraTimeLeaveHours)}
                       </span>
                     </div>
                   </div>
-                  {remainingExtraTimeLeaveHours > 0 && isMonthEnd && (
+                  {remainingExtraTimeLeaveHours < 0 && isMonthEnd && (
                     <div className="mt-3 p-2 bg-red-100 rounded border border-red-200">
                       <p className="text-xs font-semibold text-red-700">
-                        ⚠️ Month end: {formatHoursToHoursMinutes(remainingExtraTimeLeaveHours)} will be added to Low Time
+                        ⚠️ Month end: {formatHoursToHoursMinutes(Math.abs(remainingExtraTimeLeaveHours))} will be added to Low Time
                       </p>
                     </div>
                   )}
-                  {remainingExtraTimeLeaveHours > 0 && !isMonthEnd && (
-                    <div className="mt-3 p-2 bg-orange-100 rounded border border-orange-200">
-                      <p className="text-xs font-semibold text-orange-700">
-                        ⚠️ Work extra time to complete: {formatDurationStyled(remainingExtraTimeLeaveSeconds)}
+                  {remainingExtraTimeLeaveHours < 0 && !isMonthEnd && (
+                    <div className="mt-3 p-2 bg-rose-100 rounded border border-rose-200">
+                      <p className="text-xs font-semibold text-rose-700">
+                        ⚠️ Deficit: Work {formatHoursToHoursMinutes(Math.abs(remainingExtraTimeLeaveHours))} extra to compensate
                       </p>
                     </div>
                   )}
@@ -1684,19 +1732,42 @@ export const EmployeeDashboard: React.FC = () => {
                           })()}
                         </td>
                         <td className="px-4 py-3">
-                          {isHolidayWorkDay && r.checkIn && r.checkOut
-                            ? <span className="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full font-semibold">Holiday OT</span>
-                            : (() => {
-                              // Safety net: if half-day leave approved and worked >= 4 hours, always Normal
-                              const workedSec = r.totalWorkedSeconds || 0;
-                              const isHalfDayOverride = halfDayLeave && workedSec >= 4 * 3600;
-                              const effectiveLow = r.lowTimeFlag && !isHalfDayOverride;
-                              return effectiveLow
-                                ? <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full">Low</span>
-                                : r.extraTimeFlag
-                                  ? <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">Extra</span>
-                                  : <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Normal</span>;
-                            })()
+                          {!r.checkOut ? (
+                            <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full font-semibold">In Progress</span>
+                          ) : isHolidayWorkDay && r.checkIn && r.checkOut ? (
+                            <span className="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full font-semibold">Holiday OT</span>
+                          ) : (() => {
+                            // Calculate effective worked seconds with penalty awareness
+                            const checkInMs = new Date(r.checkIn!).getTime();
+                            const checkOutMs = new Date(r.checkOut!).getTime();
+                            const totalSessionSec = Math.floor((checkOutMs - checkInMs) / 1000);
+                            const breakSec = (r.breaks || []).reduce((acc: number, b: any) => {
+                              if (b.durationSeconds) return acc + b.durationSeconds;
+                              if (b.start && b.end) return acc + Math.floor((new Date(b.end).getTime() - new Date(b.start).getTime()) / 1000);
+                              return acc;
+                            }, 0);
+                            const netWorkedRaw = Math.max(0, totalSessionSec - breakSec);
+
+                            // Apply penalty only if not disabled
+                            const penaltySec = !r.isPenaltyDisabled && isPenaltyEffective(r.date)
+                              ? calculateLatenessPenaltySeconds(r.checkIn)
+                              : 0;
+                            const effectiveWorked = Math.max(0, netWorkedRaw - penaltySec);
+
+                            // Use half-day threshold if applicable
+                            const MIN_NORMAL = halfDayLeave ? (255 * 60) : ((8 * 3600) + (15 * 60)); // 4h15m or 8h15m
+                            const MAX_NORMAL = halfDayLeave ? (262 * 60) : ((8 * 3600) + (22 * 60)); // 4h22m or 8h22m
+
+                            if (effectiveWorked > MAX_NORMAL) {
+                              const diff = effectiveWorked - MAX_NORMAL;
+                              return <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-bold">+{formatDuration(diff)}</span>;
+                            } else if (effectiveWorked < MIN_NORMAL) {
+                              const diff = MIN_NORMAL - effectiveWorked;
+                              return <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full font-bold">-{formatDuration(diff)}</span>;
+                            } else {
+                              return <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full font-semibold">Normal</span>;
+                            }
+                          })()
                           }
                         </td>
                       </tr>

@@ -76,8 +76,8 @@ export const Analytics: React.FC = () => {
                     const attendanceDate = typeof r.date === 'string' ? r.date.split('T')[0] : r.date;
                     const isHolidayDay = holidayDates.has(attendanceDate);
 
-                    // Use the centralised penalty utility (same as AdminDashboard & EmployeeDashboard)
-                    const penaltySeconds = !isHolidayDay && isPenaltyEffective(attendanceDate)
+                    // Use the centralised penalty utility (skip if admin disabled penalty)
+                    const penaltySeconds = !isHolidayDay && !r.isPenaltyDisabled && isPenaltyEffective(attendanceDate)
                         ? calculateLatenessPenaltySeconds(r.checkIn)
                         : 0;
                     if (penaltySeconds > 0) lateCheckInCount++;
