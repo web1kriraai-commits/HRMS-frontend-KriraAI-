@@ -20,7 +20,8 @@ import {
     Calendar,
     X,
     TrendingUp,
-    ArrowRight
+    ArrowRight,
+    Pencil
 } from 'lucide-react';
 import { formatDate, getTodayStr } from '../services/utils';
 import { userAPI } from '../services/api';
@@ -92,7 +93,7 @@ export const LeaveManagement: React.FC = () => {
                     .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
 
                 const usedPaidLeaves = leaveHistory
-                    .filter(l => l.category === LeaveCategory.PAID)
+                    .filter(l => l.category === LeaveCategory.PAID || (l.category === LeaveCategory.HALF_DAY && (l.reason || '').includes('[Paid Leave]')))
                     .reduce((sum, l) => sum + l.daysCount, 0);
 
                 // Calculate counts for all categories
@@ -245,7 +246,6 @@ export const LeaveManagement: React.FC = () => {
                                 <th className="px-6 py-5 text-center font-black uppercase tracking-widest text-slate-400 italic">Paid</th>
                                 <th className="px-6 py-5 text-center font-black uppercase tracking-widest text-slate-400">Extra Time</th>
                                 <th className="px-6 py-4 text-center font-black uppercase tracking-widest text-slate-400">Unpaid</th>
-                                <th className="px-6 py-4 text-center font-black uppercase tracking-widest text-slate-400">Half Day</th>
                                 <th className="px-6 py-5 text-center font-black uppercase tracking-widest text-slate-400">Remaining</th>
                                 <th className="px-8 py-5 text-right font-black uppercase tracking-widest text-slate-400">History</th>
                             </tr>
@@ -287,19 +287,24 @@ export const LeaveManagement: React.FC = () => {
                                         </span>
                                     </td>
                                     <td className="px-6 py-5 text-center">
-                                        <span className={`font-black px-4 py-1.5 rounded-xl text-xs border ${(stat.categorySummaries[LeaveCategory.HALF_DAY] || 0) > 0
-                                            ? 'bg-amber-50 text-amber-700 border-amber-100'
-                                            : 'bg-slate-50 text-slate-300 border-slate-100 opacity-50'
-                                            }`}>
-                                            {stat.categorySummaries[LeaveCategory.HALF_DAY] || 0}
-                                        </span>
-                                    </td>
-                                    <td className="px-6 py-5 text-center">
-                                        <span className={`font-black px-4 py-1.5 rounded-xl text-xs shadow-sm border ${stat.remaining > 5 ? 'bg-blue-600 text-white border-blue-400' :
-                                            stat.remaining > 2 ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-rose-600 text-white border-rose-400'
-                                            }`}>
-                                            {stat.remaining}
-                                        </span>
+                                        <div className="flex items-center justify-center gap-2 group/remain">
+                                            <span className={`font-black px-4 py-1.5 rounded-xl text-xs shadow-sm border ${stat.remaining > 5 ? 'bg-blue-600 text-white border-blue-400' :
+                                                stat.remaining > 2 ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-rose-600 text-white border-rose-400'
+                                                }`}>
+                                                {stat.remaining}
+                                            </span>
+                                            <button
+                                                onClick={() => {
+                                                    setSelectedUserForAllocation(stat.id);
+                                                    setAllocationAction('add');
+                                                    setIsAllocationModalOpen(true);
+                                                }}
+                                                className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-blue-600 hover:text-white transition-all opacity-0 group-hover/remain:opacity-100 shadow-sm"
+                                                title="Edit Allocation"
+                                            >
+                                                <Pencil size={12} />
+                                            </button>
+                                        </div>
                                     </td>
                                     <td className="px-8 py-5 text-right">
                                         <button

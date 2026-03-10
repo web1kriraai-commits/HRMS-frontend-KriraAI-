@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -30,6 +31,7 @@ const MAX_NORMAL_SECONDS = (8 * 3600) + (22 * 60); // 8h 22m = 30120 seconds
 
 export const HRDashboard: React.FC = () => {
   const { auth, leaveRequests, updateLeaveStatus, users, attendanceRecords, companyHolidays, addCompanyHoliday, createUser, updateUser, refreshData, loading } = useApp();
+  const navigate = useNavigate();
 
   const [newHoliday, setNewHoliday] = useState({ date: '', description: '' });
   const [newUser, setNewUser] = useState({
@@ -1064,7 +1066,7 @@ export const HRDashboard: React.FC = () => {
                   <th rowSpan={2} className="px-4 py-3 bg-gray-100 border-r w-10"></th>
                   <th rowSpan={2} className="px-6 py-3 bg-gray-100 border-r">Employee</th>
                   <th colSpan={5} className="px-6 py-2 text-center bg-blue-50 border-b border-r text-blue-800">Attendance</th>
-                  <th colSpan={5} className="px-6 py-2 text-center bg-orange-50 border-b border-r text-orange-800">Leave Breakdown (Approved)</th>
+                  <th colSpan={4} className="px-6 py-2 text-center bg-orange-50 border-b border-r text-orange-800">Leave Breakdown (Approved)</th>
                   <th className="px-6 py-2 text-center bg-purple-50 border-b text-purple-800">Balance</th>
                 </tr>
                 <tr>
@@ -1076,7 +1078,6 @@ export const HRDashboard: React.FC = () => {
 
                   <th className="px-2 py-2 text-center border-r">Paid</th>
                   <th className="px-2 py-2 text-center border-r">Unpaid</th>
-                  <th className="px-2 py-2 text-center border-r">Half Day</th>
                   <th className="px-2 py-2 text-center border-r">Extra Time</th>
                   <th className="px-2 py-2 text-center font-bold border-l border-r">Total</th>
 
@@ -1145,25 +1146,6 @@ export const HRDashboard: React.FC = () => {
 
                       <td className="px-2 py-4 text-center border-r">{stat.paid || '-'}</td>
                       <td className="px-2 py-4 text-center border-r">{stat.unpaid || '-'}</td>
-                      <td className="px-2 py-4 text-center border-r">
-                        {stat.half ? (
-                          <div className="flex flex-col items-center gap-1">
-                            <span className="font-medium">{stat.half}</span>
-                            {stat.halfDayLeaves && stat.halfDayLeaves.length > 0 && (
-                              <div className="text-[10px] text-gray-600 space-y-0.5">
-                                {stat.halfDayLeaves.slice(0, 2).map((l, idx) => (
-                                  <div key={idx} className="text-purple-600">
-                                    {l.startTime || '-'}
-                                  </div>
-                                ))}
-                                {stat.halfDayLeaves.length > 2 && (
-                                  <div className="text-gray-400">+{stat.halfDayLeaves.length - 2} more</div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        ) : '-'}
-                      </td>
                       <td className="px-2 py-4 text-center border-r">
                         {stat.extraTime ? (
                           <div className="flex flex-col items-center gap-1">
@@ -1604,7 +1586,10 @@ export const HRDashboard: React.FC = () => {
           <>
             {/* Back Button */}
             <button
-              onClick={() => setSelectedUserId('')}
+              onClick={() => {
+                setSelectedUserId('');
+                navigate('/hr-approvals');
+              }}
               className="flex items-center gap-2 text-gray-600 hover:text-indigo-600 font-medium transition-colors mb-2"
             >
               <span className="text-lg">←</span> Back to All Employees
@@ -1880,20 +1865,32 @@ export const HRDashboard: React.FC = () => {
                         </td>
                       </tr>
                     ) : (
-                      monthlyAttendance.map((record, idx) => {
-                        // Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
-                        const MIN_NORMAL_SECONDS_LOCAL = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
-                        const MAX_NORMAL_SECONDS_LOCAL = 8 * 3600 + 22 * 60; // 8h 22m = 30120 seconds
+                        monthlyAttendance.map((record, idx) => {
+                          // Find if there's an approved half day leave for this date
+                          const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
+                          const halfDayLeave = monthlyLeaves.find(l => {
+                            const status = String(l.status || '').trim();
+                            const isApproved = status === 'Approved' || status === 'Approved';
+                            if (!isApproved || l.category !== 'Half Day Leave') return false;
+                            const leaveDate = typeof l.startDate === 'string' ? l.startDate.split('T')[0] : new Date(l.startDate).toISOString().split('T')[0];
+                            return leaveDate === recordDateISO;
+                          });
 
-                        // Get break seconds from breaks array
-                        const breakSeconds = getBreakSeconds(record.breaks) || 0;
+                          // Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
+                          // Adjust for half-day: subtract 4 hours (14400 seconds)
+                          const adjustmentSeconds = halfDayLeave ? 4 * 3600 : 0;
+                          const MIN_NORMAL_SECONDS_LOCAL = (8 * 3600 + 15 * 60) - adjustmentSeconds;
+                          const MAX_NORMAL_SECONDS_LOCAL = (8 * 3600 + 22 * 60) - adjustmentSeconds;
 
-                        let netWorkedSeconds = 0;
-                        let netWorkedRawSeconds = 0;
-                        let isLateCheckIn = false;
-                        let isHolidayDay = false;
-                        let isLowTime = false;
-                        let isExtraTime = false;
+                          // Get break seconds from breaks array
+                          const breakSeconds = getBreakSeconds(record.breaks) || 0;
+
+                          let netWorkedSeconds = 0;
+                          let netWorkedRawSeconds = 0;
+                          let isLateCheckIn = false;
+                          let isHolidayDay = false;
+                          let isLowTime = false;
+                          let isExtraTime = false;
 
                         if (record.checkIn && record.checkOut) {
                           const checkInDate = new Date(record.checkIn);
@@ -1902,7 +1899,6 @@ export const HRDashboard: React.FC = () => {
                           netWorkedRawSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
 
                           // Check if this day is a company holiday
-                          const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
                           isHolidayDay = companyHolidays.some(h => {
                             const hDate = typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0];
                             return hDate === recordDateISO;
@@ -1975,11 +1971,30 @@ export const HRDashboard: React.FC = () => {
                               ) : isHolidayDay && netWorkedSeconds > 0 ? (
                                 <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">🏖 Holiday OT</span>
                               ) : isLowTime ? (
-                                <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-100 text-rose-700">Low Time</span>
+                                <div className="flex flex-col gap-1 items-center">
+                                  {halfDayLeave && (
+                                    <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
+                                  )}
+                                  <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-100 text-rose-700 font-bold border-2 border-rose-200">
+                                    -{formatDuration(MIN_NORMAL_SECONDS_LOCAL - netWorkedSeconds)}
+                                  </span>
+                                </div>
                               ) : isExtraTime ? (
-                                <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700">Extra Time</span>
+                                <div className="flex flex-col gap-1 items-center">
+                                  {halfDayLeave && (
+                                    <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
+                                  )}
+                                  <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700 font-bold border-2 border-emerald-200">
+                                    +{formatDuration(netWorkedSeconds - MAX_NORMAL_SECONDS_LOCAL)}
+                                  </span>
+                                </div>
                               ) : (
-                                <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700">On Time</span>
+                                <div className="flex flex-col gap-1 items-center">
+                                  {halfDayLeave && (
+                                    <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
+                                  )}
+                                  <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700">On Time</span>
+                                </div>
                               )}
                             </td>
                           </tr>
@@ -2231,10 +2246,11 @@ export const HRDashboard: React.FC = () => {
                           .filter(leave => {
                             const status = (leave.status || '').trim();
                             return (status === 'Approved' || status === LeaveStatus.APPROVED) &&
-                              leave.category === LeaveCategory.PAID;
+                              (leave.category === LeaveCategory.PAID || 
+                               (leave.category === LeaveCategory.HALF_DAY && (leave.reason || '').includes('[Paid Leave]')));
                           })
                           .reduce((sum, leave) => {
-                            return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+                            return sum + calculateLeaveDaysForCategory(leave.startDate, leave.endDate, leave.category);
                           }, 0);
 
                         // Only show admin allocated paid leaves (no default)

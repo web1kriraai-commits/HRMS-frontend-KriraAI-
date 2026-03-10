@@ -268,6 +268,8 @@ export const EmployeeDashboard: React.FC = () => {
     return todayDate >= startDate && todayDate <= endDate;
   });
   const isOnLeaveToday = !!todayLeave;
+  const isFullDayLeaveToday = todayLeave && todayLeave.category !== LeaveCategory.HALF_DAY;
+  const isHalfDayLeaveToday = todayLeave && todayLeave.category === LeaveCategory.HALF_DAY;
   // Filter out pending leaves from display - only show approved/rejected in history
   const myLeavesHistory = myLeaves.filter(l => {
     const status = String(l.status || '').trim();
@@ -865,7 +867,7 @@ export const EmployeeDashboard: React.FC = () => {
 
         {/* Attendance Card */}
         <Card className="flex-1 min-w-[300px] lg:min-w-[600px]" title="Today's Attendance">
-          {isOnLeaveToday ? (
+          {isFullDayLeaveToday ? (
             <div className="text-center py-8">
               <div className="h-20 w-20 rounded-full bg-purple-100 flex items-center justify-center mx-auto mb-4">
                 <Calendar className="h-10 w-10 text-purple-600" />
@@ -879,6 +881,20 @@ export const EmployeeDashboard: React.FC = () => {
             </div>
           ) : (
             <>
+              {isHalfDayLeaveToday && (
+                <div className="mb-6 p-4 bg-purple-50 border border-purple-100 rounded-xl flex items-center gap-4">
+                  <div className="h-10 w-10 rounded-full bg-purple-100 flex items-center justify-center flex-shrink-0">
+                    <Calendar className="h-5 w-5 text-purple-600" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-purple-900">Half Day Leave Approved Today</p>
+                    <p className="text-xs text-purple-600">{todayLeave?.reason}</p>
+                  </div>
+                  <div className="px-3 py-1 bg-purple-100 text-purple-700 text-[10px] font-bold rounded-lg uppercase tracking-wider">
+                    {todayLeave?.startTime ? `@ ${todayLeave.startTime}` : 'Approved'}
+                  </div>
+                </div>
+              )}
               <div className="flex flex-col md:flex-row justify-between items-center gap-8">
                 <div className="text-center md:text-left">
                   <p className="text-gray-500 text-sm font-medium uppercase tracking-wide">
@@ -1784,12 +1800,33 @@ export const EmployeeDashboard: React.FC = () => {
 
                             if (effectiveWorked > MAX_NORMAL) {
                               const diff = effectiveWorked - MAX_NORMAL;
-                              return <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-bold">+{formatDuration(diff)}</span>;
+                              return (
+                                <div className="flex flex-col gap-1 items-center">
+                                  {halfDayLeave && (
+                                    <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
+                                  )}
+                                  <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-bold">+{formatDuration(diff)}</span>
+                                </div>
+                              );
                             } else if (effectiveWorked < MIN_NORMAL) {
                               const diff = MIN_NORMAL - effectiveWorked;
-                              return <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full font-bold">-{formatDuration(diff)}</span>;
+                              return (
+                                <div className="flex flex-col gap-1 items-center">
+                                  {halfDayLeave && (
+                                    <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
+                                  )}
+                                  <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full font-bold">-{formatDuration(diff)}</span>
+                                </div>
+                              );
                             } else {
-                              return <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full font-semibold">Normal</span>;
+                              return (
+                                <div className="flex flex-col gap-1 items-center">
+                                  {halfDayLeave && (
+                                    <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
+                                  )}
+                                  <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full font-semibold">Normal</span>
+                                </div>
+                              );
                             }
                           })()
                           }

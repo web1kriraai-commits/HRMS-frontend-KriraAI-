@@ -204,9 +204,11 @@ export const AdminDashboard: React.FC = () => {
         .filter(leave => {
           const status = (leave.status || '').trim();
           return (status === 'Approved' || status === LeaveStatus.APPROVED) &&
-            leave.category === LeaveCategory.PAID;
+            (leave.category === LeaveCategory.PAID || 
+             (leave.category === LeaveCategory.HALF_DAY && (leave.reason || '').includes('[Paid Leave]')));
         })
         .reduce((sum, leave) => {
+          if (leave.category === LeaveCategory.HALF_DAY) return sum + 0.5;
           return sum + calculateLeaveDays(leave.startDate, leave.endDate);
         }, 0);
       const totalAllocated = getTotalPaidLeaves(user);
@@ -1385,7 +1387,11 @@ export const AdminDashboard: React.FC = () => {
             <>
               {/* Back Button */}
               <button
-                onClick={() => setSelectedUserId('')}
+                onClick={() => {
+                  setSelectedUserId('');
+                  setActiveTab('consolidated');
+                  navigate('/admin-dashboard');
+                }}
                 className="flex items-center gap-2 text-gray-600 hover:text-indigo-600 font-medium transition-colors mb-2"
               >
                 <span className="text-lg">←</span> Back to All Employees
@@ -1888,9 +1894,21 @@ export const AdminDashboard: React.FC = () => {
                         </tr>
                       ) : (
                         monthlyAttendance.map((record, idx) => {
+                          // Find if there's an approved half day leave for this date
+                          const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
+                          const halfDayLeave = monthlyLeaves.find(l => {
+                            const status = String(l.status || '').trim();
+                            const isApproved = status === 'Approved' || status === 'Approved'; // Adjust based on your types if needed
+                            if (!isApproved || l.category !== 'Half Day Leave') return false;
+                            const leaveDate = typeof l.startDate === 'string' ? l.startDate.split('T')[0] : new Date(l.startDate).toISOString().split('T')[0];
+                            return leaveDate === recordDateISO;
+                          });
+
                           // Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
-                          const MIN_NORMAL_SECONDS_LOCAL = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
-                          const MAX_NORMAL_SECONDS_LOCAL = 8 * 3600 + 22 * 60; // 8h 22m = 30120 seconds
+                          // Adjust for half-day: subtract 4 hours (14400 seconds)
+                          const adjustmentSeconds = halfDayLeave ? 4 * 3600 : 0;
+                          const MIN_NORMAL_SECONDS_LOCAL = (8 * 3600 + 15 * 60) - adjustmentSeconds;
+                          const MAX_NORMAL_SECONDS_LOCAL = (8 * 3600 + 22 * 60) - adjustmentSeconds;
 
                           // Get break seconds from breaks array or totalBreakDuration
                           const breakSeconds = getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
@@ -1909,7 +1927,6 @@ export const AdminDashboard: React.FC = () => {
                             netWorkedRawSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
 
                             // Check if this day is a company holiday
-                            const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
                             isHolidayDay = companyHolidays.some(h => {
                               const hDate = typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0];
                               return hDate === recordDateISO;
@@ -1994,15 +2011,30 @@ export const AdminDashboard: React.FC = () => {
                                       +{formatDuration(netWorkedRawSeconds)}
                                     </span>
                                   ) : isLowTime ? (
-                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-100 text-rose-700 font-bold border-2 border-rose-200">
-                                      -{formatDuration(MIN_NORMAL_SECONDS_LOCAL - netWorkedSeconds)}
-                                    </span>
+                                    <div className="flex flex-col gap-1 items-center">
+                                      {halfDayLeave && (
+                                        <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
+                                      )}
+                                      <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-100 text-rose-700 font-bold border-2 border-rose-200">
+                                        -{formatDuration(MIN_NORMAL_SECONDS_LOCAL - netWorkedSeconds)}
+                                      </span>
+                                    </div>
                                   ) : isExtraTime ? (
-                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700 font-bold border-2 border-emerald-200">
-                                      +{formatDuration(netWorkedSeconds - MAX_NORMAL_SECONDS_LOCAL)}
-                                    </span>
+                                    <div className="flex flex-col gap-1 items-center">
+                                      {halfDayLeave && (
+                                        <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
+                                      )}
+                                      <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700 font-bold border-2 border-emerald-200">
+                                        +{formatDuration(netWorkedSeconds - MAX_NORMAL_SECONDS_LOCAL)}
+                                      </span>
+                                    </div>
                                   ) : (
-                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700">On Time</span>
+                                    <div className="flex flex-col gap-1 items-center">
+                                      {halfDayLeave && (
+                                        <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
+                                      )}
+                                      <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700">On Time</span>
+                                    </div>
                                   )}
                                   {record.isManualFlag && (
                                     <div className="text-[9px] text-gray-400 mt-1 font-bold flex items-center gap-0.5 justify-center">
