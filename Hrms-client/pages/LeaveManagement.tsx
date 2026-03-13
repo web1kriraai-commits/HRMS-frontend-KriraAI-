@@ -27,7 +27,7 @@ import { formatDate, getTodayStr } from '../services/utils';
 import { userAPI } from '../services/api';
 
 export const LeaveManagement: React.FC = () => {
-    const { users, leaveRequests, companyHolidays, refreshData } = useApp();
+    const { users, leaveRequests, companyHolidays, refreshData, updateUser } = useApp();
     const [selectedUserForAllocation, setSelectedUserForAllocation] = useState('');
     const [allocationAmount, setAllocationAmount] = useState('');
     const [allocationAction, setAllocationAction] = useState<'set' | 'add'>('add');
@@ -36,6 +36,53 @@ export const LeaveManagement: React.FC = () => {
     const [selectedHistoryUser, setSelectedHistoryUser] = useState<any>(null);
     const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
     const [isAllocationModalOpen, setIsAllocationModalOpen] = useState(false);
+    
+    // New states for manual adjustments
+    const [manualPaidAdjustment, setManualPaidAdjustment] = useState('');
+    const [manualExtraTimeAdjustment, setManualExtraTimeAdjustment] = useState('');
+    const [manualUnpaidAdjustment, setManualUnpaidAdjustment] = useState('');
+    const [manualHalfDayAdjustment, setManualHalfDayAdjustment] = useState('');
+
+    const handleUserSelect = (userId: string) => {
+        setSelectedUserForAllocation(userId);
+        if (!userId) {
+            setAllocationAmount('');
+            setManualPaidAdjustment('');
+            setManualExtraTimeAdjustment('');
+            setManualUnpaidAdjustment('');
+            setManualHalfDayAdjustment('');
+            return;
+        }
+
+        const user = users.find(u => u.id === userId);
+        if (user) {
+            setAllocationAmount(user.paidLeaveAllocation?.toString() || '0');
+            
+            const { basePaid, baseExtra, baseUnpaid } = getUserHistoryBase(userId);
+            
+            // Show Totals (History + Manual) in the modal
+            const totalPaid = basePaid + (user.manualPaidLeaveAdjustment || 0) + (user.manualHalfDayLeaveAdjustment || 0);
+            const totalExtra = baseExtra + (user.manualExtraTimeAdjustment || 0);
+            const totalUnpaid = baseUnpaid + (user.manualUnpaidLeaveAdjustment || 0);
+            
+            setManualPaidAdjustment(totalPaid.toString());
+            setManualExtraTimeAdjustment(totalExtra.toString());
+            setManualUnpaidAdjustment(totalUnpaid.toString());
+            setManualHalfDayAdjustment('0'); 
+            setAllocationAction('set'); // Default to set for existing users
+        }
+    };
+
+    const resetAllocationFields = () => {
+        setSelectedUserForAllocation('');
+        setAllocationAmount('');
+        setManualPaidAdjustment('');
+        setManualExtraTimeAdjustment('');
+        setManualUnpaidAdjustment('');                                                                         
+        setManualHalfDayAdjustment('');
+        setAllocationAction('add');
+    };
+    
     const location = useLocation();
 
     useEffect(() => {
@@ -69,6 +116,28 @@ export const LeaveManagement: React.FC = () => {
         return days;
     };
 
+    // Helper to get history-based totals (without manual adjustments)
+    const getUserHistoryBase = (userId: string) => {
+        const userLeaves = leaveRequests.filter(l => l.userId === userId && (l.status === 'Approved' || l.status === LeaveStatus.APPROVED));
+        
+        const basePaid = userLeaves
+            .filter(l => l.category === LeaveCategory.PAID || 
+                      (l.category === LeaveCategory.HALF_DAY && !(l.reason || '').includes('[Extra Time Leave]') && !(l.reason || '').includes('[Unpaid Leave]')))
+            .reduce((sum, l) => sum + (l.category === LeaveCategory.HALF_DAY ? 0.5 : calculateLeaveDays(l.startDate, l.endDate)), 0);
+            
+        const baseExtra = userLeaves
+            .filter(l => l.category === LeaveCategory.EXTRA_TIME || 
+                      (l.category === LeaveCategory.HALF_DAY && (l.reason || '').includes('[Extra Time Leave]')))
+            .reduce((sum, l) => sum + (l.category === LeaveCategory.HALF_DAY ? 0.5 : calculateLeaveDays(l.startDate, l.endDate)), 0);
+            
+        const baseUnpaid = userLeaves
+            .filter(l => l.category === LeaveCategory.UNPAID || 
+                      (l.category === LeaveCategory.HALF_DAY && (l.reason || '').includes('[Unpaid Leave]')))
+            .reduce((sum, l) => sum + (l.category === LeaveCategory.HALF_DAY ? 0.5 : calculateLeaveDays(l.startDate, l.endDate)), 0);
+            
+        return { basePaid, baseExtra, baseUnpaid };
+    };
+
     // Process paid leave statistics for employees
     const employeeLeaveStats = useMemo(() => {
         return users
@@ -93,18 +162,45 @@ export const LeaveManagement: React.FC = () => {
                     .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
 
                 const usedPaidLeaves = leaveHistory
-                    .filter(l => l.category === LeaveCategory.PAID || (l.category === LeaveCategory.HALF_DAY && (l.reason || '').includes('[Paid Leave]')))
+                    .filter(l => l.category === LeaveCategory.PAID || 
+                               (l.category === LeaveCategory.HALF_DAY && !(l.reason || '').includes('[Extra Time Leave]') && !(l.reason || '').includes('[Unpaid Leave]')))
                     .reduce((sum, l) => sum + l.daysCount, 0);
 
                 // Calculate counts for all categories
                 const categorySummaries = leaveHistory.reduce((acc: { [key: string]: number }, l) => {
-                    const cat = l.category || 'Other';
+                    let cat = l.category || 'Other';
+                    
+                    // Correctly categorize half-day leaves based on reason tags
+                    if (cat === LeaveCategory.HALF_DAY) {
+                        const reason = l.reason || '';
+                        if (reason.includes('[Extra Time Leave]')) {
+                            cat = LeaveCategory.EXTRA_TIME;
+                        } else if (reason.includes('[Unpaid Leave]')) {
+                            cat = LeaveCategory.UNPAID;
+                        } else {
+                            cat = LeaveCategory.PAID;
+                        }
+                    }
+                    
                     acc[cat] = (acc[cat] || 0) + l.daysCount;
                     return acc;
                 }, {});
 
                 const allocated = user.paidLeaveAllocation || 0;
-                const remaining = Math.max(0, allocated - usedPaidLeaves);
+                
+                // Incorporate manual adjustments
+                const manualPaid = user.manualPaidLeaveAdjustment || 0;
+                const manualExtraTime = user.manualExtraTimeAdjustment || 0;
+                const manualUnpaid = user.manualUnpaidLeaveAdjustment || 0;
+                const manualHalfDay = user.manualHalfDayLeaveAdjustment || 0;
+
+                // Merge half day adjustments into paid total now that column is removed
+                const totalPaid = usedPaidLeaves + manualPaid + manualHalfDay;
+                const remaining = Math.max(0, allocated - totalPaid);
+
+                const totalExtraTime = (categorySummaries[LeaveCategory.EXTRA_TIME] || 0) + manualExtraTime;
+                const totalUnpaid = (categorySummaries[LeaveCategory.UNPAID] || 0) + manualUnpaid;
+                const totalHalfDay = (categorySummaries[LeaveCategory.HALF_DAY] || 0) + manualHalfDay;
 
                 return {
                     id: user.id,
@@ -113,7 +209,14 @@ export const LeaveManagement: React.FC = () => {
                     role: user.role,
                     department: user.department,
                     allocated,
-                    usedPaidLeaves,
+                    usedPaidLeaves: totalPaid,
+                    manualPaid,
+                    manualExtraTime,
+                    manualUnpaid,
+                    manualHalfDay,
+                    totalExtraTime,
+                    totalUnpaid,
+                    totalHalfDay,
                     remaining,
                     leaveHistory,
                     categorySummaries
@@ -127,18 +230,30 @@ export const LeaveManagement: React.FC = () => {
 
     const handleAllocationSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!selectedUserForAllocation || !allocationAmount) return;
+        if (!selectedUserForAllocation) return;
 
         setIsSubmitting(true);
         try {
-            await userAPI.updateUser(selectedUserForAllocation, {
-                paidLeaveAllocation: Number(allocationAmount),
-                paidLeaveAction: allocationAction
+            const { basePaid, baseExtra, baseUnpaid } = getUserHistoryBase(selectedUserForAllocation);
+            
+            // Calculate necessary offsets: Input Total - History Base
+            const newPaidOffset = (manualPaidAdjustment === '' ? 0 : Number(manualPaidAdjustment)) - basePaid;
+            const newExtraOffset = (manualExtraTimeAdjustment === '' ? 0 : Number(manualExtraTimeAdjustment)) - baseExtra;
+            const newUnpaidOffset = (manualUnpaidAdjustment === '' ? 0 : Number(manualUnpaidAdjustment)) - baseUnpaid;
+
+            await updateUser(selectedUserForAllocation, {
+                ...(allocationAmount !== '' && { paidLeaveAllocation: Number(allocationAmount) }),
+                paidLeaveAction: allocationAction,
+                manualPaidLeaveAdjustment: newPaidOffset,
+                manualExtraTimeAdjustment: newExtraOffset,
+                manualUnpaidLeaveAdjustment: newUnpaidOffset,
+                manualHalfDayLeaveAdjustment: 0 
             });
-            alert(`Paid leave ${allocationAction === 'set' ? 'set to' : 'added'}: ${allocationAmount} days`);
-            setAllocationAmount('');
+            
+            alert(`Leave balances updated for employee.`);
+            resetAllocationFields();
             setIsAllocationModalOpen(false);
-            refreshData();
+            // No need for refreshData() here as context's updateUser already calls it
         } catch (error: any) {
             console.error('Allocation failed:', error);
             alert(error.message || 'Failed to allocate leave');
@@ -161,7 +276,10 @@ export const LeaveManagement: React.FC = () => {
                     <p className="text-slate-500 mt-2 ml-15 font-medium">Global leave tracking and paid leave allocation.</p>
                 </div>
                 <button
-                    onClick={() => setIsAllocationModalOpen(true)}
+                    onClick={() => {
+                        resetAllocationFields();
+                        setIsAllocationModalOpen(true);
+                    }}
                     className="flex items-center gap-2 bg-slate-900 text-white px-6 py-3.5 rounded-2xl font-bold hover:bg-slate-800 transition-all shadow-xl shadow-slate-200 active:scale-95"
                 >
                     <PlusCircle size={20} />
@@ -200,7 +318,7 @@ export const LeaveManagement: React.FC = () => {
                     <div>
                         <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Extra Time Taken</p>
                         <p className="text-2xl font-black text-emerald-600">
-                            {employeeLeaveStats.reduce((sum, s) => sum + (s.categorySummaries[LeaveCategory.EXTRA_TIME] || 0), 0)} <span className="text-xs text-emerald-400 font-bold">Days</span>
+                            {employeeLeaveStats.reduce((sum, s) => sum + s.totalExtraTime, 0)} <span className="text-xs text-emerald-400 font-bold">Days</span>
                         </p>
                     </div>
                 </div>
@@ -243,9 +361,9 @@ export const LeaveManagement: React.FC = () => {
                             <tr className="bg-slate-50/70 text-slate-400 uppercase text-[10px] font-black tracking-[0.15em] border-b border-slate-100">
                                 <th className="px-8 py-5 text-left w-[25%] font-black uppercase tracking-widest text-slate-400">Employee</th>
                                 <th className="px-6 py-5 text-center font-black uppercase tracking-widest text-slate-400">Allocated</th>
-                                <th className="px-6 py-5 text-center font-black uppercase tracking-widest text-slate-400 italic">Paid</th>
+                                <th className="px-6 py-5 text-center font-black uppercase tracking-widest text-slate-400">Paid</th>
                                 <th className="px-6 py-5 text-center font-black uppercase tracking-widest text-slate-400">Extra Time</th>
-                                <th className="px-6 py-4 text-center font-black uppercase tracking-widest text-slate-400">Unpaid</th>
+                                <th className="px-6 py-5 text-center font-black uppercase tracking-widest text-slate-400">Unpaid</th>
                                 <th className="px-6 py-5 text-center font-black uppercase tracking-widest text-slate-400">Remaining</th>
                                 <th className="px-8 py-5 text-right font-black uppercase tracking-widest text-slate-400">History</th>
                             </tr>
@@ -268,35 +386,98 @@ export const LeaveManagement: React.FC = () => {
                                         <span className="font-black text-slate-700 bg-slate-50 border border-slate-100 px-4 py-1.5 rounded-xl text-xs">{stat.allocated}</span>
                                     </td>
                                     <td className="px-6 py-5 text-center">
-                                        <span className="font-black text-rose-600 bg-rose-50/50 border border-rose-100 px-4 py-1.5 rounded-xl text-xs">{stat.usedPaidLeaves}</span>
+                                        <div className="flex items-center justify-center gap-2 group/paid">
+                                            <span className="font-black text-rose-600 bg-rose-50/50 border border-rose-100 px-4 py-1.5 rounded-xl text-xs">{stat.usedPaidLeaves}</span>
+                                            <button
+                                                onClick={() => {
+                                                    setSelectedUserForAllocation(stat.id);
+                                                    setAllocationAmount(stat.allocated.toString());
+                                                    // Pre-fill with Total Used values (as seen in the table)
+                                                    setManualPaidAdjustment(stat.usedPaidLeaves.toString());
+                                                    setManualExtraTimeAdjustment(stat.totalExtraTime.toString());
+                                                    setManualUnpaidAdjustment(stat.totalUnpaid.toString());
+                                                    setManualHalfDayAdjustment('0');
+                                                    setAllocationAction('set');
+                                                    setIsAllocationModalOpen(true);
+                                                }}
+                                                className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-rose-600 hover:text-white transition-all opacity-0 group-hover/paid:opacity-100 shadow-sm"
+                                                title="Adjust Paid Leave"
+                                            >
+                                                <Pencil size={12} />
+                                            </button>
+                                        </div>
                                     </td>
                                     <td className="px-6 py-5 text-center">
-                                        <span className={`font-black px-4 py-1.5 rounded-xl text-xs border ${(stat.categorySummaries[LeaveCategory.EXTRA_TIME] || 0) > 0
-                                            ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
-                                            : 'bg-slate-50 text-slate-300 border-slate-100 opacity-50'
-                                            }`}>
-                                            {stat.categorySummaries[LeaveCategory.EXTRA_TIME] || 0}
-                                        </span>
+                                        <div className="flex items-center justify-center gap-2 group/extra">
+                                            <span className={`font-black px-4 py-1.5 rounded-xl text-xs border ${stat.totalExtraTime > 0
+                                                ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                                                : 'bg-slate-50 text-slate-300 border-slate-100 opacity-50'
+                                                }`}>
+                                                {stat.totalExtraTime}
+                                            </span>
+                                            <button
+                                                onClick={() => {
+                                                    setSelectedUserForAllocation(stat.id);
+                                                    setAllocationAmount(stat.allocated.toString());
+                                                    // Pre-fill with Total Used values (as seen in the table)
+                                                    setManualPaidAdjustment(stat.usedPaidLeaves.toString());
+                                                    setManualExtraTimeAdjustment(stat.totalExtraTime.toString());
+                                                    setManualUnpaidAdjustment(stat.totalUnpaid.toString());
+                                                    setManualHalfDayAdjustment('0');
+                                                    setAllocationAction('set');
+                                                    setIsAllocationModalOpen(true);
+                                                }}
+                                                className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-emerald-600 hover:text-white transition-all opacity-0 group-hover/extra:opacity-100 shadow-sm"
+                                                title="Adjust Extra Time"
+                                            >
+                                                <Pencil size={12} />
+                                            </button>
+                                        </div>
                                     </td>
                                     <td className="px-6 py-5 text-center">
-                                        <span className={`font-black px-4 py-1.5 rounded-xl text-xs border ${(stat.categorySummaries[LeaveCategory.UNPAID] || 0) > 0
-                                            ? 'bg-rose-50 text-rose-700 border-rose-100'
-                                            : 'bg-slate-50 text-slate-300 border-slate-100 opacity-50'
-                                            }`}>
-                                            {stat.categorySummaries[LeaveCategory.UNPAID] || 0}
-                                        </span>
+                                        <div className="flex items-center justify-center gap-2 group/unpaid">
+                                            <span className={`font-black px-4 py-1.5 rounded-xl text-xs border ${stat.totalUnpaid > 0
+                                                ? 'bg-rose-50 text-rose-700 border-rose-100'
+                                                : 'bg-slate-50 text-slate-300 border-slate-100 opacity-50'
+                                                }`}>
+                                                {stat.totalUnpaid}
+                                            </span>
+                                            <button
+                                                onClick={() => {
+                                                    setSelectedUserForAllocation(stat.id);
+                                                    setAllocationAmount(stat.allocated.toString());
+                                                    // Pre-fill with Total Used values (as seen in the table)
+                                                    setManualPaidAdjustment(stat.usedPaidLeaves.toString());
+                                                    setManualExtraTimeAdjustment(stat.totalExtraTime.toString());
+                                                    setManualUnpaidAdjustment(stat.totalUnpaid.toString());
+                                                    setManualHalfDayAdjustment('0');
+                                                    setAllocationAction('set');
+                                                    setIsAllocationModalOpen(true);
+                                                }}
+                                                className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-rose-700 hover:text-white transition-all opacity-0 group-hover/unpaid:opacity-100 shadow-sm"
+                                                title="Adjust Unpaid Leave"
+                                            >
+                                                <Pencil size={12} />
+                                            </button>
+                                        </div>
                                     </td>
                                     <td className="px-6 py-5 text-center">
                                         <div className="flex items-center justify-center gap-2 group/remain">
                                             <span className={`font-black px-4 py-1.5 rounded-xl text-xs shadow-sm border ${stat.remaining > 5 ? 'bg-blue-600 text-white border-blue-400' :
-                                                stat.remaining > 2 ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-rose-600 text-white border-rose-400'
+                                                stat.remaining >= 3 ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-rose-600 text-white border-rose-400'
                                                 }`}>
                                                 {stat.remaining}
                                             </span>
                                             <button
                                                 onClick={() => {
                                                     setSelectedUserForAllocation(stat.id);
-                                                    setAllocationAction('add');
+                                                    setAllocationAmount(stat.allocated.toString());
+                                                    // Pre-fill with Total Used values (as seen in the table)
+                                                    setManualPaidAdjustment(stat.usedPaidLeaves.toString());
+                                                    setManualExtraTimeAdjustment(stat.totalExtraTime.toString());
+                                                    setManualUnpaidAdjustment(stat.totalUnpaid.toString());
+                                                    setManualHalfDayAdjustment('0');
+                                                    setAllocationAction('set');
                                                     setIsAllocationModalOpen(true);
                                                 }}
                                                 className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-blue-600 hover:text-white transition-all opacity-0 group-hover/remain:opacity-100 shadow-sm"
@@ -346,7 +527,7 @@ export const LeaveManagement: React.FC = () => {
                                     <PlusCircle className="text-white" size={24} />
                                 </div>
                                 <div>
-                                    <h2 className="text-lg font-bold uppercase tracking-tight">Allocate Paid Leave</h2>
+                                    <h2 className="text-lg font-bold uppercase tracking-tight">Adjust Leave Balances</h2>
                                     <p className="text-slate-400 text-[9px] font-bold mt-0.5 uppercase tracking-wider">Adjustment Center • HR Panel</p>
                                 </div>
                             </div>
@@ -361,7 +542,7 @@ export const LeaveManagement: React.FC = () => {
                                     <select
                                         className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl px-5 py-3 focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500/50 transition-all font-bold text-slate-800 appearance-none cursor-pointer text-sm"
                                         value={selectedUserForAllocation}
-                                        onChange={(e) => setSelectedUserForAllocation(e.target.value)}
+                                        onChange={(e) => handleUserSelect(e.target.value)}
                                         required
                                     >
                                         <option value="">Select an employee...</option>
@@ -424,6 +605,69 @@ export const LeaveManagement: React.FC = () => {
                                 <p className="text-[9px] text-slate-400 font-bold ml-1 italic">* Fractional values like 0.5 are supported</p>
                             </div>
 
+                            {/* Manual Adjustments Grid */}
+                            <div className="bg-slate-50/50 rounded-2xl p-4 border border-slate-100">
+                                    <div className="text-slate-400 text-[9px] font-black uppercase tracking-[0.2em] flex items-center gap-2 mb-4">
+                                        <div className="h-px w-8 bg-slate-100" />
+                                        MANUAL TOTALS (INCL. HISTORY)
+                                    </div>
+                                <div className="grid grid-cols-3 gap-4">
+                                    {/* Manual Paid */}
+                                    <div className="space-y-1.5">
+                                        <label className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wider text-rose-500">
+                                            <div className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                                            Paid
+                                        </label>
+                                        <div className="relative">
+                                            <input
+                                                type="number"
+                                                step="0.5"
+                                                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-4 focus:ring-rose-500/10 focus:border-rose-500/50 transition-all font-bold text-sm text-slate-900 shadow-sm"
+                                                placeholder="0.0"
+                                                value={manualPaidAdjustment}
+                                                onChange={(e) => setManualPaidAdjustment(e.target.value)}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Manual Extra Time */}
+                                    <div className="space-y-1.5">
+                                        <label className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wider text-emerald-500">
+                                            <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                                            Extra
+                                        </label>
+                                        <div className="relative">
+                                            <input
+                                                type="number"
+                                                step="0.5"
+                                                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500/50 transition-all font-bold text-sm text-slate-900 shadow-sm"
+                                                placeholder="0.0"
+                                                value={manualExtraTimeAdjustment}
+                                                onChange={(e) => setManualExtraTimeAdjustment(e.target.value)}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Manual Unpaid */}
+                                    <div className="space-y-1.5">
+                                        <label className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wider text-rose-700">
+                                            <div className="h-1.5 w-1.5 rounded-full bg-rose-700" />
+                                            Unpaid
+                                        </label>
+                                        <div className="relative">
+                                            <input
+                                                type="number"
+                                                step="0.5"
+                                                className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-4 focus:ring-rose-700/10 focus:border-rose-700/50 transition-all font-bold text-sm text-slate-900 shadow-sm"
+                                                placeholder="0.0"
+                                                value={manualUnpaidAdjustment}
+                                                onChange={(e) => setManualUnpaidAdjustment(e.target.value)}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                             {/* Submit Button */}
                             <div className="pt-2">
                                 <Button
@@ -431,7 +675,7 @@ export const LeaveManagement: React.FC = () => {
                                     className="w-full py-4 rounded-xl font-bold uppercase tracking-[0.2em] text-[10px] shadow-lg shadow-blue-500/10 transition-all hover:translate-y-[-2px] hover:shadow-xl hover:shadow-blue-500/20 active:scale-95 disabled:opacity-50 relative overflow-hidden group"
                                     disabled={isSubmitting}
                                 >
-                                    <span className="relative z-10">{isSubmitting ? 'Syncing Records...' : 'Execute Allocation'}</span>
+                                    <span className="relative z-10">{isSubmitting ? 'Syncing Records...' : 'Execute Adjustments'}</span>
                                     <div className="absolute inset-0 bg-gradient-to-r from-blue-600 to-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity" />
                                 </Button>
                             </div>

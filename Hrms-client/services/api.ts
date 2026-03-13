@@ -282,6 +282,10 @@ export const userAPI = {
 
   updateUser: async (id: string, updates: {
     paidLeaveAllocation?: number | null;
+    manualPaidLeaveAdjustment?: number;
+    manualExtraTimeAdjustment?: number;
+    manualUnpaidLeaveAdjustment?: number;
+    manualHalfDayLeaveAdjustment?: number;
     joiningDate?: string;
     bonds?: Array<{ type: string; periodMonths: number; startDate: string; salary?: number }>;
     name?: string;

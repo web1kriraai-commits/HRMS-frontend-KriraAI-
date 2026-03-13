@@ -31,7 +31,23 @@ interface AppContextType {
   requestLeave: (req: Omit<LeaveRequest, 'id' | 'userId' | 'userName' | 'status' | 'createdAt'>) => Promise<void>;
   updateLeaveStatus: (id: string, status: LeaveStatus, comment?: string) => Promise<void>;
   createUser: (user: Omit<User, 'id' | 'password' | 'isFirstLogin'>) => Promise<void>;
-  updateUser: (id: string, updates: { paidLeaveAllocation?: number | null; paidLeaveAction?: 'set' | 'add'; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string; guardianMobileNumber?: string }) => Promise<void>;
+  updateUser: (id: string, updates: { 
+    paidLeaveAllocation?: number | null; 
+    paidLeaveAction?: 'set' | 'add'; 
+    manualPaidLeaveAdjustment?: number;
+    manualExtraTimeAdjustment?: number;
+    manualUnpaidLeaveAdjustment?: number;
+    manualHalfDayLeaveAdjustment?: number;
+    name?: string; 
+    email?: string; 
+    department?: string; 
+    joiningDate?: string; 
+    bonds?: any[]; 
+    aadhaarNumber?: string; 
+    guardianName?: string; 
+    mobileNumber?: string; 
+    guardianMobileNumber?: string 
+  }) => Promise<void>;
 
   // Admin/HR Actions
   adminUpdateAttendance: (recordId: string, updates: Partial<Attendance>, breakDurationMinutes?: number) => Promise<void>;
@@ -59,6 +75,10 @@ const transformUser = (apiUser: any): User => ({
   lastLogin: apiUser.lastLogin,
   paidLeaveAllocation: apiUser.paidLeaveAllocation !== undefined ? apiUser.paidLeaveAllocation : null,
   paidLeaveLastAllocatedDate: apiUser.paidLeaveLastAllocatedDate ? new Date(apiUser.paidLeaveLastAllocatedDate).toISOString() : undefined,
+  manualPaidLeaveAdjustment: apiUser.manualPaidLeaveAdjustment || 0,
+  manualExtraTimeAdjustment: apiUser.manualExtraTimeAdjustment || 0,
+  manualUnpaidLeaveAdjustment: apiUser.manualUnpaidLeaveAdjustment || 0,
+  manualHalfDayLeaveAdjustment: apiUser.manualHalfDayLeaveAdjustment || 0,
   joiningDate: apiUser.joiningDate || undefined, // Keep in dd-mm-yyyy format as stored
   bonds: apiUser.bonds && Array.isArray(apiUser.bonds) ? apiUser.bonds.map((b: any) => ({
     type: b.type || 'Job',
@@ -482,7 +502,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const updateUser = async (id: string, updates: { paidLeaveAllocation?: number | null; paidLeaveAction?: 'set' | 'add'; name?: string; email?: string; department?: string; joiningDate?: string; bonds?: any[]; aadhaarNumber?: string; guardianName?: string; mobileNumber?: string; guardianMobileNumber?: string }): Promise<void> => {
+  const updateUser = async (id: string, updates: { 
+    paidLeaveAllocation?: number | null; 
+    paidLeaveAction?: 'set' | 'add'; 
+    manualPaidLeaveAdjustment?: number;
+    manualExtraTimeAdjustment?: number;
+    manualUnpaidLeaveAdjustment?: number;
+    manualHalfDayLeaveAdjustment?: number;
+    name?: string; 
+    email?: string; 
+    department?: string; 
+    joiningDate?: string; 
+    bonds?: any[]; 
+    aadhaarNumber?: string; 
+    guardianName?: string; 
+    mobileNumber?: string; 
+    guardianMobileNumber?: string 
+  }): Promise<void> => {
     try {
       console.log('Context updateUser called with:', updates);
       const { user } = await api.userAPI.updateUser(id, updates) as any;

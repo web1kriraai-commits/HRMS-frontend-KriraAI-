@@ -212,11 +212,14 @@ export const AdminDashboard: React.FC = () => {
           return sum + calculateLeaveDays(leave.startDate, leave.endDate);
         }, 0);
       const totalAllocated = getTotalPaidLeaves(user);
-      const remaining = totalAllocated - usedPaidLeaves;
+      const manualPaidAdjustment = user.manualPaidLeaveAdjustment || 0;
+      const manualHalfDayAdjustment = user.manualHalfDayLeaveAdjustment || 0;
+      const totalUsedPaid = usedPaidLeaves + manualPaidAdjustment + manualHalfDayAdjustment;
+      const remaining = totalAllocated - totalUsedPaid;
       return {
         user,
         allocated: totalAllocated,
-        used: usedPaidLeaves,
+        used: totalUsedPaid,
         remaining: Math.max(0, remaining)
       };
     })
@@ -456,7 +459,7 @@ export const AdminDashboard: React.FC = () => {
   };
 
   // Helper function to calculate extra time leave balance and carryover
-  const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[]) => {
+  const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[], manualExtraAdjustment: number = 0) => {
     // Calculate extra time leave hours taken
     const extraTimeLeaveHours = monthLeaves
       .filter(leave => {
@@ -574,7 +577,9 @@ export const AdminDashboard: React.FC = () => {
 
     // Remaining extra time balance
     // This is the net extra time available after accounting for low time and any extra time leaves taken
-    const remainingExtraTimeLeaveHours = extraTimeWorkedHours - extraTimeLeaveHours;
+    // Include manual adjustments (converted from days to hours)
+    const extraTimeLeaveHoursTotal = extraTimeLeaveHours + (manualExtraAdjustment * 8.25);
+    const remainingExtraTimeLeaveHours = extraTimeWorkedHours - extraTimeLeaveHoursTotal;
 
     // Calculate carryover from previous month
     const now = new Date();
@@ -588,7 +593,7 @@ export const AdminDashboard: React.FC = () => {
     const carryoverLowTime = isMonthEnd && finalTimeDifference < 0 ? Math.abs(finalTimeDifference) : 0;
 
     return {
-      extraTimeLeaveHours,
+      extraTimeLeaveHours: extraTimeLeaveHours + (manualExtraAdjustment * 8.25),
       totalLowTimeSeconds,
       totalExtraTimeSeconds,
       remainingExtraTimeLeaveHours,
@@ -661,8 +666,12 @@ export const AdminDashboard: React.FC = () => {
     });
 
     // 4. Calculate Unpaid Leaves
-    const unpaidLeaves = userLeaves.filter(l => l.category === 'Unpaid Leave' || l.category === 'Loss Of Pay');
-    const unpaidLeaveDays = unpaidLeaves.reduce((sum, leave) => sum + calculateLeaveDays(leave.startDate, leave.endDate), 0);
+    const unpaidLeaveDays = userLeaves
+      .filter(l => l.category === 'Unpaid Leave' || l.category === 'Loss Of Pay' || (l.category === LeaveCategory.HALF_DAY && (l.reason || '').includes('[Unpaid Leave]')))
+      .reduce((sum, leave) => {
+        if (leave.category === LeaveCategory.HALF_DAY) return sum + 0.5;
+        return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+      }, 0);
 
     // Also check for Half Day leaves that are unpaid? Assuming Half Day is paid/partial. 
     // If strict unpaid check is needed:
@@ -792,9 +801,10 @@ export const AdminDashboard: React.FC = () => {
         return sum;
       }, 0);
 
-    // Convert extra time leave hours to seconds
-    const extraTimeLeaveSeconds = extraTimeLeaveHours * 3600;
-
+    // Convert extra time leave hours to seconds (including manual adjustments)
+    const manualExtraAdjustment = selectedUser?.manualExtraTimeAdjustment || 0;
+    const extraTimeLeaveSeconds = (extraTimeLeaveHours + (manualExtraAdjustment * 8.25)) * 3600;
+    
     // Net Time Balance = Extra Time - (Extra Time Leave + Low Time)
     const finalDifference = totalExtraTimeSeconds - (extraTimeLeaveSeconds + totalLowTimeSeconds);
 
@@ -813,7 +823,7 @@ export const AdminDashboard: React.FC = () => {
 
   // Calculate balance for selected user
   const selectedUserBalance = selectedUserId && selectedUser
-    ? calculateEmployeeBalance(selectedUserId, monthlyAttendance, filteredMonthlyLeaves)
+    ? calculateEmployeeBalance(selectedUserId, monthlyAttendance, monthlyLeaves, selectedUser.manualExtraTimeAdjustment || 0)
     : null;
 
   const handleAddHoliday = (e: React.FormEvent) => {
@@ -1206,7 +1216,7 @@ export const AdminDashboard: React.FC = () => {
                     });
 
                     const totalLeavesCount = empLeavesInMonth.reduce((sum, l) => sum + calculateLeaveDays(l.startDate, l.endDate), 0);
-                    const balance = calculateEmployeeBalance(emp.id, empAttendance, empLeavesInMonth);
+                    const balance = calculateEmployeeBalance(emp.id, empAttendance, empLeavesInMonth, emp.manualExtraTimeAdjustment || 0);
 
                     return (
                       <tr key={emp.id} className="hover:bg-gray-50/50 transition-colors">

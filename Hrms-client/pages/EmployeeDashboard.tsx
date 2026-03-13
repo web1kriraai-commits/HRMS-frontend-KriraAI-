@@ -88,17 +88,12 @@ export const EmployeeDashboard: React.FC = () => {
         if (!token) return;
 
         // Fetch today's record directly to check for an active Pause break
-        const res = await fetch('http://localhost:5001/api/attendance/today', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (!res.ok) return;
-        const todayData = await res.json();
+        const todayData = await attendanceAPI.getToday().catch(() => null) as any;
+        if (!todayData) return;
+        
         const pauseBreak = (todayData?.breaks || []).find((b: any) => !b.end && b.type === 'Pause');
         if (pauseBreak) {
-          await fetch('http://localhost:5001/api/attendance/break/cancel', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${token}` }
-          });
+          await attendanceAPI.cancelBreak().catch(() => null);
           setLocalBreakStartTime(null);
           // Refresh data after canceling pause
           await refreshData();
@@ -436,32 +431,74 @@ export const EmployeeDashboard: React.FC = () => {
   }, 0);
 
   // Calculate used paid leaves (only approved ones)
-  // Includes full paid leaves and half-day leaves marked as paid
-  const usedPaidLeaves = myLeaves
+  // Includes full paid leaves and all half-day leaves (merged logic)
+  const baseUsedPaidLeaves = myLeaves
     .filter(leave => {
       const status = (leave.status || '').trim();
       if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
-
-      // Full paid leaves
+      
       if (leave.category === LeaveCategory.PAID) return true;
-
-      // Half-day leaves marked as paid leave
       if (leave.category === LeaveCategory.HALF_DAY) {
+        // Only count as paid if it's NOT marked as Extra Time Leave or Unpaid Leave in reason
         const reason = leave.reason || '';
-        return reason.includes('[Paid Leave]');
+        return !reason.includes('[Extra Time Leave]') && !reason.includes('[Unpaid Leave]');
       }
-
       return false;
     })
     .reduce((sum, leave) => {
-      if (leave.category === LeaveCategory.PAID) {
-        return sum + calculateLeaveDays(leave.startDate, leave.endDate);
-      } else if (leave.category === LeaveCategory.HALF_DAY) {
-        // Half-day leaves count as 0.5 days
+      if (leave.category === LeaveCategory.HALF_DAY) {
         return sum + 0.5;
       }
-      return sum;
+      return sum + calculateLeaveDays(leave.startDate, leave.endDate);
     }, 0);
+
+  // Extra Time Leave Total (Days)
+  const baseExtraTimeLeaveDays = myLeaves
+    .filter(leave => {
+      const status = (leave.status || '').trim();
+      if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+      
+      if (leave.category === LeaveCategory.EXTRA_TIME) return true;
+      if (leave.category === LeaveCategory.HALF_DAY) {
+        return (leave.reason || '').includes('[Extra Time Leave]');
+      }
+      return false;
+    })
+    .reduce((sum, leave) => {
+      if (leave.category === LeaveCategory.HALF_DAY) {
+        return sum + 0.5;
+      }
+      return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+    }, 0);
+
+  // Unpaid Leave Total (Days)
+  const baseUnpaidLeaveDays = myLeaves
+    .filter(leave => {
+      const status = (leave.status || '').trim();
+      if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+      
+      if (leave.category === LeaveCategory.UNPAID) return true;
+      if (leave.category === LeaveCategory.HALF_DAY) {
+        return (leave.reason || '').includes('[Unpaid Leave]');
+      }
+      return false;
+    })
+    .reduce((sum, leave) => {
+      if (leave.category === LeaveCategory.HALF_DAY) {
+        return sum + 0.5;
+      }
+      return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+    }, 0);
+
+  // Incorporate manual adjustments from user object
+  const manualPaidAdjustment = user?.manualPaidLeaveAdjustment || 0;
+  const manualHalfDayAdjustment = user?.manualHalfDayLeaveAdjustment || 0;
+  const manualExtraAdjustment = user?.manualExtraTimeAdjustment || 0;
+  const manualUnpaidAdjustment = user?.manualUnpaidLeaveAdjustment || 0;
+  
+  const usedPaidLeaves = baseUsedPaidLeaves + manualPaidAdjustment + manualHalfDayAdjustment;
+  const totalExtraTimeUsed = baseExtraTimeLeaveDays + manualExtraAdjustment;
+  const totalUnpaidUsed = baseUnpaidLeaveDays + manualUnpaidAdjustment;
 
   // Get total paid leaves allocation (custom or default)
   const TOTAL_PAID_LEAVES = getTotalPaidLeaves(user);
@@ -634,13 +671,13 @@ export const EmployeeDashboard: React.FC = () => {
         return sum + 0.5;
       }
       return sum;
-    }, 0);
+    }, 0) + manualExtraAdjustment; // Total days including manual
 
 
   // Convert Extra Time Leave to hours
   // For extra time leave: calculate actual hours from start and end time
   // Half-days: 0.5 day = 4 hours (as per requirement)
-  const extraTimeLeaveHours = myLeaves
+  const baseExtraTimeLeaveHours = myLeaves
     .filter(leave => {
       const status = (leave.status || '').trim();
       if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
@@ -691,6 +728,10 @@ export const EmployeeDashboard: React.FC = () => {
       }
       return sum;
     }, 0);
+
+  // Convert manual adjustments for extra time from days to hours (8.25 base)
+  const manualExtraTimeAdjustmentHours = manualExtraAdjustment * 8.25;
+  const extraTimeLeaveHours = baseExtraTimeLeaveHours + manualExtraTimeAdjustmentHours;
 
   // Calculate Final Time (net difference between extra time and low time)
   const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds;
@@ -1487,20 +1528,26 @@ export const EmployeeDashboard: React.FC = () => {
                       <p className="text-xs text-gray-500 mt-1">Remaining</p>
                     </div>
                   </div>
-
-                  {/* Breakdown Table */}
-                  <div className="grid grid-cols-3 gap-3 pt-3 border-t border-gray-200">
-                    <div className="text-center">
-                      <p className="text-xs text-gray-500 uppercase mb-1">Allocated</p>
+                  <div className="grid grid-cols-5 gap-3 pt-3 border-t border-gray-200 text-center">
+                    <div>
+                      <p className="text-[10px] text-gray-400 uppercase mb-1">Allocated</p>
                       <p className="text-lg font-bold text-gray-800">{TOTAL_PAID_LEAVES}</p>
                     </div>
-                    <div className="text-center">
-                      <p className="text-xs text-gray-500 uppercase mb-1">Used</p>
-                      <p className="text-lg font-bold text-orange-600">{usedPaidLeaves}</p>
+                    <div>
+                      <p className="text-[10px] text-gray-400 uppercase mb-1">Paid</p>
+                      <p className="text-lg font-bold text-rose-600">{usedPaidLeaves}</p>
                     </div>
-                    <div className="text-center">
-                      <p className="text-xs text-gray-500 uppercase mb-1">Remaining</p>
-                      <p className={`text-lg font-bold ${availablePaidLeaves > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    <div>
+                      <p className="text-[10px] text-gray-400 uppercase mb-1">Extra</p>
+                      <p className="text-lg font-bold text-emerald-600">{totalExtraTimeUsed}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-gray-400 uppercase mb-1">Unpaid</p>
+                      <p className="text-lg font-bold text-rose-700">{totalUnpaidUsed}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-gray-400 uppercase mb-1">Remain</p>
+                      <p className={`text-lg font-bold ${availablePaidLeaves > 0 ? 'text-blue-600' : 'text-red-600'}`}>
                         {availablePaidLeaves}
                       </p>
                     </div>

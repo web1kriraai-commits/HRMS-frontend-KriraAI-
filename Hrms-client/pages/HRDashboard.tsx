@@ -215,7 +215,7 @@ export const HRDashboard: React.FC = () => {
     return days;
   };
 
-  const calculateLeaveDaysForCategory = (startDateStr: string, endDateStr: string, category: LeaveCategory) => {
+  const calculateLeaveDaysForCategory = (startDateStr: string, endDateStr: string, category: LeaveCategory, reason: string = '') => {
     const baseDays = calculateLeaveDays(startDateStr, endDateStr);
     if (category === LeaveCategory.HALF_DAY) {
       return 0.5;
@@ -315,7 +315,7 @@ export const HRDashboard: React.FC = () => {
   };
 
   // Helper function to calculate extra time leave balance and carryover
-  const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[]) => {
+  const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[], manualExtraAdjustment: number = 0) => {
     // Build a Set of holiday dates for fast lookup
     // Use h.date directly to avoid UTC/IST timezone shift
     const holidayDates = new Set(
@@ -438,7 +438,9 @@ export const HRDashboard: React.FC = () => {
     const extraTimeWorkedHours = finalTimeDifference / 3600;
 
     // Remaining extra time balance
-    const remainingExtraTimeLeaveHours = extraTimeWorkedHours - extraTimeLeaveHours;
+    // Include manual adjustments (converted from days to hours)
+    const extraTimeLeaveHoursTotal = extraTimeLeaveHours + (manualExtraAdjustment * 8.25);
+    const remainingExtraTimeLeaveHours = extraTimeWorkedHours - extraTimeLeaveHoursTotal;
 
     // Calculate carryover from previous month
     const now = new Date();
@@ -451,7 +453,7 @@ export const HRDashboard: React.FC = () => {
     const carryoverLowTime = isMonthEnd && finalTimeDifference < 0 ? Math.abs(finalTimeDifference) : 0;
 
     return {
-      extraTimeLeaveHours,
+      extraTimeLeaveHours: extraTimeLeaveHours + (manualExtraAdjustment * 8.25),
       totalLowTimeSeconds,
       totalExtraTimeSeconds,
       remainingExtraTimeLeaveHours,
@@ -550,19 +552,36 @@ export const HRDashboard: React.FC = () => {
     const allLeaves = leaveRequests.filter(l => l.userId === user.id);
 
     // Calculate balance with carryover
-    const balance = calculateEmployeeBalance(user.id, records, leaves);
+    const balance = calculateEmployeeBalance(user.id, records, leaves, user.manualExtraTimeAdjustment || 0);
 
-    // Sum days helper
+    // Sum days helper with reason tag support
     const sumDaysForCategory = (leavesArr: any[], category: LeaveCategory) => {
-      return leavesArr
-        .filter(l => l.category === category)
-        .reduce((acc, l) => acc + calculateLeaveDaysForCategory(l.startDate, l.endDate, l.category), 0);
+      return leavesArr.reduce((acc, l) => {
+        let trueCategory = l.category;
+        
+        // Determine true category for half-day leaves based on reason tags
+        if (l.category === LeaveCategory.HALF_DAY) {
+            const reason = l.reason || '';
+            if (reason.includes('[Extra Time Leave]')) {
+                trueCategory = LeaveCategory.EXTRA_TIME;
+            } else if (reason.includes('[Unpaid Leave]')) {
+                trueCategory = LeaveCategory.UNPAID;
+            } else {
+                trueCategory = LeaveCategory.PAID;
+            }
+        }
+        
+        if (trueCategory === category) {
+            return acc + calculateLeaveDaysForCategory(l.startDate, l.endDate, l.category, l.reason);
+        }
+        return acc;
+      }, 0);
     };
 
-    const paid = sumDaysForCategory(leaves, LeaveCategory.PAID);
-    const unpaid = sumDaysForCategory(leaves, LeaveCategory.UNPAID);
+    const paid = sumDaysForCategory(leaves, LeaveCategory.PAID) + (user.manualPaidLeaveAdjustment || 0) + (user.manualHalfDayLeaveAdjustment || 0);
+    const unpaid = sumDaysForCategory(leaves, LeaveCategory.UNPAID) + (user.manualUnpaidLeaveAdjustment || 0);
     const half = sumDaysForCategory(leaves, LeaveCategory.HALF_DAY);
-    const extraTime = sumDaysForCategory(leaves, LeaveCategory.EXTRA_TIME);
+    const extraTime = sumDaysForCategory(leaves, LeaveCategory.EXTRA_TIME) + (user.manualExtraTimeAdjustment || 0);
     const totalLeaves = paid + unpaid + half + extraTime;
 
     return {
@@ -1023,7 +1042,7 @@ export const HRDashboard: React.FC = () => {
               </thead>
               <tbody>
                 {employeeStats.map(stat => {
-                  const balance = stat.balance || calculateEmployeeBalance(stat.user.id, stat.records, leaveRequests.filter(l => l.userId === stat.user.id && l.status === LeaveStatus.APPROVED));
+                  const balance = stat.balance || calculateEmployeeBalance(stat.user.id, stat.records, leaveRequests.filter(l => l.userId === stat.user.id && l.status === LeaveStatus.APPROVED), stat.user.manualExtraTimeAdjustment || 0);
                   const now = new Date();
                   const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
 

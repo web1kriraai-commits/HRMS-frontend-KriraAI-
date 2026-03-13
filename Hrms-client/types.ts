@@ -36,6 +36,10 @@ export interface User {
   lastLogin?: string; // ISO String
   paidLeaveAllocation?: number | null; // Custom paid leave allocation (null = use default)
   paidLeaveLastAllocatedDate?: string; // ISO string - Last date when paid leave was allocated
+  manualPaidLeaveAdjustment?: number;
+  manualExtraTimeAdjustment?: number;
+  manualUnpaidLeaveAdjustment?: number;
+  manualHalfDayLeaveAdjustment?: number;
   joiningDate?: string; // dd-mm-yyyy format - Employee joining date
   bonds?: Bond[]; // Array of bonds
   aadhaarNumber?: string; // Aadhaar card number
