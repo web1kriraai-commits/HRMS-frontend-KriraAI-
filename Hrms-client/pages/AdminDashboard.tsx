@@ -1179,16 +1179,18 @@ export const AdminDashboard: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="bg-gray-50 text-gray-500 uppercase text-xs font-bold">
-                    <th className="px-6 py-4 text-left">Employee</th>
-                    <th className="px-6 py-4 text-center">Worked</th>
-                    <th className="px-6 py-4 text-center">Present</th>
-                    <th className="px-6 py-4 text-center text-rose-600">Low Time</th>
-                    <th className="px-6 py-4 text-center text-emerald-600">Extra Time</th>
-                    <th className="px-6 py-4 text-center text-indigo-600">Leave (ET)</th>
-                    <th className="px-6 py-4 text-center">Net Balance</th>
-                    <th className="px-6 py-4 text-center text-blue-600">Total Leave</th>
-                    <th className="px-6 py-4 text-center">Action</th>
+                  <tr className="bg-gray-50 text-gray-500 uppercase text-[10px] font-bold">
+                    <th className="px-3 py-3 text-left">Employee</th>
+                    <th className="px-2 py-3 text-center">Joined</th>
+                    <th className="px-2 py-3 text-center">Worked</th>
+                    <th className="px-2 py-3 text-center">Present</th>
+                    <th className="px-2 py-3 text-center text-rose-600">Low</th>
+                    <th className="px-2 py-3 text-center text-emerald-600">Extra</th>
+                    <th className="px-2 py-3 text-center text-indigo-600">L(ET)</th>
+                    <th className="px-2 py-3 text-center bg-indigo-100">Net</th>
+                    <th className="px-2 py-3 text-center text-orange-700 bg-orange-100">Cumul.</th>
+                    <th className="px-2 py-3 text-center text-blue-600">Leave</th>
+                    <th className="px-3 py-3 text-center">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -1218,52 +1220,68 @@ export const AdminDashboard: React.FC = () => {
                     const totalLeavesCount = empLeavesInMonth.reduce((sum, l) => sum + calculateLeaveDays(l.startDate, l.endDate), 0);
                     const balance = calculateEmployeeBalance(emp.id, empAttendance, empLeavesInMonth, emp.manualExtraTimeAdjustment || 0);
 
+                    // Calculate cumulative balance (from joining date to now)
+                    const cumulativeBalance = calculateEmployeeBalance(
+                      emp.id,
+                      attendanceRecords.filter(r => r.userId === emp.id),
+                      leaveRequests.filter(l => l.userId === emp.id && ((l.status || '').trim() === 'Approved' || (l.status || '').trim() === LeaveStatus.APPROVED)),
+                      emp.manualExtraTimeAdjustment || 0
+                    );
+
                     return (
-                      <tr key={emp.id} className="hover:bg-gray-50/50 transition-colors">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-3">
-                            <div className="h-9 w-9 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold">
+                      <tr key={emp.id} className="even:bg-gray-50/30 hover:bg-gray-50/50 transition-colors text-[11px]">
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className="h-7 w-7 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-[10px]">
                               {emp.name.charAt(0).toUpperCase()}
                             </div>
                             <div>
-                              <p className="font-semibold text-gray-800">{emp.name}</p>
-                              <p className="text-[10px] text-gray-400 uppercase font-medium">{emp.department}</p>
+                              <p className="font-semibold text-gray-800 truncate max-w-[80px]">{emp.name}</p>
+                              <p className="text-[9px] text-gray-400 uppercase font-medium">{emp.department}</p>
                             </div>
                           </div>
                         </td>
-                        <td className="px-6 py-4 text-center font-medium">
+                        <td className="px-2 py-3 text-center font-medium text-gray-400 whitespace-nowrap">
+                          {emp.joiningDate || '-'}
+                        </td>
+                        <td className="px-2 py-3 text-center font-medium whitespace-nowrap">
                           {formatHoursToHoursMinutes(empAttendance.reduce((sum, r) => sum + (r.totalWorkedSeconds || 0), 0) / 3600)}
                         </td>
-                        <td className="px-6 py-4 text-center">
-                          <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 font-bold text-[10px]">
-                            {empAttendance.filter(r => r.checkIn && r.checkOut).length} Days
+                        <td className="px-2 py-3 text-center">
+                          <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-bold text-[9px] whitespace-nowrap">
+                            {empAttendance.filter(r => r.checkIn && r.checkOut).length}D
                           </span>
                         </td>
-                        <td className="px-6 py-4 text-center text-rose-600 font-bold">
+                        <td className="px-2 py-3 text-center text-rose-600 font-bold whitespace-nowrap">
                           {formatDuration(balance.totalLowTimeSeconds)}
                         </td>
-                        <td className="px-6 py-4 text-center text-emerald-600 font-bold">
+                        <td className="px-2 py-3 text-center text-emerald-600 font-bold whitespace-nowrap">
                           {formatDuration(balance.totalExtraTimeSeconds)}
                         </td>
-                        <td className="px-6 py-4 text-center text-indigo-600 font-bold">
+                        <td className="px-2 py-3 text-center text-indigo-600 font-bold whitespace-nowrap">
                           {formatHoursToHoursMinutes(balance.extraTimeLeaveHours)}
                         </td>
-                        <td className={`px-6 py-4 text-center font-bold ${balance.remainingExtraTimeLeaveHours > 0 ? 'text-emerald-600' :
+                        <td className={`px-2 py-3 text-center font-bold whitespace-nowrap bg-indigo-50/60 ${balance.remainingExtraTimeLeaveHours > 0 ? 'text-emerald-600' :
                           balance.remainingExtraTimeLeaveHours < 0 ? 'text-rose-600' : 'text-gray-400'
                           }`}>
                           {formatHoursToHoursMinutes(balance.remainingExtraTimeLeaveHours)}
                         </td>
-                        <td className="px-6 py-4 text-center text-blue-600 font-bold">
-                          {totalLeavesCount} Days
+                        <td className={`px-2 py-3 text-center font-bold whitespace-nowrap bg-orange-50/70 ${cumulativeBalance.remainingExtraTimeLeaveHours > 0 ? 'text-emerald-600' :
+                          cumulativeBalance.remainingExtraTimeLeaveHours < 0 ? 'text-rose-600' : 'text-gray-400'
+                          }`}>
+                          {formatHoursToHoursMinutes(cumulativeBalance.remainingExtraTimeLeaveHours)}
                         </td>
-                        <td className="px-6 py-4 text-center">
+                        <td className="px-2 py-3 text-center text-blue-600 font-bold whitespace-nowrap">
+                          {totalLeavesCount}D
+                        </td>
+                        <td className="px-3 py-3 text-center">
                           <div className="flex items-center justify-center">
                             <button
                               onClick={() => {
                                 setSelectedUserId(emp.id);
                                 setActiveTab('summary');
                               }}
-                              className="px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-all font-bold text-xs"
+                              className="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-all font-bold text-[10px]"
                             >
                               View
                             </button>
