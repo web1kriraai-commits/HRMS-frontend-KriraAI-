@@ -1175,14 +1175,6 @@ export const EmployeeDashboard: React.FC = () => {
                         }} className="w-full">Check Out</Button>
                       )}
 
-                      <Button
-                        variant="secondary"
-                        onClick={() => setShowManualLogModal(true)}
-                        className="w-full mt-2 border-dashed border-2 hover:border-blue-500 hover:text-blue-600 transition-all bg-white"
-                      >
-                        <Clock className="mr-2 h-4 w-4" /> Add Work Log
-                      </Button>
-
                       {/* Extra Break Reason Input Modal */}
                       {showExtraBreakReasonInput && (
                         <>
