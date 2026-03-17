@@ -135,14 +135,15 @@ const transformAttendance = (apiAttendance: any): Attendance => {
       durationSeconds: b.durationSeconds,
       reason: b.reason
     })),
-    totalWorkedSeconds: apiAttendance.totalWorkedSeconds || 0,
+    totalWorkedSeconds: apiAttendance.totalWorkedSeconds ?? 0,
     lowTimeFlag: apiAttendance.lowTimeFlag || false,
     extraTimeFlag: apiAttendance.extraTimeFlag || false,
     penaltySeconds,
     lateCheckIn: late,
     isManualFlag: apiAttendance.isManualFlag || false,
     isPenaltyDisabled: penaltyDisabled,
-    notes: apiAttendance.notes
+    notes: apiAttendance.notes,
+    manualHours: apiAttendance.manualHours || []
   };
 };
 

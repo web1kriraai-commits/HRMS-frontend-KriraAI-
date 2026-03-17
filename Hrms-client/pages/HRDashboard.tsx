@@ -370,21 +370,13 @@ export const HRDashboard: React.FC = () => {
     let totalExtraTimeSeconds = 0;
 
     monthRecords.forEach(r => {
-      if (r.checkIn && r.checkOut) {
-        const checkInDate = new Date(r.checkIn);
-        const checkOut = new Date(r.checkOut).getTime();
-        const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
-        const breakSeconds = getBreakSeconds(r.breaks) || 0;
-        const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
-
+      if (r.totalWorkedSeconds > 0 || (r.checkIn && !r.checkOut)) {
+        const netWorkedRaw = r.totalWorkedSeconds || 0;
         const attendanceDate = r.date;
         const isHolidayDay = holidayDates.has(attendanceDate);
 
-        // Late check-in penalty: use centralized utility (skip if admin disabled penalty)
-        const penaltySeconds = !isHolidayDay && !r.isPenaltyDisabled && isPenaltyEffective(attendanceDate)
-          ? calculateLatenessPenaltySeconds(r.checkIn)
-          : 0;
-        let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+        // Late check-in penalty: already considered in totalWorkedSeconds on backend
+        let netWorkedSeconds = netWorkedRaw;
 
         // Check if this day is a company holiday — all worked time is overtime
         if (isHolidayDay) {
@@ -396,18 +388,15 @@ export const HRDashboard: React.FC = () => {
 
         // Check if there's an approved Extra Time Leave for this attendance date
         // Add the leave hours to worked hours for flag calculation
-        // Example: 1 hour leave + 7:15 work = 8:15 total (normal time)
         const extraTimeLeaveForDate = monthLeaves.find(leave => {
           const status = (leave.status || '').trim();
           if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
           if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
-          // Check if leave date matches attendance date
           return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
             (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
         });
 
         if (extraTimeLeaveForDate && extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
-          // Calculate leave hours from startTime/endTime
           const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
           const leaveSeconds = leaveHours * 3600;
           netWorkedSeconds += leaveSeconds; // Add leave time to worked time
@@ -418,7 +407,6 @@ export const HRDashboard: React.FC = () => {
           const status = (leave.status || '').trim();
           if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
           if (leave.category !== LeaveCategory.HALF_DAY) return false;
-          // Check if leave date matches attendance date
           return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
             (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
         });
@@ -482,22 +470,14 @@ export const HRDashboard: React.FC = () => {
     const leaves = leaveRequests.filter(l => l.userId === user.id && l.status === LeaveStatus.APPROVED);
 
     records.forEach(r => {
-      if (r.checkIn && r.checkOut) {
-        const checkInDate = new Date(r.checkIn);
-        const checkOut = new Date(r.checkOut).getTime();
-        const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
-        const breakSeconds = getBreakSeconds(r.breaks) || 0;
-        const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
-
+      if (r.totalWorkedSeconds > 0 || (r.checkIn && !r.checkOut)) {
+        const netWorkedRaw = r.totalWorkedSeconds || 0;
         const recordDateISO = new Date(r.date).toISOString().split('T')[0];
         const recordDateStr = new Date(r.date).toDateString();
         const isHolidayDay = holidayDateSet.has(recordDateISO);
 
-        // Late check-in penalty: use centralized utility (skip if admin disabled penalty)
-        const penaltySeconds = !isHolidayDay && !r.isPenaltyDisabled && isPenaltyEffective(recordDateISO)
-          ? calculateLatenessPenaltySeconds(r.checkIn)
-          : 0;
-        let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+        // Late check-in penalty: already considered in totalWorkedSeconds on backend
+        let netWorkedSeconds = netWorkedRaw;
 
         // Check if this day is a company holiday — all worked time is overtime
         if (isHolidayDay) {
@@ -506,7 +486,7 @@ export const HRDashboard: React.FC = () => {
             extraTimeCount++;
             totalExtraTimeSeconds += netWorkedRaw;
           }
-          totalBreakSeconds += breakSeconds;
+          totalBreakSeconds += getBreakSeconds(r.breaks) || 0;
           return; // Skip normal low/extra logic
         }
 
@@ -524,13 +504,12 @@ export const HRDashboard: React.FC = () => {
           const leaveMinutes = Math.max(0, endMinutes - startMinutes);
           netWorkedSeconds += leaveMinutes * 60;
         } else if (extraTimeLeave) {
-          // Fallback if no specific time: add standard day calculation
           const leaveDays = calculateLeaveDaysForCategory(extraTimeLeave.startDate, extraTimeLeave.endDate, extraTimeLeave.category);
           netWorkedSeconds += leaveDays * 8.25 * 3600;
         }
 
         totalWorkedSeconds += netWorkedSeconds;
-        totalBreakSeconds += breakSeconds;
+        totalBreakSeconds += getBreakSeconds(r.breaks) || 0;
 
         // Check for Half Day Leave
         const hasHalfDay = leaves.some(leave =>
@@ -1911,11 +1890,8 @@ export const HRDashboard: React.FC = () => {
                           let isLowTime = false;
                           let isExtraTime = false;
 
-                        if (record.checkIn && record.checkOut) {
-                          const checkInDate = new Date(record.checkIn);
-                          const checkOut = new Date(record.checkOut).getTime();
-                          const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
-                          netWorkedRawSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
+                        if (record.totalWorkedSeconds > 0 || (record.checkIn && !record.checkOut)) {
+                          netWorkedRawSeconds = record.totalWorkedSeconds || 0;
 
                           // Check if this day is a company holiday
                           isHolidayDay = companyHolidays.some(h => {
@@ -1925,8 +1901,7 @@ export const HRDashboard: React.FC = () => {
 
                           // Use pre-calculated penalty fields from the record
                           isLateCheckIn = !!record.lateCheckIn;
-                          const penaltySeconds = record.penaltySeconds || 0;
-                          netWorkedSeconds = Math.max(0, netWorkedRawSeconds - penaltySeconds);
+                          netWorkedSeconds = netWorkedRawSeconds;
 
                           // On holidays: never Low Time, always Extra Time if worked
                           isLowTime = !isHolidayDay && netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
@@ -1983,7 +1958,9 @@ export const HRDashboard: React.FC = () => {
                               )}
                             </td>
                             <td className="px-6 py-4">
-                              {!record.checkIn ? (
+                              {!record.checkIn && record.totalWorkedSeconds > 0 ? (
+                                <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-green-100 text-green-700">Completed (Manual)</span>
+                              ) : !record.checkIn ? (
                                 <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">Absent</span>
                               ) : !record.checkOut ? (
                                 <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">In Progress</span>

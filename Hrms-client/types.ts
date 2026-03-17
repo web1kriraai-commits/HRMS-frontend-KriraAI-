@@ -78,6 +78,15 @@ export interface Break {
   reason?: string; // Reason for extra break
 }
 
+export interface ManualHour {
+  id: string;
+  hours: number;
+  type: 'Employee' | 'Admin';
+  addedBy: string;
+  note?: string;
+  timestamp: string;
+}
+
 export interface Attendance {
   id: string;
   userId: string;
@@ -93,6 +102,7 @@ export interface Attendance {
   lateCheckIn?: boolean;
   isManualFlag?: boolean;
   isPenaltyDisabled?: boolean;
+  manualHours?: ManualHour[];
   notes?: string;
 }
 

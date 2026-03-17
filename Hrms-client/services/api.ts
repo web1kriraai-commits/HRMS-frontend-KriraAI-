@@ -214,6 +214,26 @@ export const attendanceAPI = {
       method: 'DELETE',
     });
   },
+
+  addManualHours: async (date: string, hours: number, note?: string) => {
+    return apiRequest('/attendance/manual-hours', {
+      method: 'POST',
+      body: JSON.stringify({ date, hours, note }),
+    });
+  },
+
+  adminAddManualHours: async (userId: string, date: string, hours: number, note?: string) => {
+    return apiRequest('/attendance/admin/manual-hours', {
+      method: 'POST',
+      body: JSON.stringify({ userId, date, hours, note }),
+    });
+  },
+  adminBulkAddManualHours: async (date: string, hours: number, note?: string, department?: string) => {
+    return apiRequest('/attendance/admin/bulk-manual-hours', {
+      method: 'POST',
+      body: JSON.stringify({ date, hours, note, department }),
+    });
+  },
 };
 
 // Leave API

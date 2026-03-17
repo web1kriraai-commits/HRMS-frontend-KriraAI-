@@ -74,6 +74,11 @@ export const EmployeeDashboard: React.FC = () => {
   // Extra break reason state
   const [extraBreakReason, setExtraBreakReason] = useState('');
   const [showExtraBreakReasonInput, setShowExtraBreakReasonInput] = useState(false);
+  const [showManualLogModal, setShowManualLogModal] = useState(false);
+  const [manualHoursInput, setManualHoursInput] = useState('');
+  const [manualMinutesInput, setManualMinutesInput] = useState('');
+  const [manualNoteInput, setManualNoteInput] = useState('');
+  const [isSubmittingManual, setIsSubmittingManual] = useState(false);
 
   // On mount: if page was reloaded (refresh), auto-cancel any lingering Pause break
   useEffect(() => {
@@ -230,6 +235,31 @@ export const EmployeeDashboard: React.FC = () => {
       throw error;
     }
   }, [endBreak, activeBreakStartTime]);
+
+  const handleAddManualHours = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const totalHours = Number(manualHoursInput || 0) + (Number(manualMinutesInput || 0) / 60);
+    
+    if (totalHours <= 0 || totalHours > 24) {
+      alert('Please enter a valid work duration between 1 minute and 24 hours');
+      return;
+    }
+
+    setIsSubmittingManual(true);
+    try {
+      await attendanceAPI.addManualHours(getTodayStr(), totalHours, manualNoteInput);
+      setShowManualLogModal(false);
+      setManualHoursInput('');
+      setManualMinutesInput('');
+      setManualNoteInput('');
+      await refreshData();
+    } catch (error) {
+      console.error('Error adding manual hours:', error);
+      alert('Failed to add manual hours. Please try again.');
+    } finally {
+      setIsSubmittingManual(false);
+    }
+  };
 
   // Leave Form State
   const [leaveForm, setLeaveForm] = useState({
@@ -581,28 +611,18 @@ export const EmployeeDashboard: React.FC = () => {
   );
 
   currentMonthAttendance.forEach(record => {
-    if (record.checkIn && record.checkOut) {
-      const checkIn = new Date(record.checkIn).getTime();
-      const checkOut = new Date(record.checkOut).getTime();
-      const totalSessionSeconds = Math.floor((checkOut - checkIn) / 1000);
-      const breakSeconds = getBreakSeconds(record.breaks) || 0;
-      const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
-
+    if (record.totalWorkedSeconds > 0 || (record.checkIn && !record.checkOut)) {
+      const netWorkedRaw = record.totalWorkedSeconds || 0;
       const attendanceDate = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
       const isHolidayDay = holidayDateSet.has(attendanceDate);
 
-      // Late check-in penalty: use centralized utility (skip if admin disabled penalty)
-      const penaltySeconds = !isHolidayDay && !record.isPenaltyDisabled && isPenaltyEffective(attendanceDate)
-        ? calculateLatenessPenaltySeconds(record.checkIn)
-        : 0;
-      let effectiveWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+      // Late check-in penalty: only if check-in exists
+      let effectiveWorkedSeconds = netWorkedRaw;
 
       // Check for approved Extra Time Leave (Full Day category) for this date
       const extraTimeLeaveForDate = myLeaves.find(leave => {
         const status = (leave.status || '').trim();
         if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
-        // Admin alignment: only add EXTRA_TIME category leaves to worked seconds here.
-        // HALF_DAY leaves are handled by threshold adjustment below.
         if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
         const leaveStart = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : leave.startDate;
         const leaveEnd = typeof leave.endDate === 'string' ? leave.endDate.split('T')[0] : leave.endDate;
@@ -614,7 +634,6 @@ export const EmployeeDashboard: React.FC = () => {
           const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
           effectiveWorkedSeconds += leaveHours * 3600;
         } else {
-          // Fallback for full extra time leave without specific hours
           effectiveWorkedSeconds += 8.25 * 3600;
         }
       }
@@ -1156,6 +1175,14 @@ export const EmployeeDashboard: React.FC = () => {
                         }} className="w-full">Check Out</Button>
                       )}
 
+                      <Button
+                        variant="secondary"
+                        onClick={() => setShowManualLogModal(true)}
+                        className="w-full mt-2 border-dashed border-2 hover:border-blue-500 hover:text-blue-600 transition-all bg-white"
+                      >
+                        <Clock className="mr-2 h-4 w-4" /> Add Work Log
+                      </Button>
+
                       {/* Extra Break Reason Input Modal */}
                       {showExtraBreakReasonInput && (
                         <>
@@ -1322,6 +1349,94 @@ export const EmployeeDashboard: React.FC = () => {
                     </>
                   )}
                 </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Manual Work Log Modal */}
+        {showManualLogModal && (
+          <>
+            <div
+              className="fixed inset-0 bg-black/50 z-50 px-4"
+              onClick={() => setShowManualLogModal(false)}
+            />
+            <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+              <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 animate-scale-in">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xl font-bold text-gray-900">Add Working Hours</h3>
+                  <button onClick={() => setShowManualLogModal(false)} className="text-gray-400 hover:text-gray-600">
+                    <X size={20} />
+                  </button>
+                </div>
+                
+                <form onSubmit={handleAddManualHours} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Time Worked</label>
+                    <div className="flex gap-3">
+                      <div className="relative flex-1">
+                        <input
+                          type="number"
+                          min="0"
+                          max="23"
+                          value={manualHoursInput}
+                          onChange={(e) => setManualHoursInput(e.target.value)}
+                          placeholder="HH"
+                          className="w-full p-3 pl-10 border border-gray-300 rounded-lg text-lg font-semibold focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          required
+                          autoFocus
+                        />
+                        <Clock className="absolute left-3 top-3.5 text-gray-400" size={20} />
+                        <span className="absolute right-3 top-3.5 text-gray-400 font-medium">h</span>
+                      </div>
+                      <div className="relative flex-1">
+                        <input
+                          type="number"
+                          min="0"
+                          max="59"
+                          value={manualMinutesInput}
+                          onChange={(e) => setManualMinutesInput(e.target.value)}
+                          placeholder="MM"
+                          className="w-full p-3 pl-10 border border-gray-300 rounded-lg text-lg font-semibold focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          required
+                        />
+                        <Clock className="absolute left-3 top-3.5 text-gray-400" size={20} />
+                        <span className="absolute right-3 top-3.5 text-gray-400 font-medium">m</span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-1">Select hours and minutes you worked manually (e.g. for client work or outdoor tasks)</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Note (Optional)</label>
+                    <textarea
+                      value={manualNoteInput}
+                      onChange={(e) => setManualNoteInput(e.target.value)}
+                      placeholder="What did you work on?"
+                      className="w-full p-3 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+                      rows={3}
+                    />
+                  </div>
+                  
+                  <div className="pt-2 flex gap-3">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => setShowManualLogModal(false)}
+                      className="flex-1"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      className="flex-1"
+                      disabled={isSubmittingManual || (!manualHoursInput && !manualMinutesInput)}
+                    >
+                      {isSubmittingManual ? 'Saving...' : 'Add Hours'}
+                    </Button>
+                  </div>
+                </form>
               </div>
             </div>
           </>
@@ -1819,27 +1934,14 @@ export const EmployeeDashboard: React.FC = () => {
                           })()}
                         </td>
                         <td className="px-4 py-3">
-                          {!r.checkOut ? (
+                          {!r.checkIn && r.totalWorkedSeconds > 0 ? (
+                            <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-semibold">Completed (Manual)</span>
+                          ) : !r.checkOut ? (
                             <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full font-semibold">In Progress</span>
                           ) : isHolidayWorkDay && r.checkIn && r.checkOut ? (
                             <span className="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full font-semibold">Holiday OT</span>
                           ) : (() => {
-                            // Calculate effective worked seconds with penalty awareness
-                            const checkInMs = new Date(r.checkIn!).getTime();
-                            const checkOutMs = new Date(r.checkOut!).getTime();
-                            const totalSessionSec = Math.floor((checkOutMs - checkInMs) / 1000);
-                            const breakSec = (r.breaks || []).reduce((acc: number, b: any) => {
-                              if (b.durationSeconds) return acc + b.durationSeconds;
-                              if (b.start && b.end) return acc + Math.floor((new Date(b.end).getTime() - new Date(b.start).getTime()) / 1000);
-                              return acc;
-                            }, 0);
-                            const netWorkedRaw = Math.max(0, totalSessionSec - breakSec);
-
-                            // Apply penalty only if not disabled
-                            const penaltySec = !r.isPenaltyDisabled && isPenaltyEffective(r.date)
-                              ? calculateLatenessPenaltySeconds(r.checkIn)
-                              : 0;
-                            const effectiveWorked = Math.max(0, netWorkedRaw - penaltySec);
+                            const effectiveWorked = r.totalWorkedSeconds || 0;
 
                             // Use half-day threshold if applicable
                             const MIN_NORMAL = halfDayLeave ? (255 * 60) : ((8 * 3600) + (15 * 60)); // 4h15m or 8h15m

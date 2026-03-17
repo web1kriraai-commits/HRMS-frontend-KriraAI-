@@ -204,8 +204,8 @@ export const AdminDashboard: React.FC = () => {
         .filter(leave => {
           const status = (leave.status || '').trim();
           return (status === 'Approved' || status === LeaveStatus.APPROVED) &&
-            (leave.category === LeaveCategory.PAID || 
-             (leave.category === LeaveCategory.HALF_DAY && (leave.reason || '').includes('[Paid Leave]')));
+            (leave.category === LeaveCategory.PAID ||
+              (leave.category === LeaveCategory.HALF_DAY && (leave.reason || '').includes('[Paid Leave]')));
         })
         .reduce((sum, leave) => {
           if (leave.category === LeaveCategory.HALF_DAY) return sum + 0.5;
@@ -515,21 +515,12 @@ export const AdminDashboard: React.FC = () => {
 
     // Use the shared memoized holidayDateSet (from outer scope)
     monthRecords.forEach(r => {
-      if (r.checkIn && r.checkOut) {
-        const checkInDate = new Date(r.checkIn);
-        const checkOut = new Date(r.checkOut).getTime();
-        const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
-        const breakSeconds = getBreakSeconds(r.breaks) || 0;
-        const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
-
+      // Same rule as employee dashboard: use stored totalWorkedSeconds as source of truth (no recalculation)
+      if ((r.totalWorkedSeconds || 0) > 0 || (r.checkIn && !r.checkOut)) {
+        const netWorkedRaw = r.totalWorkedSeconds || 0;
         const attendanceDate = typeof r.date === 'string' ? r.date.split('T')[0] : r.date;
         const isHolidayDay = holidayDateSet.has(attendanceDate);
-
-        // Late check-in penalty: use centralized utility (skip if admin disabled penalty)
-        const penaltySeconds = !isHolidayDay && !r.isPenaltyDisabled && isPenaltyEffective(attendanceDate)
-          ? calculateLatenessPenaltySeconds(r.checkIn)
-          : 0;
-        let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
+        let netWorkedSeconds = netWorkedRaw;
 
         // Holiday rule: all worked time is overtime, never low time
         if (isHolidayDay) {
@@ -555,13 +546,13 @@ export const AdminDashboard: React.FC = () => {
           netWorkedSeconds += leaveDays * 8.25 * 3600;
         }
 
-        // Check for Half Day Leave
+        // Check for Half Day Leave (same as employee: match by leave start date only)
         const hasHalfDay = monthLeaves.some(leave => {
           const status = (leave.status || '').trim();
           if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
           if (leave.category !== LeaveCategory.HALF_DAY) return false;
-          return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
-            (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
+          const leaveDate = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : leave.startDate;
+          return leaveDate === attendanceDate;
         });
 
         // Use unified calculation utility for consistency
@@ -701,61 +692,49 @@ export const AdminDashboard: React.FC = () => {
       return status === 'Approved' || status === LeaveStatus.APPROVED;
     });
 
+    // Use same rule as employee dashboard: stored totalWorkedSeconds and same leave-matching (date-in-range)
     monthlyAttendance.forEach(record => {
-      if (record.checkIn && record.checkOut) {
+      if ((record.totalWorkedSeconds || 0) > 0 || (record.checkIn && !record.checkOut)) {
         daysPresent++;
-        const checkInDate = new Date(record.checkIn);
-        const checkOut = new Date(record.checkOut).getTime();
-        const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
+        const netWorkedRaw = record.totalWorkedSeconds || 0;
+        totalWorkedSeconds += netWorkedRaw;
 
-        // Get break time from breaks array or totalBreakDuration
-        const breakSeconds = getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
-        const netWorkedRaw = Math.max(0, totalSessionSeconds - breakSeconds);
-
-        const recordDateStr = new Date(record.date).toDateString();
-        const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
-
-        // Use the shared memoized holidayDateSet (from outer scope)
+        const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
         const isHolidayDay = holidayDateSet.has(recordDateISO as string);
 
-        // Late check-in penalty: use centralized utility (skip if admin disabled penalty)
-        const penaltySeconds = !isHolidayDay && !record.isPenaltyDisabled && isPenaltyEffective(recordDateISO as string)
-          ? calculateLatenessPenaltySeconds(record.checkIn)
-          : 0;
-        let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
-
-
-        // Add Extra Time Leave
-        const extraTimeLeave = approvedLeaves.find(leave => {
-          return leave.userId === record.userId &&
-            new Date(leave.startDate).toDateString() === recordDateStr &&
-            (leave.category === LeaveCategory.EXTRA_TIME || (leave.category === LeaveCategory.HALF_DAY && leave.reason?.includes('[Extra Time Leave]')))
-        });
-        if (extraTimeLeave && extraTimeLeave.startTime && extraTimeLeave.endTime) {
-          const leaveHours = calculateHoursPerDay(extraTimeLeave.startTime, extraTimeLeave.endTime);
-          netWorkedSeconds += leaveHours * 3600;
-        }
-
-        // Holiday rule: all worked time is overtime, never low time
         if (isHolidayDay) {
-          totalWorkedSeconds += netWorkedRaw;
-          totalBreakSeconds += breakSeconds;
           if (netWorkedRaw > 0) totalExtraTimeSeconds += netWorkedRaw;
           return;
         }
 
-        totalWorkedSeconds += netWorkedSeconds;
-        totalBreakSeconds += breakSeconds;
+        // Match extra time leave when record date is within leave range (same as employee dashboard)
+        const extraTimeLeaveForDate = approvedLeaves.find(leave => {
+          if (leave.userId !== record.userId) return false;
+          if (leave.category !== LeaveCategory.EXTRA_TIME && !(leave.category === LeaveCategory.HALF_DAY && leave.reason?.includes('[Extra Time Leave]'))) return false;
+          const leaveStart = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : new Date(leave.startDate).toISOString().split('T')[0];
+          const leaveEnd = typeof leave.endDate === 'string' ? leave.endDate.split('T')[0] : new Date(leave.endDate).toISOString().split('T')[0];
+          return recordDateISO >= leaveStart && recordDateISO <= leaveEnd;
+        });
+        let netWorkedSeconds = netWorkedRaw;
+        if (extraTimeLeaveForDate) {
+          if (extraTimeLeaveForDate.category === LeaveCategory.HALF_DAY) {
+            netWorkedSeconds += 4 * 3600; // half-day extra time leave = 4 hours (same as employee)
+          } else if (extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
+            const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
+            netWorkedSeconds += leaveHours * 3600;
+          } else {
+            netWorkedSeconds += 8.25 * 3600;
+          }
+        }
 
-        // Check for Half Day Leave (Standard, not Extra Time Leave derived)
+        // Half-day: match by exact date (same as employee dashboard)
         const hasHalfDay = approvedLeaves.some(leave => {
-          return leave.userId === record.userId &&
-            new Date(leave.startDate).toDateString() === recordDateStr &&
-            leave.category === LeaveCategory.HALF_DAY &&
-            !leave.reason?.includes('[Extra Time Leave]')
+          if (leave.userId !== record.userId || leave.category !== LeaveCategory.HALF_DAY) return false;
+          if (leave.reason?.includes('[Extra Time Leave]')) return false;
+          const leaveDate = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : new Date(leave.startDate).toISOString().split('T')[0];
+          return leaveDate === recordDateISO;
         });
 
-        // Use unified calculation utility
         const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay);
         totalLowTimeSeconds += lowTimeSeconds;
         totalExtraTimeSeconds += extraTimeSeconds;
@@ -804,7 +783,7 @@ export const AdminDashboard: React.FC = () => {
     // Convert extra time leave hours to seconds (including manual adjustments)
     const manualExtraAdjustment = selectedUser?.manualExtraTimeAdjustment || 0;
     const extraTimeLeaveSeconds = (extraTimeLeaveHours + (manualExtraAdjustment * 8.25)) * 3600;
-    
+
     // Net Time Balance = Extra Time - (Extra Time Leave + Low Time)
     const finalDifference = totalExtraTimeSeconds - (extraTimeLeaveSeconds + totalLowTimeSeconds);
 
@@ -1249,7 +1228,7 @@ export const AdminDashboard: React.FC = () => {
                         </td>
                         <td className="px-2 py-3 text-center">
                           <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-bold text-[9px] whitespace-nowrap">
-                            {empAttendance.filter(r => r.checkIn && r.checkOut).length}D
+                            {empAttendance.filter(r => (r.totalWorkedSeconds || 0) > 0 || (r.checkIn && r.checkOut)).length}D
                           </span>
                         </td>
                         <td className="px-2 py-3 text-center text-rose-600 font-bold whitespace-nowrap">
@@ -1608,9 +1587,11 @@ export const AdminDashboard: React.FC = () => {
                     <span className="text-xs font-bold text-rose-600 uppercase tracking-wider">Deficit</span>
                   </div>
                   <div>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalLowTimeSeconds / 60)}</span>
-                      <span className="text-sm font-bold text-gray-500">minutes</span>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalLowTimeSeconds / 3600)}</span>
+                      <span className="text-sm font-bold text-gray-500">hours</span>
+                      <span className="text-2xl font-black text-gray-800 ml-2">{Math.floor((stats.totalLowTimeSeconds % 3600) / 60)}</span>
+                      <span className="text-sm font-bold text-gray-500">min</span>
                     </div>
                     <p className="text-gray-500 text-sm font-medium mt-1">Low Time</p>
                   </div>
@@ -1625,9 +1606,11 @@ export const AdminDashboard: React.FC = () => {
                     <span className="text-xs font-bold text-indigo-600 uppercase tracking-wider">Bonus</span>
                   </div>
                   <div>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalExtraTimeSeconds / 60)}</span>
-                      <span className="text-sm font-bold text-gray-500">minutes</span>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalExtraTimeSeconds / 3600)}</span>
+                      <span className="text-sm font-bold text-gray-500">hours</span>
+                      <span className="text-2xl font-black text-gray-800 ml-2">{Math.floor((stats.totalExtraTimeSeconds % 3600) / 60)}</span>
+                      <span className="text-sm font-bold text-gray-500">min</span>
                     </div>
                     <p className="text-gray-500 text-sm font-medium mt-1">Extra Time</p>
                   </div>
@@ -1941,38 +1924,33 @@ export const AdminDashboard: React.FC = () => {
                           // Get break seconds from breaks array or totalBreakDuration
                           const breakSeconds = getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
 
-                          let netWorkedSeconds = 0;
-                          let netWorkedRawSeconds = 0;
+                          // Use stored totalWorkedSeconds as source of truth (same as employee dashboard) so admin log matches employee log
+                          const storedWorked = record.totalWorkedSeconds ?? 0;
+                          let netWorkedSeconds = storedWorked;
+                          let netWorkedRawSeconds = storedWorked;
                           let isLateCheckIn = false;
                           let isHolidayDay = false;
                           let isLowTime = false;
                           let isExtraTime = false;
 
+                          isHolidayDay = companyHolidays.some(h => {
+                            const hDate = typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0];
+                            return hDate === recordDateISO;
+                          });
+
                           if (record.checkIn && record.checkOut) {
-                            const checkInDate = new Date(record.checkIn);
-                            const checkOut = new Date(record.checkOut).getTime();
-                            const totalSessionSeconds = Math.floor((checkOut - checkInDate.getTime()) / 1000);
-                            netWorkedRawSeconds = Math.max(0, totalSessionSeconds - breakSeconds);
-
-                            // Check if this day is a company holiday
-                            isHolidayDay = companyHolidays.some(h => {
-                              const hDate = typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0];
-                              return hDate === recordDateISO;
-                            });
-
-                            // Use pre-calculated penalty fields from the record
                             isLateCheckIn = !!record.lateCheckIn;
-                            const penaltySeconds = record.penaltySeconds || 0;
-                            netWorkedSeconds = Math.max(0, netWorkedRawSeconds - penaltySeconds);
-
                             if (record.isManualFlag) {
                               isLowTime = !!record.lowTimeFlag;
                               isExtraTime = !!record.extraTimeFlag;
                             } else {
-                              // On holidays: never Low Time, always Extra Time if worked
                               isLowTime = !isHolidayDay && netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
                               isExtraTime = isHolidayDay ? (netWorkedRawSeconds > 0) : (netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL);
                             }
+                          } else if (storedWorked > 0) {
+                            // Manual-only entry (admin-added hours): use stored value; status shown as Completed (Manual) to match employee
+                            isLowTime = !isHolidayDay && netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
+                            isExtraTime = isHolidayDay ? (netWorkedRawSeconds > 0) : (netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL);
                           }
 
                           return (
@@ -2018,9 +1996,9 @@ export const AdminDashboard: React.FC = () => {
                                 <span className="font-bold text-gray-800">
                                   {netWorkedRawSeconds > 0 ? formatDuration(netWorkedRawSeconds) : '-'}
                                 </span>
-                                {isLateCheckIn && record.penaltySeconds > 0 && isPenaltyEffective(record.date) && (
+                                {isLateCheckIn && (record.penaltySeconds || 0) > 0 && isPenaltyEffective(record.date) && (
                                   <div className="text-[10px] text-gray-400 font-normal">
-                                    (-15m penalty applied)
+                                    (penalty applied in total)
                                   </div>
                                 )}
                               </td>
@@ -2030,8 +2008,10 @@ export const AdminDashboard: React.FC = () => {
                                   className="hover:opacity-80 transition-opacity focus:outline-none flex flex-col items-center"
                                   title="Click to toggle status manually"
                                 >
-                                  {!record.checkIn ? (
+                                  {!record.checkIn && !(record.totalWorkedSeconds > 0) ? (
                                     <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">Absent</span>
+                                  ) : !record.checkIn && (record.totalWorkedSeconds || 0) > 0 ? (
+                                    <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-semibold">Completed (Manual)</span>
                                   ) : !record.checkOut ? (
                                     <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">In Progress</span>
                                   ) : isHolidayDay && netWorkedRawSeconds > 0 ? (
@@ -2213,7 +2193,10 @@ export const AdminDashboard: React.FC = () => {
                 <form onSubmit={async (e) => {
                   e.preventDefault();
                   const form = e.target as HTMLFormElement;
-                  const updates = {
+                  const workedHoursInput = parseInt((form.elements.namedItem('workedHours') as HTMLInputElement)?.value || '0', 10) || 0;
+                  const workedMinutesInput = parseInt((form.elements.namedItem('workedMinutes') as HTMLInputElement)?.value || '0', 10) || 0;
+                  const totalWorkedSecondsFromForm = workedHoursInput * 3600 + workedMinutesInput * 60;
+                  const updates: Record<string, unknown> = {
                     checkIn: (form.elements.namedItem('checkIn') as HTMLInputElement).value,
                     checkOut: (form.elements.namedItem('checkOut') as HTMLInputElement).value,
                     notes: (form.elements.namedItem('notes') as HTMLInputElement).value,
@@ -2222,10 +2205,13 @@ export const AdminDashboard: React.FC = () => {
                     extraTimeFlag: (form.elements.namedItem('extraTimeFlag') as HTMLInputElement).checked,
                     isPenaltyDisabled: (form.elements.namedItem('isPenaltyDisabled') as HTMLInputElement).checked,
                   };
+                  if (totalWorkedSecondsFromForm >= 0) {
+                    updates.totalWorkedSeconds = totalWorkedSecondsFromForm;
+                  }
                   const breakMinutes = parseInt((form.elements.namedItem('breakDuration') as HTMLInputElement).value);
 
                   try {
-                    await adminUpdateAttendance(editingAttendance.id, updates, isNaN(breakMinutes) ? undefined : breakMinutes);
+                    await adminUpdateAttendance(editingAttendance.id, updates as Partial<Attendance>, isNaN(breakMinutes) ? undefined : breakMinutes);
                     alert('Attendance record updated successfully');
                     setEditingAttendance(null);
                     await refreshData();
@@ -2241,6 +2227,16 @@ export const AdminDashboard: React.FC = () => {
                     <div>
                       <label className="block text-xs font-bold text-gray-600 uppercase mb-1">Check Out</label>
                       <input type="time" name="checkOut" defaultValue={editingAttendance.checkOut ? new Date(editingAttendance.checkOut).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''} className="w-full p-2 border rounded-lg" />
+                    </div>
+                  </div>
+                  <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg">
+                    <label className="block text-xs font-bold text-amber-800 uppercase mb-2">Worked hours (for manual entries or override)</label>
+                    <p className="text-[10px] text-amber-600 mb-2">When there is no check-in/check-out, this is used as total worked time and counts in &quot;Total Worked&quot;.</p>
+                    <div className="flex gap-2 items-center">
+                      <input type="number" name="workedHours" min={0} max={24} defaultValue={Math.floor((editingAttendance.totalWorkedSeconds || 0) / 3600)} className="w-20 p-2 border rounded-lg" placeholder="H" />
+                      <span className="text-gray-500 font-medium">h</span>
+                      <input type="number" name="workedMinutes" min={0} max={59} defaultValue={Math.floor(((editingAttendance.totalWorkedSeconds || 0) % 3600) / 60)} className="w-20 p-2 border rounded-lg" placeholder="M" />
+                      <span className="text-gray-500 font-medium">m</span>
                     </div>
                   </div>
                   <div>
