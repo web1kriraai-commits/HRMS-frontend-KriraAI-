@@ -5,9 +5,10 @@ interface CardProps {
   className?: string;
   title?: string;
   action?: React.ReactNode;
+  bodyClassName?: string;
 }
 
-export const Card: React.FC<CardProps> = ({ children, className = "", title, action }) => {
+export const Card: React.FC<CardProps> = ({ children, className = "", title, action, bodyClassName = "p-6" }) => {
   return (
     <div className={`bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden ${className}`}>
       {(title || action) && (
@@ -16,7 +17,7 @@ export const Card: React.FC<CardProps> = ({ children, className = "", title, act
           {action && <div>{action}</div>}
         </div>
       )}
-      <div className="p-6">
+      <div className={bodyClassName}>
         {children}
       </div>
     </div>

@@ -10,7 +10,9 @@ import { TodayAttendance } from '@/pages/TodayAttendance';
 import { Holidays } from '@/pages/Holidays';
 import { Profile } from '@/pages/Profile';
 import { Analytics } from '@/pages/Analytics';
+import { MonthlySummary } from '@/pages/MonthlySummary';
 import { Sidebar } from './components/Sidebar';
+import { EarlyLogoutPopup } from './components/EarlyLogoutPopup';
 import { Role } from './types';
 
 const PrivateRoute: React.FC<{ children: React.ReactNode; roles?: Role[] }> = ({ children, roles }) => {
@@ -40,10 +42,11 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     <div className="flex min-h-screen bg-slate-50">
       <Sidebar />
       <main className="ml-64 flex-1 p-8 overflow-y-auto h-screen">
-        <div className="max-w-6xl mx-auto">
+        <div className="max-w-full mx-auto px-4 lg:px-8">
           {children}
         </div>
       </main>
+      {(auth.user?.role === Role.ADMIN || auth.user?.role === Role.HR) && <EarlyLogoutPopup />}
     </div>
   );
 };
@@ -150,10 +153,26 @@ const AppRoutes = () => {
         </PrivateRoute>
       } />
 
+      <Route path="/admin-bonds" element={
+        <PrivateRoute roles={[Role.ADMIN]}>
+          <AppLayout>
+            <AdminDashboard />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
       <Route path="/admin-analytics" element={
         <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <Analytics />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/admin-monthly" element={
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
+          <AppLayout>
+            <MonthlySummary />
           </AppLayout>
         </PrivateRoute>
       } />

@@ -35,6 +35,7 @@ export interface User {
   isFirstLogin: boolean;
   lastLogin?: string; // ISO String
   paidLeaveAllocation?: number | null; // Custom paid leave allocation (null = use default)
+  extraTimeLeaveAllocation?: number | null; // Custom extra time leave allocation (null = 0 by default)
   paidLeaveLastAllocatedDate?: string; // ISO string - Last date when paid leave was allocated
   manualPaidLeaveAdjustment?: number;
   manualExtraTimeAdjustment?: number;
@@ -58,6 +59,11 @@ export interface User {
     paidAt?: string; // ISO string - when it was marked as paid
     paidBy?: string; // Name of admin/HR who marked it as paid
   }>;
+  lastForwardedMonth?: string; // Format "YYYY-MM" to track and prevent duplicate forwarding
+  forwardedMonths?: Record<string, number>; // Maps month (YYYY-MM) to amount forwarded out (in seconds)
+  forwardedInMonths?: Record<string, number>; // Maps month (YYYY-MM) to amount forwarded IN (in seconds)
+  createdAt?: string; // ISO String
+  updatedAt?: string; // ISO String
 }
 
 export interface Bond {
@@ -104,6 +110,17 @@ export interface Attendance {
   isPenaltyDisabled?: boolean;
   manualHours?: ManualHour[];
   notes?: string;
+  earlyLogoutRequest?: 'None' | 'Pending' | 'Approved' | 'Rejected';
+  earlyLogoutRequestNote?: string;
+  isCompulsoryBreakDisabled?: boolean;
+  overtimeRequest?: {
+    reason: string;
+    durationMinutes: number;
+    status: 'None' | 'Pending' | 'Approved' | 'Rejected';
+    requestedAt?: string;
+    approvedBy?: string;
+    approvedAt?: string;
+  };
 }
 
 export interface LeaveRequest {

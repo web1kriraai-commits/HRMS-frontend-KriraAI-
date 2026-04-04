@@ -3,9 +3,9 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { Role, LeaveCategory, LeaveStatus, User } from '../types';
-import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard } from 'lucide-react';
-import { formatDate, getTodayStr, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats } from '../services/utils';
+import { Role, LeaveCategory, LeaveStatus, User, Attendance } from '../types';
+import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft } from 'lucide-react';
+import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI } from '../services/api';
 
@@ -26,11 +26,12 @@ const formatHoursToHoursMinutes = (hours: number) => {
 };
 
 export const AdminDashboard: React.FC = () => {
-  const { auth, users, auditLogs, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, notifications, leaveRequests, updateUser, updateLeaveStatus, deleteAttendance, updateLeaveRequest, deleteLeaveRequest, updateHoliday, deleteHoliday, adminUpdateAttendance } = useApp();
+  const { auth, users, auditLogs, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, notifications, leaveRequests, updateUser, updateLeaveStatus, deleteAttendance, updateLeaveRequest, deleteLeaveRequest, updateHoliday, deleteHoliday, adminUpdateAttendance, pendingOvertimeRequests, reviewOvertime } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'consolidated' | 'summary' | 'users' | 'audit' | 'reports' | 'settings' | 'guidance'>(
-    location.pathname === '/admin-dashboard' ? 'consolidated' : 'summary'
+  const [activeTab, setActiveTab] = useState<'consolidated' | 'summary' | 'users' | 'audit' | 'reports' | 'settings' | 'guidance' | 'bonds' | 'overtime'>(
+    location.pathname === '/admin-dashboard' ? 'consolidated' : 
+    location.pathname === '/admin-overtime' ? 'overtime' : 'summary'
   );
 
   useEffect(() => {
@@ -42,6 +43,7 @@ export const AdminDashboard: React.FC = () => {
     else if (path === '/admin-system') setActiveTab('reports');
     else if (path === '/admin-settings') setActiveTab('settings');
     else if (path === '/admin-guidance') setActiveTab('guidance');
+    else if (path === '/admin-bonds') setActiveTab('bonds');
 
     if (location.state?.openAddUserModal) {
       setIsCreateUserModalOpen(true);
@@ -49,6 +51,14 @@ export const AdminDashboard: React.FC = () => {
       navigate(location.pathname, { replace: true, state: {} });
     }
   }, [location.pathname, location.state, navigate]);
+
+  // Pagination for Users table
+  const USERS_PER_PAGE = 10;
+  const [userPage, setUserPage] = useState(1);
+
+  // Bond Management states
+  const [bondSearchTerm, setBondSearchTerm] = useState('');
+  const [bondStatusFilter, setBondStatusFilter] = useState<'All' | 'Completed' | 'Expiring Soon' | 'Active' | "This Month's Shifts">('All');
 
   // User management states
   const [newUser, setNewUser] = useState({
@@ -107,30 +117,110 @@ export const AdminDashboard: React.FC = () => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
+  
+  // Forward Overtime Modal states
+  const [isForwardModalOpen, setIsForwardModalOpen] = useState(false);
+  const [forwardingUser, setForwardingUser] = useState<User | null>(null);
+  const [forwardingMonthStr, setForwardingMonthStr] = useState("");
+  const [manualForwardHours, setManualForwardHours] = useState("");
+  const [manualForwardMinutes, setManualForwardMinutes] = useState("");
+  const [systemSuggestedSeconds, setSystemSuggestedSeconds] = useState(0);
 
   const timezones = ['UTC', 'America/New_York', 'America/Los_Angeles', 'Europe/London', 'Asia/Tokyo', 'Asia/Kolkata', 'Australia/Sydney'];
 
   // Memoized holiday date Set — shared across all computations, rebuilt only when holidays list changes
   const holidayDateSet = useMemo(() => new Set(
-    companyHolidays.map(h => typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0])
+    companyHolidays.map(h => typeof h.date === 'string' && !h.date.includes('T') ? h.date : getLocalISOString(new Date(h.date)))
   ), [companyHolidays]);
-
+  const selectedUser = users.find(u => u.id === selectedUserId);
+  
   // Get monthly attendance for selected user
   const monthlyAttendance = useMemo(() => {
     if (!selectedUserId || !selectedMonth) return [];
     const [year, month] = selectedMonth.split('-').map(Number);
     const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0);
-    return attendanceRecords
+    const endDate = new Date(year, month, 0, 23, 59, 59);
+    
+    // Get existing records
+    const existingRecords = attendanceRecords
       .filter(record => {
         if (record.userId !== selectedUserId) return false;
         const recordDate = new Date(record.date);
         return recordDate >= startDate && recordDate <= endDate;
-      })
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  }, [attendanceRecords, selectedUserId, selectedMonth]);
+      });
 
-  const selectedUser = users.find(u => u.id === selectedUserId);
+    // Create a map of existing records by date (YYYY-MM-DD)
+    const recordsMap = new Map();
+    existingRecords.forEach(r => {
+      const dateStr = typeof r.date === 'string' && !r.date.includes('T') ? r.date : getLocalISOString(new Date(r.date));
+      recordsMap.set(dateStr, r);
+    });
+
+    const todayStr = getTodayStr();
+
+    // Get leaves for this month (already available in monthlyLeaves)
+    // We'll use a set of dates covered by approved leaves
+    const leaveDates = new Set();
+    leaveRequests.filter(l => l.userId === selectedUserId && l.status === LeaveStatus.APPROVED).forEach(l => {
+      let curr = new Date(l.startDate);
+      const end = new Date(l.endDate);
+      while (curr <= end) {
+        leaveDates.add(getLocalISOString(curr));
+        curr.setDate(curr.getDate() + 1);
+      }
+    });
+
+    // Final records list
+    const finalRecords = [...existingRecords];
+
+    // Find gaps for "Absent" injection (only for working days until today)
+    const now = new Date();
+    const iter = new Date(startDate);
+    const endRange = endDate < now ? endDate : now;
+
+    while (iter <= endRange) {
+      const dateStr = getLocalISOString(iter);
+      const dayOfWeek = iter.getDay(); // 0 = Sunday
+
+      // If no attendance, no leave, not Sunday, and not holiday -> inject Absent
+      // ONLY inject if on or after the rule-based absence start date
+      // AND strictly before today (don't mark today as absent before it's over)
+      const firstCheckIn = attendanceRecords
+        .filter(r => r.userId === selectedUserId && r.checkIn)
+        .sort((a, b) => {
+          const d1 = typeof a.date === 'string' && !a.date.includes('T') ? a.date : getLocalISOString(new Date(a.date));
+          const d2 = typeof b.date === 'string' && !b.date.includes('T') ? b.date : getLocalISOString(new Date(b.date));
+          return d1.localeCompare(d2);
+        })[0]?.date;
+      const absenceStart = getAbsenceStartDate(selectedUser, firstCheckIn);
+      if (!recordsMap.has(dateStr) && !leaveDates.has(dateStr) && dayOfWeek !== 0 && !holidayDateSet.has(dateStr) && dateStr >= absenceStart && dateStr < todayStr) {
+        finalRecords.push({
+          id: `virtual-absent-${dateStr}`,
+          userId: selectedUserId,
+          date: dateStr,
+          status: 'Absent',
+          totalWorkedSeconds: 0,
+          isVirtual: true,
+          isPenaltyDisabled: false
+        });
+      }
+      iter.setDate(iter.getDate() + 1);
+    }
+
+    return finalRecords.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }, [attendanceRecords, selectedUserId, selectedMonth, leaveRequests, holidayDateSet, selectedUser]);
+
+  // Pagination logic for All Users table
+  const totalUserPages = Math.max(1, Math.ceil(users.length / USERS_PER_PAGE));
+  const paginatedUsers = useMemo(() => {
+    const start = (userPage - 1) * USERS_PER_PAGE;
+    return users.slice(start, start + USERS_PER_PAGE);
+  }, [users, userPage]);
+
+  // Reset user page if users count changes significantly
+  useEffect(() => {
+    if (userPage > totalUserPages) setUserPage(Math.max(1, totalUserPages));
+  }, [users.length, totalUserPages, userPage]);
 
   // Get leaves for selected user in selected month
   const monthlyLeaves = useMemo(() => {
@@ -154,7 +244,7 @@ export const AdminDashboard: React.FC = () => {
   const [leaveFilterMonth, setLeaveFilterMonth] = useState('');
 
   // Calculate working days (excluding Sundays and holidays) between two dates
-  const calculateLeaveDays = (startDateStr: string, endDateStr: string) => {
+  const calculateLeaveDays = (startDateStr: string, endDateStr: string, limitStart?: Date, limitEnd?: Date) => {
     if (!startDateStr || !endDateStr) return 0;
 
     const start = new Date(startDateStr);
@@ -164,23 +254,27 @@ export const AdminDashboard: React.FC = () => {
     // Ensure start <= end
     if (start > end) return 0;
 
-    // Create a Set of holiday dates for quick lookup (format: YYYY-MM-DD)
-    const holidayDates = new Set(
-      companyHolidays.map(holiday => {
-        const holidayDate = new Date(holiday.date);
-        return holidayDate.toISOString().split('T')[0];
-      })
-    );
-
     let days = 0;
-    const current = new Date(start);
+    let current = new Date(start);
+    
+    // Apply bounds if provided
+    if (limitStart && current < limitStart) {
+      current = new Date(limitStart);
+      current.setHours(0, 0, 0, 0);
+    }
+    
+    let stopDate = new Date(end);
+    if (limitEnd && stopDate > limitEnd) {
+      stopDate = new Date(limitEnd);
+      stopDate.setHours(23, 59, 59, 999);
+    }
 
-    while (current <= end) {
+    while (current <= stopDate) {
       const dayOfWeek = current.getDay(); // 0 = Sunday
       const dateStr = current.toISOString().split('T')[0];
 
-      // Exclude Sundays and holidays
-      if (dayOfWeek !== 0 && !holidayDates.has(dateStr)) {
+      // Exclude Sundays and holidays using the memoized holidayDateSet
+      if (dayOfWeek !== 0 && !holidayDateSet.has(dateStr)) {
         days += 1;
       }
       current.setDate(current.getDate() + 1);
@@ -285,6 +379,10 @@ export const AdminDashboard: React.FC = () => {
 
   const [editSalaryBreakdownRows, setEditSalaryBreakdownRows] = useState<SalaryBreakdownRow[]>([]);
   const [editSalaryBreakdownData, setEditSalaryBreakdownData] = useState<{ [key: string]: number }>({});
+  
+  // Pagination for Monthly Performance Table
+  const [performancePage, setPerformancePage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
   const [isCreateUserModalOpen, setIsCreateUserModalOpen] = useState(false);
   const [isCorrectionModalOpen, setIsCorrectionModalOpen] = useState(false);
 
@@ -459,8 +557,7 @@ export const AdminDashboard: React.FC = () => {
   };
 
   // Helper function to calculate extra time leave balance and carryover
-  const calculateEmployeeBalance = (userId: string, monthRecords: any[], monthLeaves: any[], manualExtraAdjustment: number = 0) => {
-    // Calculate extra time leave hours taken
+  const calculateEmployeeBalance = (user: User | null | undefined, monthRecords: any[], monthLeaves: any[], manualExtraAdjustment: number = 0, rangeStart?: Date, rangeEnd?: Date, forceIncludePool: boolean = false) => {
     const extraTimeLeaveHours = monthLeaves
       .filter(leave => {
         const status = (leave.status || '').trim();
@@ -485,9 +582,9 @@ export const AdminDashboard: React.FC = () => {
             // Calculate hours per day: (end time - start time)
             const hoursPerDay = calculateHoursPerDay(leave.startTime, leave.endTime);
 
-            // Calculate number of days (excluding Sundays and holidays)
-            const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate);
-
+            // Calculate number of days (excluding Sundays and holidays) within the range
+            const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate, rangeStart, rangeEnd);
+            
             // Total hours = hours per day * number of days
             const totalHours = hoursPerDay * numberOfDays;
 
@@ -496,102 +593,256 @@ export const AdminDashboard: React.FC = () => {
             }
           }
           // Fallback to old calculation if time not available
-          const start = new Date(leave.startDate);
-          const end = new Date(leave.endDate);
-          const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-          return sum + (days * 8.25);
+          return sum + (calculateLeaveDays(leave.startDate, leave.endDate, rangeStart, rangeEnd) * 8.25);
         } else if (leave.category === LeaveCategory.HALF_DAY) {
           return sum + 4;
         }
         return sum;
       }, 0);
 
-    // Calculate low time and extra time from attendance
-    // Include Extra Time Leave hours in the calculation for each day
+    // Calculate low time, extra time, and penalties from attendance
     let totalLowTimeSeconds = 0;
     let totalExtraTimeSeconds = 0;
-    const MIN_NORMAL_SECONDS = 8 * 3600 + 15 * 60; // 8h 15m
-    const MAX_NORMAL_SECONDS = 8 * 3600 + 22 * 60; // 8h 22m
+    let totalPenaltySeconds = 0;
+    let penaltyCount = 0;
 
-    // Use the shared memoized holidayDateSet (from outer scope)
+    // Build a map of existing records for efficient lookup
+    const recordsMap = new Map();
     monthRecords.forEach(r => {
-      // Same rule as employee dashboard: use stored totalWorkedSeconds as source of truth (no recalculation)
-      if ((r.totalWorkedSeconds || 0) > 0 || (r.checkIn && !r.checkOut)) {
-        const netWorkedRaw = r.totalWorkedSeconds || 0;
-        const attendanceDate = typeof r.date === 'string' ? r.date.split('T')[0] : r.date;
-        const isHolidayDay = holidayDateSet.has(attendanceDate);
-        let netWorkedSeconds = netWorkedRaw;
+      const dStr = typeof r.date === 'string' && !r.date.includes('T') ? r.date : getLocalISOString(new Date(r.date));
+      recordsMap.set(dStr, r);
+    });
 
-        // Holiday rule: all worked time is overtime, never low time
-        if (isHolidayDay) {
-          if (netWorkedRaw > 0) totalExtraTimeSeconds += netWorkedRaw;
-          return;
-        }
-
-        // Check if there's an approved Extra Time Leave for this attendance date
-        const extraTimeLeaveForDate = monthLeaves.find(leave => {
-          const status = (leave.status || '').trim();
-          if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
-          if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
-          return leave.startDate === attendanceDate || leave.endDate === attendanceDate ||
-            (new Date(attendanceDate) >= new Date(leave.startDate) && new Date(attendanceDate) <= new Date(leave.endDate));
-        });
-
-        if (extraTimeLeaveForDate && extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
-          const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
-          const leaveSeconds = leaveHours * 3600;
-          netWorkedSeconds += leaveSeconds;
-        } else if (extraTimeLeaveForDate) {
-          const leaveDays = calculateLeaveDays(extraTimeLeaveForDate.startDate, extraTimeLeaveForDate.endDate);
-          netWorkedSeconds += leaveDays * 8.25 * 3600;
-        }
-
-        // Check for Half Day Leave (same as employee: match by leave start date only)
-        const hasHalfDay = monthLeaves.some(leave => {
-          const status = (leave.status || '').trim();
-          if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
-          if (leave.category !== LeaveCategory.HALF_DAY) return false;
-          const leaveDate = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : leave.startDate;
-          return leaveDate === attendanceDate;
-        });
-
-        // Use unified calculation utility for consistency
-        const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay);
-        totalLowTimeSeconds += lowTimeSeconds;
-        totalExtraTimeSeconds += extraTimeSeconds;
+    // Build a set of leave dates within the range
+    const leaveDates = new Set();
+    monthLeaves.forEach(l => {
+      let curr = new Date(l.startDate);
+      const end = new Date(l.endDate);
+      while (curr <= end) {
+        leaveDates.add(getLocalISOString(curr));
+        curr.setDate(curr.getDate() + 1);
       }
     });
 
+    // Determine calculation range
+    const start = rangeStart || (monthRecords.length > 0 ? new Date(Math.min(...monthRecords.map(r => new Date(r.date).getTime()))) : new Date());
+    const end = rangeEnd || (monthRecords.length > 0 ? new Date(Math.max(...monthRecords.map(r => new Date(r.date).getTime()))) : new Date());
+    
+    // Safety check for end date (don't calculate beyond today for virtual records)
+    const today = new Date();
+    const effectiveEnd = end > today ? today : end;
+
+    // SAFETY: Get today's date to avoid marking today as absent before it's over
+    const todayStr = getTodayStr();
+
+    const firstCheckInDate = (user && typeof user !== 'string') 
+      ? attendanceRecords
+          .filter(r => r.userId === user.id && r.checkIn)
+          .sort((a, b) => {
+            const d1 = typeof a.date === 'string' && !a.date.includes('T') ? a.date : getLocalISOString(new Date(a.date));
+            const d2 = typeof b.date === 'string' && !b.date.includes('T') ? b.date : getLocalISOString(new Date(b.date));
+            return d1.localeCompare(d2);
+          })[0]?.date
+      : undefined;
+
+    const iter = new Date(start);
+    while (iter <= effectiveEnd) {
+      const dateStr = getLocalISOString(iter);
+      const dayOfWeek = iter.getDay(); // 0 = Sunday
+      const isHolidayDay = holidayDateSet.has(dateStr);
+      
+      const record = recordsMap.get(dateStr);
+      let netWorkedSeconds = record ? (record.totalWorkedSeconds || 0) : 0;
+      
+      // If it's a real record or it's a working day (or holiday) that should be counted
+      if (record || (!leaveDates.has(dateStr) && dayOfWeek !== 0)) {
+        // Holiday rule: all worked time is overtime, never low time
+        if (isHolidayDay) {
+          if (netWorkedSeconds > 0) totalExtraTimeSeconds += netWorkedSeconds;
+        } else {
+          // Check for approved Extra Time Leave to add to net worked time
+          const extraTimeLeaveForDate = monthLeaves.find(leave => {
+            const status = (leave.status || '').trim();
+            if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+            if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
+            const start = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : leave.startDate;
+            const end = typeof leave.endDate === 'string' ? leave.endDate.split('T')[0] : leave.endDate;
+            return dateStr >= start && dateStr <= end;
+          });
+
+          if (extraTimeLeaveForDate) {
+             const leaveHours = extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime 
+               ? calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime)
+               : 8.25;
+             netWorkedSeconds += leaveHours * 3600;
+          }
+
+          // Check for Half Day Leave
+          const hasHalfDay = leaveDates.has(dateStr) && monthLeaves.some(l => 
+            l.category === LeaveCategory.HALF_DAY && 
+            (l.startDate === dateStr || l.endDate === dateStr || (new Date(dateStr) >= new Date(l.startDate) && new Date(dateStr) <= new Date(l.endDate)))
+          );
+
+          const approvedOT = (record?.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
+          const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay, approvedOT, dateStr);
+          
+          // Count late penalties and absence penalties
+          if (!isHolidayDay && !record?.isPenaltyDisabled) {
+              if (record?.lateCheckIn && record.penaltySeconds) {
+                  totalPenaltySeconds += record.penaltySeconds;
+                  penaltyCount++;
+              }
+              // Absence penalty for unexcused absence
+              // Sync: Include today in deficit calculation if record exists or if it's past day
+              const absenceStart = typeof user === 'string' ? ABSENCE_PENALTY_EFFECTIVE_DATE : getAbsenceStartDate(user, firstCheckInDate);
+              if ((!record || netWorkedSeconds === 0) && !leaveDates.has(dateStr) && dayOfWeek !== 0 && dateStr >= absenceStart && dateStr < todayStr) {
+                  totalPenaltySeconds += 29700; // 8h 15m penalty
+                  penaltyCount++;
+              }
+          }
+
+          if (!record || netWorkedSeconds === 0) {
+            // Absence Deficit: only apply if on or after effective date
+            // AND strictly before today (don't mark today as absent before it's over)
+            // If it's a real record but missing checkOut, treat as IN PROGRESS and ignore
+            const isNoRecord = !record;
+            const absenceStart = typeof user === 'string' ? ABSENCE_PENALTY_EFFECTIVE_DATE : getAbsenceStartDate(user);
+            if (dateStr >= absenceStart && dateStr < todayStr && (isNoRecord || (record && record.checkOut))) {
+              totalLowTimeSeconds += lowTimeSeconds;
+            }
+          } else {
+            // Only count low time if finalized (has checkOut).
+            // This prevents "In Progress" sessions (today or past missed checkouts) 
+            // from showing a full deficit.
+            if (record.checkOut) {
+              totalLowTimeSeconds += lowTimeSeconds;
+            }
+            totalExtraTimeSeconds += extraTimeSeconds;
+          }
+        }
+      }
+      iter.setDate(iter.getDate() + 1);
+    }
+
     // Calculate final time difference
     const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds;
-    const extraTimeWorkedHours = finalTimeDifference / 3600;
+    const workingNetHours = finalTimeDifference / 3600;
 
-    // Remaining extra time balance
-    // This is the net extra time available after accounting for low time and any extra time leaves taken
-    // Include manual adjustments (converted from days to hours)
-    const extraTimeLeaveHoursTotal = extraTimeLeaveHours + (manualExtraAdjustment * 8.25);
-    const remainingExtraTimeLeaveHours = extraTimeWorkedHours - extraTimeLeaveHoursTotal;
+    // Refined Forwarding Logic:
+    // Display Net = (Working Net) - (Forwarded Out) + (Forwarded In) - (ETL taken)
+    const monthStr = rangeStart ? `${rangeStart.getFullYear()}-${String(rangeStart.getMonth() + 1).padStart(2, '0')}` : "";
+    const forwardedOutSeconds = (user?.forwardedMonths?.[monthStr] || 0);
+    const forwardedOutHours = forwardedOutSeconds / 3600;
+    
+    // Get forwarded IN time for this month (from previous month's forward)
+    const forwardedInSeconds = (user?.forwardedInMonths?.[monthStr] || 0);
+    const forwardedInHours = forwardedInSeconds / 3600;
 
-    // Calculate carryover from previous month
-    const now = new Date();
-    const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    // Remaining extra time balance for display
+    // Net = (Extra - Low) - ETL taken - Forwarded Out + Forwarded In
+    let remainingExtraTimeLeaveHours = workingNetHours - extraTimeLeaveHours - forwardedOutHours + forwardedInHours;
 
-    // Extra Time Leave Balance: If remaining > 0 at month end, it carries over
-    // If it's negative, it means there's a deficit
+    // Calculate carryover (for legacy support or other views)
+    const carryRelativeDate = new Date();
+    const isMonthEnd = carryRelativeDate.getDate() === new Date(carryRelativeDate.getFullYear(), carryRelativeDate.getMonth() + 1, 0).getDate();
     const carryoverExtraTimeLeave = isMonthEnd && remainingExtraTimeLeaveHours > 0 ? remainingExtraTimeLeaveHours : 0;
-
-    // Low Time: If there's low time that's not compensated by extra time, it carries over
     const carryoverLowTime = isMonthEnd && finalTimeDifference < 0 ? Math.abs(finalTimeDifference) : 0;
 
     return {
-      extraTimeLeaveHours: extraTimeLeaveHours + (manualExtraAdjustment * 8.25),
+      extraTimeLeavePoolHours: forwardedInHours,
+      extraTimeLeaveHoursTaken: extraTimeLeaveHours,
       totalLowTimeSeconds,
       totalExtraTimeSeconds,
       remainingExtraTimeLeaveHours,
       carryoverExtraTimeLeave,
       carryoverLowTime,
-      finalTimeDifference
+      finalTimeDifference,
+      totalPenaltySeconds,
+      penaltyCount,
+      forwardedInHours,
+      forwardedOutHours,
+      workingNetSeconds: finalTimeDifference - forwardedOutSeconds + forwardedInSeconds
     };
+  };
+
+  const [isForwarding, setIsForwarding] = useState(false);
+
+  const handleForwardOvertime = async (user: User, monthStr: string) => {
+    const [year, month] = monthStr.split('-').map(Number);
+    const monthRecords = attendanceRecords.filter(r => {
+      const d = new Date(r.date);
+      return r.userId === user.id && d.getMonth() + 1 === month && d.getFullYear() === year;
+    });
+    const monthLeaves = leaveRequests.filter(l => {
+      if (l.userId !== user.id) return false;
+      const status = (l.status || '').trim();
+      if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+      const startDate = new Date(l.startDate);
+      const endDate = new Date(l.endDate);
+      const monthStart = new Date(year, month - 1, 1);
+      const monthEnd = new Date(year, month, 0);
+      return (startDate <= monthEnd && endDate >= monthStart);
+    });
+
+    const balance = calculateEmployeeBalance(user, monthRecords, monthLeaves, user.manualExtraTimeAdjustment || 0, new Date(year, month - 1, 1), new Date(year, month, 0));
+    
+    // We want to forward the ENTIRE net balance of the month (Working Net - Extra Time Leaves taken)
+    const secondsToForward = balance.totalExtraTimeSeconds - balance.totalLowTimeSeconds - (balance.extraTimeLeaveHoursTaken * 3600);
+    
+    setForwardingUser(user);
+    setForwardingMonthStr(monthStr);
+    setSystemSuggestedSeconds(secondsToForward);
+    
+    const absSeconds = Math.abs(secondsToForward);
+    const h = Math.floor(absSeconds / 3600);
+    const m = Math.round((absSeconds % 3600) / 60);
+
+    setManualForwardHours(h.toString());
+    setManualForwardMinutes(m.toString());
+    setIsForwardModalOpen(true);
+  };
+
+  const confirmManualForward = async () => {
+    if (!forwardingUser || !forwardingMonthStr) return;
+    
+    const h = parseInt(manualForwardHours) || 0;
+    const m = parseInt(manualForwardMinutes) || 0;
+    let totalSeconds = (h * 3600) + (m * 60);
+    
+    // sign determined by system suggestion
+    if (systemSuggestedSeconds < 0) totalSeconds = -totalSeconds;
+
+    // Calculate next month string (target month for forwarding)
+    const [fwdYear, fwdMonth] = forwardingMonthStr.split('-').map(Number);
+    const nextMonthDate = new Date(fwdYear, fwdMonth, 1); // fwdMonth is 1-based, so this gives next month
+    const nextMonthStr = `${nextMonthDate.getFullYear()}-${String(nextMonthDate.getMonth() + 1).padStart(2, '0')}`;
+
+    // Source month: increment how much was forwarded OUT
+    const updatedForwardedMonths = { ...(forwardingUser.forwardedMonths || {}) };
+    updatedForwardedMonths[forwardingMonthStr] = (updatedForwardedMonths[forwardingMonthStr] || 0) + totalSeconds;
+
+    // Target month: increment how much was forwarded IN
+    const updatedForwardedInMonths = { ...(forwardingUser.forwardedInMonths || {}) };
+    updatedForwardedInMonths[nextMonthStr] = (updatedForwardedInMonths[nextMonthStr] || 0) + totalSeconds;
+
+    setIsForwarding(true);
+    try {
+      await userAPI.updateUser(forwardingUser.id, {
+        lastForwardedMonth: forwardingMonthStr,
+        forwardedMonths: updatedForwardedMonths,
+        forwardedInMonths: updatedForwardedInMonths
+      });
+      const dispH = Math.floor(Math.abs(totalSeconds) / 3600);
+      const dispM = Math.floor((Math.abs(totalSeconds) % 3600) / 60);
+      alert(`Successfully processed balance forwarding for ${forwardingUser.name}.\nForwarded ${totalSeconds < 0 ? '-' : ''}${dispH}h ${dispM}m from ${forwardingMonthStr} → ${nextMonthStr}.`);
+      setIsForwardModalOpen(false);
+      await refreshData();
+    } catch (error: any) {
+      console.error("Failed to forward overtime:", error);
+      alert(error.message || "Failed to forward overtime.");
+    } finally {
+      setIsForwarding(false);
+    }
   };
 
 
@@ -651,7 +902,8 @@ export const AdminDashboard: React.FC = () => {
         });
 
         // Use unified calculation utility
-        const { lowTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay);
+        const approvedOT = (record.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
+        const { lowTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay, approvedOT, recordDateISO);
         totalLowTimeSeconds += lowTimeSeconds;
       }
     });
@@ -682,6 +934,11 @@ export const AdminDashboard: React.FC = () => {
     let daysPresent = 0;
     let totalLowTimeSeconds = 0;
     let totalExtraTimeSeconds = 0;
+    const todayStr = getTodayStr();
+
+    const [year, month] = selectedMonth.split('-').map(Number);
+    const monthStart = new Date(year, month - 1, 1);
+    const monthEnd = new Date(year, month, 0, 23, 59, 59);
 
     const MIN_NORMAL_SECONDS = 8 * 3600 + 15 * 60; // 8h 15m = 29700 seconds
     const MAX_NORMAL_SECONDS = 8 * 3600 + 22 * 60; // 8h 22m = 30120 seconds
@@ -694,8 +951,9 @@ export const AdminDashboard: React.FC = () => {
 
     // Use same rule as employee dashboard: stored totalWorkedSeconds and same leave-matching (date-in-range)
     monthlyAttendance.forEach(record => {
-      if ((record.totalWorkedSeconds || 0) > 0 || (record.checkIn && !record.checkOut)) {
-        daysPresent++;
+      // Changed to >= 0 to include virtual absent records and zero-work days
+      if ((record.totalWorkedSeconds || 0) >= 0 || (record.checkIn && !record.checkOut)) {
+        if (!record.isVirtual) daysPresent++;
         const netWorkedRaw = record.totalWorkedSeconds || 0;
         totalWorkedSeconds += netWorkedRaw;
 
@@ -735,9 +993,34 @@ export const AdminDashboard: React.FC = () => {
           return leaveDate === recordDateISO;
         });
 
-        const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay);
-        totalLowTimeSeconds += lowTimeSeconds;
-        totalExtraTimeSeconds += extraTimeSeconds;
+        const approvedOT = (record.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
+        const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay, approvedOT, recordDateISO);
+        
+        // ONLY apply low time deficit for absences if on or after effective date
+        if (record.isVirtual || netWorkedSeconds === 0) {
+          // Only apply low time deficit for absences if on or after effective date 
+          // AND strictly before today.
+          // If it's a real record but missing checkOut, treat as IN PROGRESS and ignore.
+          const firstCheckIn = selectedUser ? attendanceRecords
+            .filter(r => r.userId === selectedUser.id && r.checkIn)
+            .sort((a, b) => {
+              const d1 = typeof a.date === 'string' && !a.date.includes('T') ? a.date : getLocalISOString(new Date(a.date));
+              const d2 = typeof b.date === 'string' && !b.date.includes('T') ? b.date : getLocalISOString(new Date(b.date));
+              return d1.localeCompare(d2);
+            })[0]?.date : undefined;
+          const absenceStart = selectedUser ? getAbsenceStartDate(selectedUser, firstCheckIn) : ABSENCE_PENALTY_EFFECTIVE_DATE;
+          if (recordDateISO >= absenceStart && recordDateISO < todayStr && (record.isVirtual || record.checkOut)) {
+            totalLowTimeSeconds += lowTimeSeconds;
+          }
+        } else {
+          // Only count low time if finalized (has checkOut).
+          // This prevents "In Progress" sessions (today or past missed checkouts) 
+          // from showing a full deficit in the monthly summary.
+          if (record.checkOut) {
+            totalLowTimeSeconds += lowTimeSeconds;
+          }
+          totalExtraTimeSeconds += extraTimeSeconds;
+        }
       }
     });
 
@@ -762,8 +1045,8 @@ export const AdminDashboard: React.FC = () => {
             // Calculate hours per day: (end time - start time)
             const hoursPerDay = calculateHoursPerDay(leave.startTime, leave.endTime);
 
-            // Calculate number of days (excluding Sundays and holidays)
-            const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate);
+            // Calculate number of days (excluding Sundays and holidays) within the month boundary
+            const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate, monthStart, monthEnd);
 
             // Total hours = hours per day * number of days
             const totalHours = hoursPerDay * numberOfDays;
@@ -773,19 +1056,24 @@ export const AdminDashboard: React.FC = () => {
             }
           }
           // Fallback to old calculation if time not available
-          return sum + (calculateLeaveDays(leave.startDate, leave.endDate) * 8.25);
+          return sum + (calculateLeaveDays(leave.startDate, leave.endDate, monthStart, monthEnd) * 8.25);
         } else if (leave.category === LeaveCategory.HALF_DAY) {
           return sum + 4;
         }
         return sum;
       }, 0);
 
-    // Convert extra time leave hours to seconds (including manual adjustments)
-    const manualExtraAdjustment = selectedUser?.manualExtraTimeAdjustment || 0;
-    const extraTimeLeaveSeconds = (extraTimeLeaveHours + (manualExtraAdjustment * 8.25)) * 3600;
+    // Convert extra time leave hours to seconds
+    const extraTimeLeaveSeconds = extraTimeLeaveHours * 3600;
 
-    // Net Time Balance = Extra Time - (Extra Time Leave + Low Time)
-    const finalDifference = totalExtraTimeSeconds - (extraTimeLeaveSeconds + totalLowTimeSeconds);
+    // Forwarding logic for the selected month
+    const monthStr = selectedMonth; // "YYYY-MM"
+    const forwardedOutSeconds = (selectedUser?.forwardedMonths?.[monthStr] || 0);
+    const forwardedInSeconds = (selectedUser?.forwardedInMonths?.[monthStr] || 0);
+
+    // Net Time Balance = (Extra Time - Extra Time Leave - Low Time - Forwarded Out + Forwarded In)
+    const monthlyNetSeconds = totalExtraTimeSeconds - extraTimeLeaveSeconds - totalLowTimeSeconds - forwardedOutSeconds + forwardedInSeconds;
+    const finalDifference = monthlyNetSeconds;
 
     return {
       totalWorkedSeconds,
@@ -794,6 +1082,8 @@ export const AdminDashboard: React.FC = () => {
       totalLowTimeSeconds,
       totalExtraTimeSeconds,
       extraTimeLeaveSeconds,
+      forwardedInSeconds,
+      forwardedOutSeconds,
       finalDifference
     };
   };
@@ -802,7 +1092,7 @@ export const AdminDashboard: React.FC = () => {
 
   // Calculate balance for selected user
   const selectedUserBalance = selectedUserId && selectedUser
-    ? calculateEmployeeBalance(selectedUserId, monthlyAttendance, monthlyLeaves, selectedUser.manualExtraTimeAdjustment || 0)
+    ? calculateEmployeeBalance(selectedUser, monthlyAttendance, monthlyLeaves, selectedUser.manualExtraTimeAdjustment || 0)
     : null;
 
   const handleAddHoliday = (e: React.FormEvent) => {
@@ -908,6 +1198,94 @@ export const AdminDashboard: React.FC = () => {
     if (diffMins < 60) return `${diffMins}m ago`;
     if (diffHours < 24) return `${diffHours}h ago`;
     return formatDate(dateStr);
+  };
+
+  // Flatten all employee bonds into a searchable list
+  const allBondsData = useMemo(() => {
+    const today = new Date();
+    today.setHours(0,0,0,0);
+    const flattened: any[] = [];
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+
+    users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).forEach(user => {
+      const bonds = user.bonds || [];
+      const bondResults = calculateBondRemaining(bonds, user.joiningDate);
+      
+      bondResults.allBonds.forEach((bondInfo: any, bondIdx: number) => {
+        // Use the remaining days calculation logic safely
+        const endD = new Date(bondInfo.endDate);
+        const startD = new Date(bondInfo.startDate);
+        const diffTime = endD.getTime() - today.getTime();
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        
+        const isExp = bondInfo.remaining.isExpired;
+        const completesThisMonth = endD.getMonth() === currentMonth && endD.getFullYear() === currentYear;
+        const startsThisMonth = startD.getMonth() === currentMonth && startD.getFullYear() === currentYear;
+        const isShiftingThisMonth = completesThisMonth || startsThisMonth;
+        
+        // Detect if there is another bond after this one
+        const hasNextStage = bondIdx < bondResults.allBonds.length - 1;
+
+        let status = isExp ? 'Completed' : 'Active';
+        if (!isExp && diffDays > 0 && diffDays <= 30) {
+          status = hasNextStage ? 'Shifting Soon' : 'Expiring Soon';
+        }
+
+        flattened.push({
+          userName: user.name,
+          department: user.department,
+          email: user.email,
+          userId: user.id,
+          type: bondInfo.type,
+          periodMonths: bondInfo.periodMonths,
+          startDate: bondInfo.startDate,
+          endDate: bondInfo.endDate,
+          status,
+          isShiftingThisMonth,
+          hasNextStage,
+          remainingDisplay: bondInfo.remaining.display,
+          totalRemainingDisplay: bondResults.totalRemaining.display,
+          diffDays,
+          isExp
+        });
+      });
+    });
+
+    return flattened
+      .filter(item => {
+        const matchesSearch = 
+           item.userName.toLowerCase().includes(bondSearchTerm.toLowerCase()) ||
+           item.department.toLowerCase().includes(bondSearchTerm.toLowerCase()) ||
+           item.type.toLowerCase().includes(bondSearchTerm.toLowerCase());
+        
+        if (!matchesSearch) return false;
+        if (bondStatusFilter === 'All') return true;
+        if (bondStatusFilter === "This Month's Shifts") return item.isShiftingThisMonth;
+        return item.status === bondStatusFilter;
+      })
+      .sort((a, b) => {
+        // Sort active/expiring soon by end date ascending, then completed descending
+        if (a.isExp && !b.isExp) return 1;
+        if (!a.isExp && b.isExp) return -1;
+        if (!a.isExp && !b.isExp) return a.endDate.getTime() - b.endDate.getTime();
+        return b.endDate.getTime() - a.endDate.getTime();
+      });
+  }, [users, bondSearchTerm, bondStatusFilter]);
+
+  const exportBondReport = () => {
+    const rows = allBondsData.map(b => ({
+      Employee: b.userName,
+      Department: b.department,
+      Type: b.type,
+      Months: b.periodMonths,
+      'Start Date': convertToDDMMYYYY(b.startDate),
+      'End Date': convertToDDMMYYYY(b.endDate),
+      Status: b.status,
+      'Shifting This Month': b.isShiftingThisMonth ? 'Yes' : 'No',
+      'Remaining Time': b.remainingDisplay
+    }));
+    downloadCSV(`Bond_Status_Report_${new Date().toISOString().split('T')[0]}.csv`, rows);
   };
 
   return (
@@ -1139,6 +1517,100 @@ export const AdminDashboard: React.FC = () => {
                 </div>
               )}
             </div>
+
+          {/* Pending Overtime Requests */}
+          <div className="bg-white rounded-2xl shadow-sm border border-indigo-100 overflow-hidden mb-6">
+            <div className="px-6 py-5 border-b border-indigo-50 bg-indigo-50/30 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-indigo-100 flex items-center justify-center text-indigo-600">
+                  <Clock size={20} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-800 uppercase tracking-tight">Pending Overtime Requests</h3>
+                  <p className="text-indigo-600/70 text-xs font-bold uppercase tracking-wider">
+                    {pendingOvertimeRequests.length} requests needing verification
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50/50 text-gray-400 uppercase text-[10px] font-black tracking-widest">
+                    <th className="px-6 py-4 text-left">Employee</th>
+                    <th className="px-6 py-4 text-left">Date</th>
+                    <th className="px-6 py-4 text-left">Duration</th>
+                    <th className="px-6 py-4 text-left">Reason</th>
+                    <th className="px-6 py-4 text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {pendingOvertimeRequests.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-12 text-center">
+                        <div className="flex flex-col items-center gap-2 opacity-30">
+                          <CheckCircle2 size={40} className="text-gray-400" />
+                          <p className="font-bold text-gray-500 uppercase tracking-widest text-xs">All caught up! No pending requests.</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    pendingOvertimeRequests.map(record => (
+                      <tr key={record.id} className="hover:bg-indigo-50/20 transition-colors">
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="h-8 w-8 rounded-lg bg-gray-100 flex items-center justify-center text-gray-600 font-bold text-xs">
+                              {users.find(u => u.id === (typeof record.userId === 'string' ? record.userId : record.userId?.id))?.name.charAt(0)}
+                            </div>
+                            <div>
+                              <p className="font-bold text-gray-800">{users.find(u => u.id === (typeof record.userId === 'string' ? record.userId : record.userId?.id))?.name || 'Unknown'}</p>
+                              <p className="text-[10px] text-gray-400 font-bold uppercase">{users.find(u => u.id === (typeof record.userId === 'string' ? record.userId : record.userId?.id))?.department}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="font-bold text-gray-700">{formatDate(record.date)}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-600 font-black text-xs border border-emerald-100">
+                            {record.overtimeRequest?.durationMinutes} MIN
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="text-gray-600 text-xs font-medium max-w-xs">{record.overtimeRequest?.reason}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center justify-center gap-2">
+                            <Button
+                              onClick={() => {
+                                if (window.confirm('Approve this overtime request? The duration will be added as extra time.')) {
+                                  reviewOvertime(record.id, 'Approved');
+                                }
+                              }}
+                              className="h-9 px-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg shadow-sm font-bold text-xs flex items-center gap-1.5"
+                            >
+                              <CheckCircle size={14} /> Approve
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              onClick={() => {
+                                if (window.confirm('Reject this overtime request?')) {
+                                  reviewOvertime(record.id, 'Rejected');
+                                }
+                              }}
+                              className="h-9 px-3 border-rose-100 text-rose-500 hover:bg-rose-50 rounded-lg font-bold text-xs"
+                            >
+                              Reject
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
           </div>
 
           {/* Monthly Performance Table */}
@@ -1162,10 +1634,12 @@ export const AdminDashboard: React.FC = () => {
                     <th className="px-3 py-3 text-left">Employee</th>
                     <th className="px-2 py-3 text-center">Joined</th>
                     <th className="px-2 py-3 text-center">Worked</th>
-                    <th className="px-2 py-3 text-center">Present</th>
+                    <th className="px-1 py-3 text-center">Pres.</th>
                     <th className="px-2 py-3 text-center text-rose-600">Low</th>
                     <th className="px-2 py-3 text-center text-emerald-600">Extra</th>
-                    <th className="px-2 py-3 text-center text-indigo-600">L(ET)</th>
+                    <th className="px-2 py-3 text-center text-blue-600">L(ET)</th>
+                    <th className="px-2 py-3 text-center text-purple-600">Prev</th>
+                    <th className="px-2 py-3 text-center text-amber-600">Sent</th>
                     <th className="px-2 py-3 text-center bg-indigo-100">Net</th>
                     <th className="px-2 py-3 text-center text-orange-700 bg-orange-100">Cumul.</th>
                     <th className="px-2 py-3 text-center text-blue-600">Leave</th>
@@ -1173,7 +1647,10 @@ export const AdminDashboard: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).map(emp => {
+                  {users
+                    .filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR)
+                    .slice((performancePage - 1) * ITEMS_PER_PAGE, performancePage * ITEMS_PER_PAGE)
+                    .map(emp => {
                     // Calculate stats for each employee for the selected month
                     const [year, month] = selectedMonth.split('-').map(Number);
                     const empAttendance = attendanceRecords.filter(r => {
@@ -1196,15 +1673,33 @@ export const AdminDashboard: React.FC = () => {
                       return (startDate <= monthEnd && endDate >= monthStart);
                     });
 
+                    const monthStart = new Date(year, month - 1, 1);
+                    const monthEnd = new Date(year, month, 0);
+
                     const totalLeavesCount = empLeavesInMonth.reduce((sum, l) => sum + calculateLeaveDays(l.startDate, l.endDate), 0);
-                    const balance = calculateEmployeeBalance(emp.id, empAttendance, empLeavesInMonth, emp.manualExtraTimeAdjustment || 0);
+                    const balance = calculateEmployeeBalance(
+                      emp, 
+                      empAttendance, 
+                      empLeavesInMonth, 
+                      emp.manualExtraTimeAdjustment || 0,
+                      monthStart,
+                      monthEnd,
+                      selectedMonth === getTodayStr().substring(0, 7)
+                    );
 
                     // Calculate cumulative balance (from joining date to now)
+                    // NOTE: Pass manualExtraAdjustment=0 and forceIncludePool=false so the cumulative
+                    // column shows PURE net (Extra Time - Low Time - ETL taken), completely unaffected
+                    // by the forward extra time / pool feature.
+                    const joinDate = emp.joiningDate ? (parseDDMMYYYY(emp.joiningDate) || new Date(2026, 0, 1)) : new Date(2026, 0, 1);
                     const cumulativeBalance = calculateEmployeeBalance(
-                      emp.id,
+                      emp,
                       attendanceRecords.filter(r => r.userId === emp.id),
                       leaveRequests.filter(l => l.userId === emp.id && ((l.status || '').trim() === 'Approved' || (l.status || '').trim() === LeaveStatus.APPROVED)),
-                      emp.manualExtraTimeAdjustment || 0
+                      0,         // No pool — cumulative is pure, not affected by forwarding
+                      joinDate,
+                      new Date(),
+                      false      // forceIncludePool = false — pool must NOT affect cumulative total
                     );
 
                     return (
@@ -1221,12 +1716,12 @@ export const AdminDashboard: React.FC = () => {
                           </div>
                         </td>
                         <td className="px-2 py-3 text-center font-medium text-gray-400 whitespace-nowrap">
-                          {emp.joiningDate || '-'}
+                          {emp.joiningDate ? convertToDDMMYYYY(emp.joiningDate).replace(/-/g, ' ') : '-'}
                         </td>
                         <td className="px-2 py-3 text-center font-medium whitespace-nowrap">
                           {formatHoursToHoursMinutes(empAttendance.reduce((sum, r) => sum + (r.totalWorkedSeconds || 0), 0) / 3600)}
                         </td>
-                        <td className="px-2 py-3 text-center">
+                        <td className="px-1 py-3 text-center">
                           <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-bold text-[9px] whitespace-nowrap">
                             {empAttendance.filter(r => (r.totalWorkedSeconds || 0) > 0 || (r.checkIn && r.checkOut)).length}D
                           </span>
@@ -1237,8 +1732,14 @@ export const AdminDashboard: React.FC = () => {
                         <td className="px-2 py-3 text-center text-emerald-600 font-bold whitespace-nowrap">
                           {formatDuration(balance.totalExtraTimeSeconds)}
                         </td>
-                        <td className="px-2 py-3 text-center text-indigo-600 font-bold whitespace-nowrap">
-                          {formatHoursToHoursMinutes(balance.extraTimeLeaveHours)}
+                        <td className="px-2 py-3 text-center text-blue-600 font-bold whitespace-nowrap" title="Extra Time Leave taken">
+                          {formatHoursToHoursMinutes(balance.extraTimeLeaveHoursTaken)}
+                        </td>
+                        <td className="px-2 py-3 text-center text-purple-600 font-bold whitespace-nowrap" title="Forwarded from previous month">
+                          {formatHoursToHoursMinutes(balance.forwardedInHours)}
+                        </td>
+                        <td className="px-2 py-3 text-center text-amber-600 font-bold whitespace-nowrap" title="Forwarded to next month">
+                          {formatHoursToHoursMinutes(balance.forwardedOutHours)}
                         </td>
                         <td className={`px-2 py-3 text-center font-bold whitespace-nowrap bg-indigo-50/60 ${balance.remainingExtraTimeLeaveHours > 0 ? 'text-emerald-600' :
                           balance.remainingExtraTimeLeaveHours < 0 ? 'text-rose-600' : 'text-gray-400'
@@ -1254,7 +1755,7 @@ export const AdminDashboard: React.FC = () => {
                           {totalLeavesCount}D
                         </td>
                         <td className="px-3 py-3 text-center">
-                          <div className="flex items-center justify-center">
+                          <div className="flex items-center justify-center gap-2">
                             <button
                               onClick={() => {
                                 setSelectedUserId(emp.id);
@@ -1264,6 +1765,24 @@ export const AdminDashboard: React.FC = () => {
                             >
                               View
                             </button>
+                            {emp.lastForwardedMonth === selectedMonth ? (
+                                <span className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-600 font-bold text-[9px] flex items-center gap-1">
+                                    <CheckCircle size={10} /> Done
+                                </span>
+                            ) : (
+                                <button
+                                    onClick={() => handleForwardOvertime(emp, selectedMonth)}
+                                    disabled={isForwarding || balance.remainingExtraTimeLeaveHours === 0}
+                                    className={`px-2 py-1 rounded-lg font-bold text-[10px] transition-all ${
+                                        balance.remainingExtraTimeLeaveHours === 0 
+                                            ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
+                                            : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'
+                                    }`}
+                                    title={balance.remainingExtraTimeLeaveHours > 0 ? `Forward ${Math.round(balance.remainingExtraTimeLeaveHours * 100) / 100}h to next month` : 'Net deficit will be deducted if forwarded'}
+                                >
+                                    {isForwarding ? '...' : 'Forward'}
+                                </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1272,84 +1791,31 @@ export const AdminDashboard: React.FC = () => {
                 </tbody>
               </table>
             </div>
-          </div>
 
-          {/* All Leave Summary with Hover */}
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="px-6 py-5 border-b border-gray-100 bg-purple-50 flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-bold text-gray-800">Full Leave History</h3>
-                <p className="text-gray-500 text-sm">Hover over rows to see detailed information</p>
+            {/* Pagination Controls */}
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+              <p className="text-xs text-gray-500">
+                Showing <span className="font-bold text-gray-700">{Math.min((performancePage - 1) * ITEMS_PER_PAGE + 1, users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length)}</span> to <span className="font-bold text-gray-700">{Math.min(performancePage * ITEMS_PER_PAGE, users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length)}</span> of <span className="font-bold text-gray-700">{users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length}</span> employees
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setPerformancePage(p => Math.max(1, p - 1))}
+                  disabled={performancePage === 1}
+                  className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Previous
+                </button>
+                <button
+                  onClick={() => setPerformancePage(p => p + 1)}
+                  disabled={performancePage * ITEMS_PER_PAGE >= users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length}
+                  className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Next
+                </button>
               </div>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50 text-gray-500 uppercase text-xs font-bold">
-                    <th className="px-6 py-4 text-left">Employee</th>
-                    <th className="px-6 py-4 text-left">Leave Date</th>
-                    <th className="px-6 py-4 text-left">Type</th>
-                    <th className="px-6 py-4 text-center">Status</th>
-                    <th className="px-6 py-4 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {leaveRequests.slice(0, 10).map(leave => (
-                    <tr key={leave.id} className="hover:bg-indigo-50/50 transition-all cursor-default group relative">
-                      <td className="px-6 py-4">
-                        <p className="font-semibold text-gray-800">{leave.userName}</p>
-                      </td>
-                      <td className="px-6 py-4 text-gray-600">
-                        {formatDate(leave.startDate)}
-                        <div className="absolute hidden group-hover:block z-50 bg-slate-900 text-white p-3 rounded-xl shadow-2xl min-w-[250px] left-1/2 -translate-x-1/2 -top-16 pointer-events-none">
-                          <div className="text-xs space-y-1">
-                            <p className="font-bold border-b border-slate-700 pb-1 mb-1">{leave.category}</p>
-                            <p><span className="text-slate-400">From:</span> {formatDate(leave.startDate)}</p>
-                            <p><span className="text-slate-400">To:</span> {formatDate(leave.endDate)}</p>
-                            <p className="italic text-indigo-300 mt-2">"{leave.reason}"</p>
-                          </div>
-                          <div className="absolute w-3 h-3 bg-slate-900 rotate-45 left-1/2 -translate-x-1/2 top-full -mt-1.5"></div>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className="px-2 py-1 rounded-lg bg-purple-100 text-purple-700 font-bold text-[10px]">{leave.category}</span>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center justify-center">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${leave.status === 'Approved' ? 'bg-emerald-100 text-emerald-700' :
-                            leave.status === 'Rejected' ? 'bg-rose-100 text-rose-700' :
-                              'bg-amber-100 text-amber-700'
-                            }`}>
-                            {leave.status}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-center">
-                        {(leave.status === 'Approved' || leave.status === 'Rejected') && (
-                          <button
-                            onClick={async () => {
-                              if (!confirm(`Are you sure you want to revert this ${leave.status.toLowerCase()} leave?`)) return;
-                              try {
-                                await updateLeaveStatus(leave.id, 'Pending', `Reverted from ${leave.status} by Admin`);
-                                alert('Leave reverted to Pending status successfully');
-                                await refreshData();
-                              } catch (error: any) {
-                                alert(error.message || 'Failed to revert leave');
-                              }
-                            }}
-                            className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 transition-colors"
-                            title="Revert to Pending"
-                          >
-                            <RotateCcw size={16} />
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
           </div>
+
         </div>
       )}
 
@@ -1588,12 +2054,17 @@ export const AdminDashboard: React.FC = () => {
                   </div>
                   <div>
                     <div className="flex items-baseline gap-1">
-                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalLowTimeSeconds / 3600)}</span>
+                      <span className="text-2xl font-black text-gray-800">{Math.floor((stats.totalLowTimeSeconds + Math.max(0, -stats.forwardedInSeconds)) / 3600)}</span>
                       <span className="text-sm font-bold text-gray-500">hours</span>
-                      <span className="text-2xl font-black text-gray-800 ml-2">{Math.floor((stats.totalLowTimeSeconds % 3600) / 60)}</span>
+                      <span className="text-2xl font-black text-gray-800 ml-2">{Math.floor(((stats.totalLowTimeSeconds + Math.max(0, -stats.forwardedInSeconds)) % 3600) / 60)}</span>
                       <span className="text-sm font-bold text-gray-500">min</span>
                     </div>
                     <p className="text-gray-500 text-sm font-medium mt-1">Low Time</p>
+                    {stats.forwardedInSeconds < 0 && (
+                      <p className="text-[10px] text-rose-500 font-bold italic mt-1">
+                        (Incl. {formatHoursToHoursMinutes(Math.abs(stats.forwardedInSeconds) / 3600)} forwarded)
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -1607,12 +2078,17 @@ export const AdminDashboard: React.FC = () => {
                   </div>
                   <div>
                     <div className="flex items-baseline gap-1">
-                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalExtraTimeSeconds / 3600)}</span>
+                      <span className="text-2xl font-black text-gray-800">{Math.floor((stats.totalExtraTimeSeconds + Math.max(0, stats.forwardedInSeconds)) / 3600)}</span>
                       <span className="text-sm font-bold text-gray-500">hours</span>
-                      <span className="text-2xl font-black text-gray-800 ml-2">{Math.floor((stats.totalExtraTimeSeconds % 3600) / 60)}</span>
+                      <span className="text-2xl font-black text-gray-800 ml-2">{Math.floor(((stats.totalExtraTimeSeconds + Math.max(0, stats.forwardedInSeconds)) % 3600) / 60)}</span>
                       <span className="text-sm font-bold text-gray-500">min</span>
                     </div>
                     <p className="text-gray-500 text-sm font-medium mt-1">Extra Time</p>
+                    {stats.forwardedInSeconds > 0 && (
+                      <p className="text-[10px] text-indigo-500 font-bold italic mt-1">
+                        (Incl. {formatHoursToHoursMinutes(stats.forwardedInSeconds / 3600)} forwarded)
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1636,7 +2112,7 @@ export const AdminDashboard: React.FC = () => {
                       <h4 className={`text-xl font-bold ${stats.finalDifference >= 0 ? 'text-emerald-800' : 'text-rose-800'}`}>
                         Net Time Balance
                       </h4>
-                      <p className="text-gray-500 text-sm font-medium">Extra Time - (Extra Time Leave + Low Time)</p>
+                      <p className="text-gray-500 text-xs font-medium">Extra - (ETL + Low) - Sent + Prev</p>
                     </div>
                   </div>
                   <div className="text-center md:text-right">
@@ -1888,9 +2364,9 @@ export const AdminDashboard: React.FC = () => {
                         <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase tracking-wider">
                           <div className="flex items-center gap-2"><LogOut size={14} className="text-rose-500" /> Check Out</div>
                         </th>
-                        <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase tracking-wider">
-                          <div className="flex items-center gap-2"><Coffee size={14} className="text-amber-500" /> Break</div>
-                        </th>
+                        <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase tracking-wider">Break</th>
+                        <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase tracking-wider">OT Approved</th>
+                        <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase tracking-wider">OT Done</th>
                         <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase tracking-wider">Worked</th>
                         <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase tracking-wider">Status</th>
                         <th className="px-6 py-4 text-center text-xs font-black text-gray-500 uppercase tracking-wider">Action</th>
@@ -1899,35 +2375,51 @@ export const AdminDashboard: React.FC = () => {
                     <tbody className="divide-y divide-gray-100">
                       {monthlyAttendance.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="text-center py-12 text-gray-400">
+                          <td colSpan={8} className="text-center py-12 text-gray-400">
                             No attendance records found for this month
                           </td>
                         </tr>
                       ) : (
                         monthlyAttendance.map((record, idx) => {
-                          // Find if there's an approved half day leave for this date
                           const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
+                          const dateStr = recordDateISO;
+                          
+                          // Find if there's an approved half day leave for this date
                           const halfDayLeave = monthlyLeaves.find(l => {
                             const status = String(l.status || '').trim();
-                            const isApproved = status === 'Approved' || status === 'Approved'; // Adjust based on your types if needed
-                            if (!isApproved || l.category !== 'Half Day Leave') return false;
+                            const isApproved = status === 'Approved' || status === LeaveStatus.APPROVED;
+                            if (!isApproved || l.category !== LeaveCategory.HALF_DAY) return false;
                             const leaveDate = typeof l.startDate === 'string' ? l.startDate.split('T')[0] : new Date(l.startDate).toISOString().split('T')[0];
                             return leaveDate === recordDateISO;
                           });
 
+                          // Case: Approved Extra Time Leave for this date
+                          const extraTimeLeaveForDate = monthlyLeaves.find(leave => {
+                             const status = (leave.status || '').trim();
+                             if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+                             if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
+                             const start = new Date(leave.startDate);
+                             const end = new Date(leave.endDate);
+                             const current = new Date(dateStr);
+                             return current >= start && current <= end;
+                          });
+
                           // Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
-                          // Adjust for half-day: subtract 4 hours (14400 seconds)
                           const adjustmentSeconds = halfDayLeave ? 4 * 3600 : 0;
                           const MIN_NORMAL_SECONDS_LOCAL = (8 * 3600 + 15 * 60) - adjustmentSeconds;
                           const MAX_NORMAL_SECONDS_LOCAL = (8 * 3600 + 22 * 60) - adjustmentSeconds;
 
-                          // Get break seconds from breaks array or totalBreakDuration
                           const breakSeconds = getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
-
-                          // Use stored totalWorkedSeconds as source of truth (same as employee dashboard) so admin log matches employee log
                           const storedWorked = record.totalWorkedSeconds ?? 0;
                           let netWorkedSeconds = storedWorked;
-                          let netWorkedRawSeconds = storedWorked;
+                          
+                          if (extraTimeLeaveForDate) {
+                             const leaveHours = extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime 
+                               ? calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime)
+                               : 8.25;
+                             netWorkedSeconds += leaveHours * 3600;
+                          }
+
                           let isLateCheckIn = false;
                           let isHolidayDay = false;
                           let isLowTime = false;
@@ -1945,47 +2437,49 @@ export const AdminDashboard: React.FC = () => {
                               isExtraTime = !!record.extraTimeFlag;
                             } else {
                               isLowTime = !isHolidayDay && netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
-                              isExtraTime = isHolidayDay ? (netWorkedRawSeconds > 0) : (netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL);
+                              isExtraTime = isHolidayDay ? (storedWorked > 0) : (netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL);
                             }
                           } else if (storedWorked > 0) {
-                            // Manual-only entry (admin-added hours): use stored value; status shown as Completed (Manual) to match employee
                             isLowTime = !isHolidayDay && netWorkedSeconds > 0 && netWorkedSeconds < MIN_NORMAL_SECONDS_LOCAL;
-                            isExtraTime = isHolidayDay ? (netWorkedRawSeconds > 0) : (netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL);
+                            isExtraTime = isHolidayDay ? (storedWorked > 0) : (netWorkedSeconds > MAX_NORMAL_SECONDS_LOCAL);
                           }
 
+                          const lowSeconds = isLowTime ? (MIN_NORMAL_SECONDS_LOCAL - netWorkedSeconds) : 0;
+                          const surplusSeconds = isExtraTime ? (isHolidayDay ? storedWorked : netWorkedSeconds - MAX_NORMAL_SECONDS_LOCAL) : 0;
+
                           return (
-                            <tr key={record.id} className={`hover:bg-gray-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
+                            <tr key={record.id} className={`hover:bg-slate-50/80 transition-colors border-b border-slate-100 ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'}`}>
                               <td className="px-6 py-4">
-                                <div className="font-semibold text-gray-800">{formatDate(record.date)}</div>
-                                <div className="text-xs text-gray-400">{new Date(record.date).toLocaleDateString('en-US', { weekday: 'short' })}</div>
+                                <div className="font-bold text-slate-700 text-xs">{formatDate(record.date)}</div>
+                                <div className="text-[10px] text-slate-400 font-bold uppercase tracking-tighter">{new Date(record.date).toLocaleDateString('en-US', { weekday: 'short' })}</div>
                               </td>
                               <td className="px-6 py-4">
-                                <span className="text-emerald-600 font-semibold">
+                                <span className="text-emerald-600 font-black text-xs tabular-nums">
                                   {formatTime(record.checkIn)}
                                 </span>
                                 {isLateCheckIn && record.penaltySeconds > 0 && isPenaltyEffective(record.date) && (
-                                  <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
-                                    <AlertCircle size={10} /> Late Penalty: 15m
+                                  <div className="text-[9px] text-rose-500 font-black mt-1 flex items-center gap-1 uppercase italic tracking-tight">
+                                    <AlertCircle size={10} /> Late Penalty
                                   </div>
                                 )}
                               </td>
                               <td className="px-6 py-4">
-                                <span className="text-rose-600 font-semibold">
+                                <span className="text-rose-600 font-black text-xs tabular-nums">
                                   {formatTime(record.checkOut)}
                                 </span>
                               </td>
                               <td className="px-6 py-4">
                                 <div className="space-y-1">
-                                  <span className="text-amber-600 font-medium">
+                                  <span className="text-amber-600 font-bold text-xs tabular-nums">
                                     {breakSeconds > 0 ? formatDuration(breakSeconds) : '-'}
                                   </span>
                                   {record.breaks && record.breaks.length > 0 && (
-                                    <div className="text-xs text-gray-500 space-y-0.5">
+                                    <div className="text-[9px] text-slate-400 space-y-0.5 font-medium italic">
                                       {record.breaks
                                         .filter((b: any) => b.type === 'Extra' && b.reason)
-                                        .map((b: any, idx: number) => (
-                                          <div key={idx} className="text-purple-600">
-                                            <span className="font-semibold">Extra:</span> {b.reason}
+                                        .map((b: any, bIdx: number) => (
+                                          <div key={bIdx}>
+                                            <span className="text-purple-500 font-bold">Extra:</span> {b.reason}
                                           </div>
                                         ))}
                                     </div>
@@ -1993,72 +2487,83 @@ export const AdminDashboard: React.FC = () => {
                                 </div>
                               </td>
                               <td className="px-6 py-4">
-                                <span className="font-bold text-gray-800">
-                                  {netWorkedRawSeconds > 0 ? formatDuration(netWorkedRawSeconds) : '-'}
+                                <span className={`font-black text-xs tabular-nums ${record.overtimeRequest?.status === 'Approved' ? 'text-indigo-600' : 'text-slate-300'}`}>
+                                  {record.overtimeRequest?.status === 'Approved' ? `${record.overtimeRequest.durationMinutes}m` : '-'}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4">
+                                <span className={`font-black text-xs tabular-nums ${record.overtimeRequest?.completedMinutes ? 'text-emerald-600' : 'text-slate-300'}`}>
+                                  {record.overtimeRequest?.completedMinutes ? `${record.overtimeRequest.completedMinutes}m` : '-'}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4">
+                                <span className="font-black text-slate-800 text-xs tabular-nums">
+                                  {storedWorked > 0 ? formatDuration(storedWorked) : '-'}
                                 </span>
                                 {isLateCheckIn && (record.penaltySeconds || 0) > 0 && isPenaltyEffective(record.date) && (
-                                  <div className="text-[10px] text-gray-400 font-normal">
-                                    (penalty applied in total)
+                                  <div className="text-[9px] text-slate-400 font-bold italic">
+                                    ( penalty applied )
                                   </div>
                                 )}
                               </td>
                               <td className="px-6 py-4">
                                 <button
                                   onClick={() => handleDirectStatusToggle(record)}
-                                  className="hover:opacity-80 transition-opacity focus:outline-none flex flex-col items-center"
+                                  className="hover:opacity-80 transition-all focus:outline-none flex flex-col items-start gap-1"
                                   title="Click to toggle status manually"
                                 >
                                   {!record.checkIn && !(record.totalWorkedSeconds > 0) ? (
-                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-600">Absent</span>
-                                  ) : !record.checkIn && (record.totalWorkedSeconds || 0) > 0 ? (
-                                    <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-semibold">Completed (Manual)</span>
-                                  ) : !record.checkOut ? (
-                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-100 text-amber-700">In Progress</span>
-                                  ) : isHolidayDay && netWorkedRawSeconds > 0 ? (
-                                    <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700 font-bold border-2 border-emerald-200">
-                                      +{formatDuration(netWorkedRawSeconds)}
+                                    <span className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-wider ${recordDateISO >= ABSENCE_PENALTY_EFFECTIVE_DATE ? 'bg-slate-100 text-slate-500 ring-1 ring-slate-200' : 'text-slate-200'}`}>
+                                      {recordDateISO >= ABSENCE_PENALTY_EFFECTIVE_DATE ? 'Unexcused Absence' : '-'}
                                     </span>
+                                  ) : !record.checkIn && (record.totalWorkedSeconds || 0) > 0 ? (
+                                    <span className="text-[10px] bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-md font-black uppercase tracking-wider ring-1 ring-emerald-100 italic">Manual Log</span>
+                                  ) : !record.checkOut ? (
+                                    <span className="px-2.5 py-1 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-50 text-amber-700 ring-1 ring-amber-100 animate-pulse">In Progress</span>
+                                  ) : isHolidayDay && storedWorked > 0 ? (
+                                    <div className="flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-md text-[10px] font-black uppercase ring-1 ring-emerald-200">
+                                      <TrendingUp size={10} />
+                                      <span>+{formatDuration(storedWorked)}</span>
+                                    </div>
                                   ) : isLowTime ? (
-                                    <div className="flex flex-col gap-1 items-center">
-                                      {halfDayLeave && (
-                                        <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
-                                      )}
-                                      <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-100 text-rose-700 font-bold border-2 border-rose-200">
-                                        -{formatDuration(MIN_NORMAL_SECONDS_LOCAL - netWorkedSeconds)}
-                                      </span>
+                                    <div className="flex flex-col gap-1">
+                                      <div className="flex items-center gap-1 px-2.5 py-1 bg-rose-50 text-rose-700 rounded-md text-[10px] font-black uppercase ring-1 ring-rose-200">
+                                        <TrendingDown size={10} />
+                                        <span>-{formatDuration(lowSeconds)}</span>
+                                      </div>
                                     </div>
                                   ) : isExtraTime ? (
-                                    <div className="flex flex-col gap-1 items-center">
-                                      {halfDayLeave && (
-                                        <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
-                                      )}
-                                      <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700 font-bold border-2 border-emerald-200">
-                                        +{formatDuration(netWorkedSeconds - MAX_NORMAL_SECONDS_LOCAL)}
-                                      </span>
+                                    <div className="flex flex-col gap-1">
+                                      <div className="flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-md text-[10px] font-black uppercase ring-1 ring-emerald-200">
+                                        <TrendingUp size={10} />
+                                        <span>+{formatDuration(surplusSeconds)}</span>
+                                      </div>
                                     </div>
                                   ) : (
-                                    <div className="flex flex-col gap-1 items-center">
-                                      {halfDayLeave && (
-                                        <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
-                                      )}
-                                      <span className="px-3 py-1 rounded-lg text-xs font-semibold bg-blue-100 text-blue-700">On Time</span>
+                                    <div className="flex items-center gap-1 px-2.5 py-1 bg-indigo-50 text-indigo-700 rounded-md text-[10px] font-black uppercase ring-1 ring-indigo-200">
+                                      <CheckCircle size={10} />
+                                      <span>Normal</span>
                                     </div>
                                   )}
+
+                                  {extraTimeLeaveForDate && (
+                                    <span className="text-[9px] font-bold text-amber-600 uppercase flex items-center gap-1 italic tracking-tight">
+                                      <Calendar size={10} /> Extra Time Leave Applied
+                                    </span>
+                                  )}
+                                  
                                   {record.isManualFlag && (
-                                    <div className="text-[9px] text-gray-400 mt-1 font-bold flex items-center gap-0.5 justify-center">
+                                    <div className="text-[8px] text-slate-400 font-black flex items-center gap-0.5 uppercase tracking-tighter">
                                       <Globe size={8} /> Manual Override
                                     </div>
                                   )}
                                 </button>
                               </td>
                               <td className="px-6 py-4 text-center">
-                                <div className="flex items-center justify-center gap-2">
+                                <div className="flex items-center justify-center gap-1">
                                   <button
-                                    onClick={() => {
-                                      setEditingAttendance(record);
-                                      // Initialize edit form if needed, or just open modal
-                                    }}
-                                    className="p-1 text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                                    onClick={() => setEditingAttendance(record)}
+                                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
                                     title="Edit Record"
                                   >
                                     <Edit2 size={14} />
@@ -2074,7 +2579,7 @@ export const AdminDashboard: React.FC = () => {
                                         alert(error.message || 'Failed to delete record');
                                       }
                                     }}
-                                    className="p-1 text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
                                     title="Delete Record"
                                   >
                                     <Trash2 size={14} />
@@ -2320,14 +2825,14 @@ export const AdminDashboard: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {users.length === 0 ? (
+                  {paginatedUsers.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-5 py-8 text-center text-gray-400">
                         No users found
                       </td>
                     </tr>
                   ) : (
-                    users.map(user => {
+                    paginatedUsers.map(user => {
                       const bondInfo = calculateBondRemaining(user.bonds, user.joiningDate);
                       return (
                         <tr key={user.id} className="hover:bg-gray-50">
@@ -2442,6 +2947,36 @@ export const AdminDashboard: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            
+            {/* Pagination for Users */}
+            {users.length > 0 && (
+                <div className="p-4 border-t border-gray-100 bg-gray-50/50 flex items-center justify-between">
+                    <div className="text-xs text-gray-500">
+                        Showing <span className="font-bold text-gray-800">{(userPage - 1) * USERS_PER_PAGE + 1}</span> to <span className="font-bold text-gray-800">{Math.min(userPage * USERS_PER_PAGE, users.length)}</span> of <span className="font-bold text-gray-800">{users.length}</span> users
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => setUserPage(p => Math.max(1, p - 1))}
+                            disabled={userPage === 1}
+                            className={`p-1.5 rounded-lg border transition-all ${userPage === 1 ? 'border-gray-100 text-gray-300 bg-gray-50 cursor-not-allowed' : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50 hover:border-gray-300 shadow-sm'}`}
+                        >
+                            <ChevronLeft size={16} />
+                        </button>
+                        <div className="flex items-center gap-1 text-xs font-bold text-gray-700 mx-2">
+                            <span className="text-indigo-600 px-2 py-0.5 bg-indigo-50 rounded border border-indigo-100">{userPage}</span>
+                            <span className="text-gray-400">/</span>
+                            <span>{totalUserPages}</span>
+                        </div>
+                        <button
+                            onClick={() => setUserPage(p => Math.min(totalUserPages, p + 1))}
+                            disabled={userPage === totalUserPages}
+                            className={`p-1.5 rounded-lg border transition-all ${userPage === totalUserPages ? 'border-gray-100 text-gray-300 bg-gray-50 cursor-not-allowed' : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50 hover:border-gray-300 shadow-sm'}`}
+                        >
+                            <ChevronRight size={16} />
+                        </button>
+                    </div>
+                </div>
+            )}
           </Card>
         </div>
       )}
@@ -2464,29 +2999,38 @@ export const AdminDashboard: React.FC = () => {
                 {auditLogs.length === 0 ? (
                   <tr><td colSpan={5} className="text-center py-4 text-gray-400">No audit logs found</td></tr>
                 ) : (
-                  auditLogs.map(log => (
-                    <tr key={log.id} className="bg-white border-b">
-                      <td className="px-6 py-4 text-xs text-gray-500">{new Date(log.timestamp).toLocaleString()}</td>
-                      <td className="px-6 py-4 font-medium text-gray-900">{log.actorName}</td>
-                      <td className="px-6 py-4">
-                        <span className="text-xs font-bold text-gray-600 block">{log.targetType}</span>
-                        <span className="text-xs font-mono text-gray-400">{log.targetId}</span>
-                      </td>
-                      <td className="px-6 py-4"><span className="bg-gray-100 text-gray-700 px-2 py-1 rounded text-xs font-mono">{log.action}</span></td>
-                      <td className="px-6 py-4">
-                        <p className="text-gray-600 text-sm">{log.details}</p>
-                        {log.beforeData && (
-                          <details className="mt-1 text-xs text-gray-400 cursor-pointer">
-                            <summary>View Diff</summary>
-                            <div className="p-2 bg-gray-50 rounded mt-1 font-mono">
-                              <p className="text-red-500 line-through">{log.beforeData}</p>
-                              <p className="text-green-600">{log.afterData}</p>
-                            </div>
-                          </details>
-                        )}
-                      </td>
-                    </tr>
-                  ))
+                  auditLogs.map(log => {
+                    const actor = users.find(u => u.id === log.actorId);
+                    return (
+                      <tr key={log.id} className="bg-white border-b">
+                        <td className="px-6 py-4 text-xs text-gray-500">{new Date(log.timestamp).toLocaleString()}</td>
+                        <td className="px-6 py-4 font-medium text-gray-900">
+                          {log.actorName}
+                          {actor && (
+                            <span className="inline-block ml-2 px-2 py-0.5 bg-slate-100 text-slate-500 rounded text-[10px] font-black uppercase tracking-tight">
+                              {actor.role}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="text-xs font-bold text-gray-600 block">{log.targetType}</span>
+                        </td>
+                        <td className="px-6 py-4"><span className="bg-gray-100 text-gray-700 px-2 py-1 rounded text-xs font-mono">{log.action}</span></td>
+                        <td className="px-6 py-4">
+                          <p className="text-gray-600 text-sm">{log.details}</p>
+                          {log.beforeData && (
+                            <details className="mt-1 text-xs text-gray-400 cursor-pointer">
+                              <summary>View Diff</summary>
+                              <div className="p-2 bg-gray-50 rounded mt-1 font-mono">
+                                <p className="text-red-500 line-through">{log.beforeData}</p>
+                                <p className="text-green-600">{log.afterData}</p>
+                              </div>
+                            </details>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -2878,8 +3422,218 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </Card>
         </div>
-      )
-      }
+      )}
+
+      {/* BOND STATUS TAB */}
+      {activeTab === 'bonds' && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Summary Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-5 focus-within:ring-2 focus-within:ring-blue-100 transition-all">
+              <div className="h-14 w-14 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-600 shadow-sm shadow-blue-100/50">
+                <Scroll size={28} />
+              </div>
+              <div>
+                <p className="text-slate-500 text-sm font-bold uppercase tracking-tight">Active Bond Stages</p>
+                <h3 className="text-2xl font-black text-slate-800">{allBondsData.filter(b => b.status !== 'Completed').length}</h3>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-5 focus-within:ring-2 focus-within:ring-emerald-100 transition-all">
+              <div className="h-14 w-14 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600 shadow-sm shadow-emerald-100/50">
+                <CheckCircle2 size={28} />
+              </div>
+              <div>
+                <p className="text-slate-500 text-sm font-bold uppercase tracking-tight">Completed Stages</p>
+                <h3 className="text-2xl font-black text-slate-800">{allBondsData.filter(b => b.status === 'Completed').length}</h3>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-5 focus-within:ring-2 focus-within:ring-amber-100 transition-all">
+              <div className="h-14 w-14 rounded-2xl bg-amber-50 flex items-center justify-center text-amber-600 shadow-sm shadow-amber-100/50">
+                <Timer size={28} />
+              </div>
+              <div>
+                <p className="text-slate-500 text-sm font-bold uppercase tracking-tight">Finishing in 30 Days</p>
+                <h3 className="text-2xl font-black text-slate-800">{allBondsData.filter(b => b.status === 'Expiring Soon').length}</h3>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-5 focus-within:ring-2 focus-within:ring-orange-100 transition-all">
+              <div className="h-14 w-14 rounded-2xl bg-orange-50 flex items-center justify-center text-orange-600 shadow-sm shadow-orange-100/50">
+                <History size={28} />
+              </div>
+              <div>
+                <p className="text-slate-500 text-sm font-bold uppercase tracking-tight">Shifts This Month</p>
+                <h3 className="text-2xl font-black text-slate-800">{allBondsData.filter(b => b.isShiftingThisMonth).length}</h3>
+              </div>
+            </div>
+          </div>
+
+          {/* Table Card */}
+          <Card className="overflow-hidden border-slate-100 p-0 shadow-lg shadow-slate-100/50">
+            <div className="p-6 bg-slate-50/50 border-b border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+              <div className="flex items-center gap-4">
+                <div className="h-12 w-12 rounded-2xl bg-white shadow-sm border border-slate-100 flex items-center justify-center">
+                  <History className="h-6 w-6 text-slate-600" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-800">Bond Milestone Tracker</h3>
+                  <p className="text-sm text-slate-500 font-medium">Monitoring individual contract stages and expirations</p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative group">
+                  <Globe className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={18} />
+                  <input 
+                    type="text" 
+                    placeholder="Search employee or dept..."
+                    className="pl-11 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all font-bold text-slate-700 min-w-[280px]"
+                    value={bondSearchTerm}
+                    onChange={(e) => setBondSearchTerm(e.target.value)}
+                  />
+                </div>
+                
+                <select
+                  className="bg-white border border-slate-200 text-slate-700 px-4 py-2.5 rounded-xl text-sm font-black focus:outline-none focus:ring-4 focus:ring-blue-50"
+                  value={bondStatusFilter}
+                  onChange={(e) => setBondStatusFilter(e.target.value as any)}
+                >
+                  <option value="All">All Statuses</option>
+                  <option value="This Month's Shifts">This Month's Shifts</option>
+                  <option value="Active">Active Only</option>
+                  <option value="Expiring Soon">Finishing Soon</option>
+                  <option value="Completed">Completed Only</option>
+                </select>
+
+                <Button 
+                   variant="secondary" 
+                   onClick={exportBondReport}
+                   className="h-[42px] px-6 rounded-xl font-black uppercase tracking-widest text-[10px]"
+                >
+                  <Download size={14} className="mr-2" /> Export Report
+                </Button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 text-slate-400 uppercase text-[10px] font-black tracking-widest border-b border-slate-100">
+                    <th className="px-6 py-4 text-left">Employee & Dept</th>
+                    <th className="px-6 py-4 text-center">Bond Type</th>
+                    <th className="px-6 py-4 text-center">Period</th>
+                    <th className="px-6 py-4 text-center">Timeline</th>
+                    <th className="px-6 py-4 text-right pr-12">Status & Remaining</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {allBondsData.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-20 text-center">
+                        <div className="flex flex-col items-center gap-3 opacity-30">
+                          <Scroll size={48} />
+                          <p className="font-bold text-slate-400">No matching bond stages found</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    allBondsData.map((bond, idx) => (
+                      <tr key={`${bond.email}-${idx}`} className={`hover:bg-blue-50/30 transition-colors ${bond.status === 'Expiring Soon' ? 'bg-amber-50/20' : ''}`}>
+                        <td className="px-6 py-5">
+                          <div className="flex items-center gap-3">
+                            <div className={`h-11 w-11 rounded-xl flex items-center justify-center text-sm font-black text-white shadow-sm ${
+                              ['bg-blue-500', 'bg-indigo-500', 'bg-violet-500', 'bg-emerald-500'][idx % 4]
+                            }`}>
+                              {bond.userName.charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <p className="font-black text-slate-800">{bond.userName}</p>
+                              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{bond.department}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-5 text-center">
+                          <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider ${
+                            bond.type === 'Internship' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
+                          }`}>
+                            {bond.type}
+                          </span>
+                        </td>
+                        <td className="px-6 py-5 text-center">
+                          <p className="font-black text-slate-700 text-xs">{bond.totalRemainingDisplay}</p>
+                        </td>
+                        <td className="px-6 py-5">
+                          <div className="flex flex-col items-center gap-1">
+                            <div className="flex items-center gap-2 text-[10px] font-bold text-slate-600">
+                              <span className="text-slate-400">FROM</span> 
+                              <span>{convertToDDMMYYYY(bond.startDate)}</span>
+                              <ArrowRight size={10} className="text-slate-300" />
+                              <span className="text-slate-400">TO</span> 
+                              <span>{convertToDDMMYYYY(bond.endDate)}</span>
+                            </div>
+                          </div>
+                        </td>
+                         <td className="px-6 py-5">
+                          <div className="flex items-center justify-end gap-3">
+                            <div className="flex flex-col items-end gap-1.5">
+                              {bond.status === 'Completed' ? (
+                                <div className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-500 rounded-lg text-[10px] font-black uppercase italic ring-1 ring-slate-200">
+                                  <CheckCircle2 size={12} />
+                                  <span>Completed</span>
+                                </div>
+                              ) : bond.isShiftingThisMonth ? (
+                                <div className="flex items-center gap-1.5 px-3 py-1 bg-orange-50 text-orange-700 rounded-lg text-[10px] font-black uppercase ring-1 ring-orange-200">
+                                  <ArrowRightLeft size={12} />
+                                  <span>Shifting This Month</span>
+                                </div>
+                              ) : bond.status === 'Shifting Soon' ? (
+                                <div className="flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-700 rounded-lg text-[10px] font-black uppercase ring-1 ring-blue-200">
+                                  <ArrowRightLeft size={12} />
+                                  <span>Shifting Soon</span>
+                                </div>
+                              ) : bond.status === 'Expiring Soon' ? (
+                                <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-700 rounded-lg text-[10px] font-black uppercase ring-1 ring-amber-200 animate-pulse">
+                                  <AlertCircle size={12} />
+                                  <span>Expiring Soon</span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-[10px] font-black uppercase ring-1 ring-emerald-100">
+                                  <Activity size={12} />
+                                  <span>Active Stage</span>
+                                </div>
+                              )}
+                              <p className={`text-[10px] font-black italic ${
+                                bond.status === 'Expiring Soon' ? 'text-amber-600' : 
+                                (bond.isShiftingThisMonth || bond.status === 'Shifting Soon') ? 'text-orange-600' : 'text-slate-400'
+                              }`}>
+                                {bond.remainingDisplay}
+                              </p>
+                            </div>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              className="w-10 h-10 p-0 rounded-xl flex items-center justify-center bg-white border border-slate-200 text-slate-400 hover:text-blue-600 hover:border-blue-200 hover:bg-blue-50 transition-all shadow-sm"
+                              onClick={() => {
+                                const user = users.find(u => u.id === bond.userId);
+                                if (user) setBondModalUser(user);
+                              }}
+                              title="View Bond Details"
+                            >
+                              <BookOpen size={18} />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* Correction Modal */}
       {isCorrectionModalOpen && (
@@ -2952,6 +3706,85 @@ export const AdminDashboard: React.FC = () => {
           </Card>
         </div>
       )}
+
+      {/* Forward Overtime Modal */}
+      {isForwardModalOpen && forwardingUser && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-md">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-indigo-100 flex items-center justify-center">
+                  <Clock className="h-5 w-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-gray-800">Forward Balance</h3>
+                  <p className="text-xs text-gray-500">{forwardingUser.name} - {forwardingMonthStr}</p>
+                </div>
+              </div>
+              <button onClick={() => setIsForwardModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-400">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="p-4 bg-blue-50 rounded-lg border border-blue-100">
+                <p className="text-xs font-bold text-blue-700 uppercase mb-1">System Suggested</p>
+                <p className="text-lg font-mono font-bold text-blue-900">
+                  {systemSuggestedSeconds >= 0 ? '+' : '-'}{formatDuration(Math.abs(systemSuggestedSeconds))}
+                </p>
+                <p className="text-[10px] text-blue-600 mt-1 italic">
+                  {systemSuggestedSeconds >= 0 ? 'Extra time will be added to carryover' : 'Low time deficit will be deducted from carryover'}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Hours</label>
+                  <input 
+                    type="number" 
+                    min="0"
+                    placeholder="0"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-200" 
+                    value={manualForwardHours} 
+                    onChange={e => setManualForwardHours(e.target.value)} 
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Minutes</label>
+                  <input 
+                    type="number" 
+                    min="0" 
+                    max="59"
+                    placeholder="0"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-200" 
+                    value={manualForwardMinutes} 
+                    onChange={e => setManualForwardMinutes(e.target.value)} 
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-4">
+                <Button 
+                  type="button" 
+                  onClick={() => setIsForwardModalOpen(false)} 
+                  className="flex-1 bg-gray-100 text-gray-800 hover:bg-gray-200"
+                >
+                  Cancel
+                </Button>
+                <Button 
+                  type="button" 
+                  onClick={confirmManualForward} 
+                  disabled={isForwarding}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700"
+                >
+                  {isForwarding ? 'Processing...' : 'Confirm'}
+                </Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
 
       {/* Create User Modal - Replaced Sidebar Form */}
       {isCreateUserModalOpen && (
@@ -3455,12 +4288,12 @@ export const AdminDashboard: React.FC = () => {
                       </div>
                     )}
 
-                    {/* Current Bond Remaining */}
+                    {/* Total Remaining Time */}
                     <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
                       <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">
-                        {bondInfo.currentBond ? `${bondInfo.currentBond.type} Bond Remaining` : 'Total Remaining'}
+                        Total Bond Remaining
                       </p>
-                      <p className="text-xl font-bold text-emerald-900">{bondInfo.currentBondRemaining?.display || bondInfo.totalRemaining.display}</p>
+                      <p className="text-xl font-bold text-emerald-900">{bondInfo.totalRemaining.display}</p>
                     </div>
 
                     {/* Current Salary/Stipend */}

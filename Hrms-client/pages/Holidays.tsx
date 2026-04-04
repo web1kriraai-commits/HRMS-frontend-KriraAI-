@@ -50,6 +50,16 @@ export const Holidays: React.FC = () => {
     return Array.from(years).sort((a, b) => b - a); // Most recent first
   }, [companyHolidays]);
 
+  // Total Real Holidays (absolute total in system)
+  const totalRealCount = companyHolidays.length;
+
+  // Real Holidays for the selected year
+  const yearRealCount = useMemo(() => {
+    if (!yearFilter) return totalRealCount;
+    const year = parseInt(yearFilter);
+    return companyHolidays.filter(h => new Date(h.date).getFullYear() === year).length;
+  }, [companyHolidays, yearFilter]);
+
   // Filter holidays based on selected filters and add Sundays for complete weeks
   const filteredHolidays = useMemo(() => {
     let filtered = [...companyHolidays];
@@ -269,11 +279,9 @@ export const Holidays: React.FC = () => {
           <div className="text-right">
             <div className="bg-purple-50 border border-purple-200 rounded-xl px-6 py-4">
               <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide">Total Holidays</p>
-              <p className="text-3xl font-bold text-purple-700 mt-1">{filteredHolidays.length}</p>
+              <p className="text-3xl font-bold text-purple-700 mt-1">{yearRealCount}</p>
               <p className="text-xs text-purple-600 mt-1">
-                {companyHolidays.length !== filteredHolidays.length
-                  ? `of ${companyHolidays.length} total`
-                  : 'in system'}
+                {yearFilter ? `in ${yearFilter}` : 'in system'}
               </p>
             </div>
           </div>
@@ -360,7 +368,7 @@ export const Holidays: React.FC = () => {
               </span>
             </div>
             <div className="text-xs text-gray-500">
-              Total: <span className="font-semibold">{filteredHolidays.length}</span> holiday(s)
+              Total: <span className="font-semibold">{yearRealCount}</span> {yearFilter ? `holiday(s) in ${yearFilter}` : 'holiday(s)'}
             </div>
           </div>
         </div>

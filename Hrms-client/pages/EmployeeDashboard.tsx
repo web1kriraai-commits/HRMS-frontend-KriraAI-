@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
-import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats } from '../services/utils';
-import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw } from 'lucide-react';
+import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate } from '../services/utils';
+import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
@@ -50,6 +50,12 @@ const getTotalPaidLeaves = (user?: User | null) => {
   return user?.paidLeaveAllocation || 0;
 };
 
+const formatDisplayDays = (val: number) => {
+  if (typeof val !== 'number') return val;
+  // Format to 2 decimals max, removing trailing zeros
+  return Math.round(val * 100) / 100;
+};
+
 export const EmployeeDashboard: React.FC = () => {
   const { auth, attendanceRecords, clockIn, clockOut, startBreak, endBreak, requestLeave, leaveRequests, notifications, companyHolidays, systemSettings, refreshData, updateLeaveStatus } = useApp();
   const user = auth.user;
@@ -58,6 +64,7 @@ export const EmployeeDashboard: React.FC = () => {
   const [elapsed, setElapsed] = useState(0);
   const [breakElapsed, setBreakElapsed] = useState(0); // Break duration timer
   const [todayRecord, setTodayRecord] = useState(attendanceRecords.find(r => r.userId === user?.id && r.date === getTodayStr()));
+  const [isResolvingAbsence, setIsResolvingAbsence] = useState(false);
   const [showNotificationsPopup, setShowNotificationsPopup] = useState(false);
   // Local state to track check-in time immediately when clicked
   const [localCheckInTime, setLocalCheckInTime] = useState<Date | null>(null);
@@ -79,6 +86,16 @@ export const EmployeeDashboard: React.FC = () => {
   const [manualMinutesInput, setManualMinutesInput] = useState('');
   const [manualNoteInput, setManualNoteInput] = useState('');
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
+  const [showCheckoutRequestModal, setShowCheckoutRequestModal] = useState(false);
+  const [checkoutRequestNote, setCheckoutRequestNote] = useState('');
+  const [isSubmittingCheckoutRequest, setIsSubmittingCheckoutRequest] = useState(false);
+
+  // Overtime Request States
+  const [showOvertimeModal, setShowOvertimeModal] = useState(false);
+  const [overtimeReason, setOvertimeReason] = useState('');
+  const [overtimeMinutes, setOvertimeMinutes] = useState<number>(0);
+  const [overtimeTargetDate, setOvertimeTargetDate] = useState<string | null>(null);
+  const [isSubmittingOvertime, setIsSubmittingOvertime] = useState(false);
 
   // On mount: if page was reloaded (refresh), auto-cancel any lingering Pause break
   useEffect(() => {
@@ -222,6 +239,20 @@ export const EmployeeDashboard: React.FC = () => {
 
   // Handler for ending break
   const handleEndBreak = useCallback(async () => {
+    // ENFORCE 20 MINUTE BREAK (1200 seconds)
+    if (breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled) {
+      const remainingSecs = Math.ceil(1200 - breakElapsed);
+      const remainingMins = Math.ceil(remainingSecs / 60);
+      setConfirmationPopup({
+        show: true,
+        title: '⚠️ Break Progress',
+        message: `Mandatory Break Policy: You must take at least 20 minutes of break. Please wait ${remainingMins} more minute(s).`,
+        onConfirm: () => setConfirmationPopup(null),
+        onCancel: () => setConfirmationPopup(null),
+      });
+      return;
+    }
+
     setLocalBreakStartTime(null);
     try {
       await endBreak();
@@ -234,7 +265,7 @@ export const EmployeeDashboard: React.FC = () => {
       setConfirmationPopup(null); // Close the popup even on error
       throw error;
     }
-  }, [endBreak, activeBreakStartTime]);
+  }, [endBreak, activeBreakStartTime, breakElapsed]);
 
   const handleAddManualHours = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -261,6 +292,23 @@ export const EmployeeDashboard: React.FC = () => {
     }
   };
 
+  const handleRequestEarlyCheckout = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!checkoutRequestNote.trim()) return;
+    setIsSubmittingCheckoutRequest(true);
+    try {
+      await attendanceAPI.requestEarlyCheckout(checkoutRequestNote.trim());
+      setShowCheckoutRequestModal(false);
+      setCheckoutRequestNote('');
+      await refreshData();
+      alert('Early checkout request sent successfully.');
+    } catch (err: any) {
+      alert(err.message || 'Failed to send early checkout request.');
+    } finally {
+      setIsSubmittingCheckoutRequest(false);
+    }
+  };
+
   // Leave Form State
   const [leaveForm, setLeaveForm] = useState({
     start: '',
@@ -280,6 +328,8 @@ export const EmployeeDashboard: React.FC = () => {
 
 
   const myLeaves = leaveRequests.filter(l => l.userId === user?.id);
+  const myNotifications = notifications.filter(n => n.userId === user?.id);
+  const myAttendanceHistory = attendanceRecords.filter(r => r.userId === user?.id).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // Check if user is on approved leave today
   const today = getTodayStr();
@@ -332,38 +382,74 @@ export const EmployeeDashboard: React.FC = () => {
   const [leaveFilterDate, setLeaveFilterDate] = useState('');
   const [leaveFilterMonth, setLeaveFilterMonth] = useState('');
 
+  // Move these up to fix ReferenceErrors in helper functions and initial render logic
+  const holidayDateSet = useMemo(() => new Set(
+    companyHolidays.map(h => {
+      const dateStr = typeof h.date === 'string' ? h.date : new Date(h.date).toISOString().split('T')[0];
+      return dateStr.split('T')[0];
+    })
+  ), [companyHolidays]);
+
+  const attendanceMap = useMemo(() => {
+    const map = new Map();
+    myAttendanceHistory.forEach(record => {
+      const dateStr = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
+      map.set(dateStr, record);
+    });
+    return map;
+  }, [myAttendanceHistory]);
+
+  const approvedLeaveDates = useMemo(() => {
+    const set = new Set();
+    myLeaves.filter(l => {
+      const status = (l.status || '').trim();
+      return status === 'Approved' || status === LeaveStatus.APPROVED;
+    }).forEach(l => {
+      let curr = new Date(l.startDate);
+      const end = new Date(l.endDate);
+      while (curr <= end) {
+        set.add(curr.toISOString().split('T')[0]);
+        curr.setDate(curr.getDate() + 1);
+      }
+    });
+    return set;
+  }, [myLeaves]);
+
   // Month filter for Time Summary card — default to current month
   const [timeSummaryMonth, setTimeSummaryMonth] = useState<string>(
     `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`
   );
 
   // Calculate working days (excluding Sundays and holidays) between two dates
-  const calculateLeaveDays = (startDateStr: string, endDateStr: string) => {
+  const calculateLeaveDays = (startDateStr: string, endDateStr: string, limitStart?: Date, limitEnd?: Date) => {
     if (!startDateStr || !endDateStr) return 0;
 
     const start = new Date(startDateStr);
     const end = new Date(endDateStr);
     if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
-
     if (start > end) return 0;
 
-    // Create a Set of holiday dates for quick lookup (format: YYYY-MM-DD)
-    const holidayDates = new Set(
-      companyHolidays.map(holiday => {
-        const holidayDate = new Date(holiday.date);
-        return holidayDate.toISOString().split('T')[0];
-      })
-    );
-
     let days = 0;
-    const current = new Date(start);
+    let current = new Date(start);
+    
+    // Apply bounds if provided
+    if (limitStart && current < limitStart) {
+      current = new Date(limitStart);
+      current.setHours(0, 0, 0, 0);
+    }
+    
+    let stopDate = new Date(end);
+    if (limitEnd && stopDate > limitEnd) {
+      stopDate = new Date(limitEnd);
+      stopDate.setHours(23, 59, 59, 999);
+    }
 
-    while (current <= end) {
+    while (current <= stopDate) {
       const dayOfWeek = current.getDay(); // 0 = Sunday
       const dateStr = current.toISOString().split('T')[0];
 
-      // Exclude Sundays and holidays
-      if (dayOfWeek !== 0 && !holidayDates.has(dateStr)) {
+      // Exclude Sundays and holidays using the memoized holidayDateSet
+      if (dayOfWeek !== 0 && !holidayDateSet.has(dateStr)) {
         days += 1;
       }
       current.setDate(current.getDate() + 1);
@@ -414,6 +500,12 @@ export const EmployeeDashboard: React.FC = () => {
     return diffMinutes / 60; // Convert to hours
   };
 
+  // Compute overtime history (approved/pending/rejected requests)
+  const overtimeHistory = useMemo(() => {
+    return myAttendanceHistory.filter(r => r.overtimeRequest && r.overtimeRequest.status && r.overtimeRequest.status !== 'None')
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [myAttendanceHistory]);
+
   // Compute leaves to show based on date/month filters
   const leavesForPeriod = (() => {
     // If month filter selected, show leaves overlapping that month (any year)
@@ -457,7 +549,13 @@ export const EmployeeDashboard: React.FC = () => {
   });
 
   const totalLeaveDays = statusFilteredLeaves.reduce((sum, leave) => {
-    return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+    let limitStart, limitEnd;
+    if (leaveFilterMonth) {
+      const [y, m] = leaveFilterMonth.split('-').map(Number);
+      limitStart = new Date(y, m - 1, 1);
+      limitEnd = new Date(y, m, 0, 23, 59, 59);
+    }
+    return sum + calculateLeaveDays(leave.startDate, leave.endDate, limitStart, limitEnd);
   }, 0);
 
   // Calculate used paid leaves (only approved ones)
@@ -535,8 +633,6 @@ export const EmployeeDashboard: React.FC = () => {
   const availablePaidLeaves = TOTAL_PAID_LEAVES - usedPaidLeaves;
   const isPaidLeaveExhausted = availablePaidLeaves <= 0;
 
-  const myNotifications = notifications.filter(n => n.userId === user?.id);
-  const myAttendanceHistory = attendanceRecords.filter(r => r.userId === user?.id).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // Show notifications popup only once per user per latest notification batch
   useEffect(() => {
@@ -600,23 +696,36 @@ export const EmployeeDashboard: React.FC = () => {
   let totalLowTimeSeconds = 0;
   let totalExtraTimeSeconds = 0;
 
-  // Build a Set of holiday dates (YYYY-MM-DD) for fast lookup
-  // Use h.date directly to avoid timezone shift issues (new Date() would shift IST dates)
-  const holidayDateSet = new Set(
-    companyHolidays.map(h => {
-      // h.date is stored as YYYY-MM-DD — use directly to avoid UTC/IST shift
-      const dateStr = typeof h.date === 'string' ? h.date : new Date(h.date).toISOString().split('T')[0];
-      return dateStr.split('T')[0]; // Ensure we only use the date portion
-    })
-  );
 
-  currentMonthAttendance.forEach(record => {
-    if (record.totalWorkedSeconds > 0 || (record.checkIn && !record.checkOut)) {
+
+  // Iterate through all days of the month until today
+  const [year, month] = timeSummaryMonth.split('-').map(Number);
+  const startDate = new Date(year, month - 1, 1);
+  const lastOfMonth = new Date(year, month, 0);
+  const nowDay = new Date();
+  const endDate = lastOfMonth < nowDay ? lastOfMonth : nowDay;
+
+  const firstCheckInDate = myAttendanceHistory
+    .filter(r => r.checkIn)
+    .sort((a, b) => {
+      const d1 = typeof a.date === 'string' && !a.date.includes('T') ? a.date : getLocalISOString(new Date(a.date));
+      const d2 = typeof b.date === 'string' && !b.date.includes('T') ? b.date : getLocalISOString(new Date(b.date));
+      return d1.localeCompare(d2);
+    })[0]?.date;
+
+  for (let iter = new Date(startDate); iter <= endDate; iter.setDate(iter.getDate() + 1)) {
+    const dateStr = getLocalISOString(iter);
+    const dayOfWeek = iter.getDay(); // 0 = Sunday
+    const isHolidayDay = holidayDateSet.has(dateStr);
+    const record = attendanceMap.get(dateStr);
+    const hasApprovedLeave = approvedLeaveDates.has(dateStr);
+
+    // Case 1: Existing record (worked, partial, or zero-worked with penalty)
+    if (record) {
       const netWorkedRaw = record.totalWorkedSeconds || 0;
-      const attendanceDate = typeof record.date === 'string' ? record.date.split('T')[0] : record.date;
-      const isHolidayDay = holidayDateSet.has(attendanceDate);
-
-      // Late check-in penalty: only if check-in exists
+      // NOTE: totalWorkedSeconds already has penalty deducted by the backend
+      // (attendanceController stores: totalWorkedSeconds = worked - penaltySeconds)
+      // so we do NOT subtract penaltySeconds again here to avoid double-counting
       let effectiveWorkedSeconds = netWorkedRaw;
 
       // Check for approved Extra Time Leave (Full Day category) for this date
@@ -626,7 +735,7 @@ export const EmployeeDashboard: React.FC = () => {
         if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
         const leaveStart = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : leave.startDate;
         const leaveEnd = typeof leave.endDate === 'string' ? leave.endDate.split('T')[0] : leave.endDate;
-        return attendanceDate >= leaveStart && attendanceDate <= leaveEnd;
+        return dateStr >= leaveStart && dateStr <= leaveEnd;
       });
 
       if (extraTimeLeaveForDate) {
@@ -644,15 +753,30 @@ export const EmployeeDashboard: React.FC = () => {
         if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
         if (l.category !== LeaveCategory.HALF_DAY) return false;
         const leaveDate = typeof l.startDate === 'string' ? l.startDate.split('T')[0] : l.startDate;
-        return leaveDate === attendanceDate;
+        return leaveDate === dateStr;
       });
 
-      // Use unified calculation utility for consistency
-      const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(effectiveWorkedSeconds, hasApprovedHalfDay, isHolidayDay);
-      totalLowTimeSeconds += lowTimeSeconds;
+      const approvedOT = (record.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
+      const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(effectiveWorkedSeconds, hasApprovedHalfDay, isHolidayDay, approvedOT, dateStr);
+      // Only count low time if the day is finalized (has checkOut).
+      // This prevents "In Progress" sessions (today or past missed checkouts) 
+      // from showing a full deficit in the monthly summary.
+      if (record.checkOut) {
+        totalLowTimeSeconds += lowTimeSeconds;
+      }
       totalExtraTimeSeconds += extraTimeSeconds;
+    } 
+    // Case 2: Absent day (No record, no leave, not Sunday, not holiday)
+    else if (!record && !hasApprovedLeave && dayOfWeek !== 0 && !isHolidayDay) {
+      // This is an unexcused absence -> full deficit of 8.25h ONLY on or after effective date
+      // AND strictly before today (don't mark today as absent before it's over)
+      const todayStr = getTodayStr();
+      const absenceStart = getAbsenceStartDate(user, firstCheckInDate);
+      if (dateStr >= absenceStart && dateStr < todayStr) {
+        totalLowTimeSeconds += (8.25 * 3600);
+      }
     }
-  });
+  }
 
   // Calculate Extra Time Leave tracking
   // Calculate approved Extra Time Leave days (only approved ones)
@@ -683,8 +807,12 @@ export const EmployeeDashboard: React.FC = () => {
       return false;
     })
     .reduce((sum, leave) => {
+      const [year, month] = timeSummaryMonth.split('-').map(Number);
+      const mStart = new Date(year, month - 1, 1);
+      const mEnd = new Date(year, month, 0, 23, 59, 59);
+
       if (leave.category === LeaveCategory.EXTRA_TIME) {
-        return sum + calculateLeaveDays(leave.startDate, leave.endDate);
+        return sum + calculateLeaveDays(leave.startDate, leave.endDate, mStart, mEnd);
       } else if (leave.category === LeaveCategory.HALF_DAY) {
         // Half-day leaves count as 0.5 days for calculation
         return sum + 0.5;
@@ -720,8 +848,12 @@ export const EmployeeDashboard: React.FC = () => {
       return false;
     })
     .reduce((sum, leave) => {
+      const [year, month] = timeSummaryMonth.split('-').map(Number);
+      const mStart = new Date(year, month - 1, 1);
+      const mEnd = new Date(year, month, 0, 23, 59, 59);
+
       if (leave.category === LeaveCategory.EXTRA_TIME) {
-        // For extra time leave: (end time - start time) * number of days
+        // For extra time leave: (end time - start time) * number of days within boundary
         const hasTimeFields = leave.startTime && leave.endTime &&
           leave.startTime.trim() !== '' && leave.endTime.trim() !== '';
 
@@ -729,8 +861,8 @@ export const EmployeeDashboard: React.FC = () => {
           // Calculate hours per day: (end time - start time)
           const hoursPerDay = calculateHoursPerDay(leave.startTime, leave.endTime);
 
-          // Calculate number of days (excluding Sundays and holidays)
-          const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate);
+          // Calculate number of days (excluding Sundays and holidays) within boundary
+          const numberOfDays = calculateLeaveDays(leave.startDate, leave.endDate, mStart, mEnd);
 
           // Total hours = hours per day * number of days
           const totalHours = hoursPerDay * numberOfDays;
@@ -740,7 +872,7 @@ export const EmployeeDashboard: React.FC = () => {
           }
         }
         // Fallback to old calculation only if time fields are missing or invalid
-        return sum + (calculateLeaveDays(leave.startDate, leave.endDate) * 8.25);
+        return sum + (calculateLeaveDays(leave.startDate, leave.endDate, mStart, mEnd) * 8.25);
       } else if (leave.category === LeaveCategory.HALF_DAY) {
         // Half-day extra time leave: 4 hours
         return sum + 4;
@@ -748,30 +880,141 @@ export const EmployeeDashboard: React.FC = () => {
       return sum;
     }, 0);
 
-  // Convert manual adjustments for extra time from days to hours (8.25 base)
-  const manualExtraTimeAdjustmentHours = manualExtraAdjustment * 8.25;
-  const extraTimeLeaveHours = baseExtraTimeLeaveHours + manualExtraTimeAdjustmentHours;
+  // Forwarding: forwardedOut = time sent out from this month, forwardedIn = time received into this month
+  const forwardedOutSeconds = (user?.forwardedMonths?.[timeSummaryMonth] || 0);
+  const forwardedInSeconds = (user?.forwardedInMonths?.[timeSummaryMonth] || 0);
+  
+  // Display variables for UI cards (actual worked + forwarded in)
+  const displayLowTimeSeconds = totalLowTimeSeconds + (forwardedInSeconds < 0 ? Math.abs(forwardedInSeconds) : 0);
+  const displayExtraTimeSeconds = totalExtraTimeSeconds + (forwardedInSeconds > 0 ? forwardedInSeconds : 0);
 
-  // Calculate Final Time (net difference between extra time and low time)
-  const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds;
+  // extraTimeLeaveHours for balance subtraction (no global pool, uses per-month forwarding)
+  const extraTimeLeaveHours = baseExtraTimeLeaveHours;
+
+  // Calculate Final Time (net difference between extra time and low time - forwarded out + forwarded in)
+  // Formula: Net = (Extra - Low) - Sent + Prev
+  const finalTimeDifference = totalExtraTimeSeconds - totalLowTimeSeconds - forwardedOutSeconds + forwardedInSeconds;
+
+  // Identify all unresolved absences since ABSENCE_PENALTY_EFFECTIVE_DATE
+  const unresolvedAbsenceDates = useMemo(() => {
+    if (!user || isCheckedIn) return [];
+    
+    const absenceStart = getAbsenceStartDate(user, firstCheckInDate);
+    const start = new Date(absenceStart);
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    
+    // Create local sets for faster lookup
+    const localAttendanceSet = new Set(myAttendanceHistory.map(r => typeof r.date === 'string' ? r.date.split('T')[0] : r.date));
+    const localLeaveDateSet = new Set();
+    myLeaves.filter(l => {
+        const s = String(l.status || '').trim();
+        return s === 'Approved' || s === LeaveStatus.APPROVED || s === 'Pending' || s === LeaveStatus.PENDING;
+    }).forEach(l => {
+        let curr = new Date(l.startDate);
+        const end = new Date(l.endDate);
+        while(curr <= end) {
+            localLeaveDateSet.add(getLocalISOString(curr));
+            curr.setDate(curr.getDate() + 1);
+        }
+    });
+
+    const dates: string[] = [];
+    const iter = new Date(start);
+    while (iter <= yesterday) {
+        const dStr = getLocalISOString(iter);
+        const dayOfWeek = iter.getDay();
+        const isHoliday = holidayDateSet.has(dStr);
+        
+        if (dayOfWeek !== 0 && !isHoliday) {
+            if (!localAttendanceSet.has(dStr) && !localLeaveDateSet.has(dStr)) {
+                dates.push(dStr);
+            }
+        }
+        iter.setDate(iter.getDate() + 1);
+    }
+    return dates;
+  }, [user, myAttendanceHistory, myLeaves, holidayDateSet, isCheckedIn]);
+
+  const handleResolveAbsence = async (date: string, category: LeaveCategory) => {
+    if (!date || !user || isResolvingAbsence) return;
+
+    // Check if enough paid leaves available
+    if (category === LeaveCategory.PAID && availablePaidLeaves < 1) {
+      alert(`You do not have enough Paid Leave balance (Available: ${availablePaidLeaves}). Please use Extra Time or contact HR.`);
+      return;
+    }
+    
+    
+    setIsResolvingAbsence(true);
+    try {
+        const leaveData: any = {
+            userId: user.id,
+            startDate: date,
+            endDate: date,
+            category: category,
+            reason: `Resolution for unexcused absence on ${date}`,
+            status: 'Approved' // Self-resolve auto-approves
+        };
+        
+        if (category === LeaveCategory.EXTRA_TIME) {
+            // Standard 8.25h window for extra time resolution
+            leaveData.startTime = '09:00';
+            leaveData.endTime = '17:15';
+        }
+        
+        await leaveAPI.requestLeave(leaveData);
+        alert(`Successfully resolved absence for ${date} using ${category}.`);
+        await refreshData();
+    } catch (error: any) {
+        console.error('Error resolving absence:', error);
+        alert(error.message || 'Failed to resolve absence. Please contact HR.');
+    } finally {
+        setIsResolvingAbsence(false);
+    }
+  };
+
+  const handleOvertimeSubmit = async () => {
+    if (!overtimeReason.trim() || overtimeMinutes <= 0) {
+      alert('Please provide a reason and valid duration for overtime.');
+      return;
+    }
+
+    setIsSubmittingOvertime(true);
+    try {
+      await attendanceAPI.requestOvertime(overtimeReason.trim(), overtimeMinutes, overtimeTargetDate || undefined);
+      alert(`Overtime request submitted successfully${overtimeTargetDate ? ` for ${formatDate(overtimeTargetDate)}` : ''}. It will be added to your extra time once approved by Admin.`);
+      setShowOvertimeModal(false);
+      setOvertimeReason('');
+      setOvertimeMinutes(0);
+      setOvertimeTargetDate(null);
+      await refreshData();
+    } catch (error: any) {
+      console.error('Error submitting overtime request:', error);
+      alert(error.message || 'Failed to submit overtime request.');
+    } finally {
+      setIsSubmittingOvertime(false);
+    }
+  };
 
   // Extra Time Worked = Final Time (convert from seconds to hours)
   const extraTimeWorkedHours = finalTimeDifference / 3600;
 
-  // Remaining extra time balance (in hours)
-  const remainingExtraTimeLeaveHours = extraTimeWorkedHours - extraTimeLeaveHours;
+  // OLD LOGIC: Extra Time Leave Balance = Extra Time Worked (Final Time) - Extra Time Leave Taken
+  const extraTimeLeaveHoursTaken = baseExtraTimeLeaveHours;
+  const remainingExtraTimeBalanceHours = extraTimeWorkedHours - extraTimeLeaveHoursTaken;
 
   // At month end, if there's remaining balance, it should be added to low time
   const isMonthEnd = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const remainingExtraTimeLeaveSeconds = remainingExtraTimeLeaveHours * 3600;
+  const remainingExtraTimeLeaveSeconds = remainingExtraTimeBalanceHours * 3600;
 
   // If deficit at month end, adjust low time
-  const adjustedLowTimeSeconds = isMonthEnd && remainingExtraTimeLeaveHours < 0
+  const adjustedLowTimeSeconds = isMonthEnd && remainingExtraTimeBalanceHours < 0
     ? totalLowTimeSeconds + Math.abs(remainingExtraTimeLeaveSeconds)
     : totalLowTimeSeconds;
 
-  // Final time difference with adjusted low time
-  const finalTimeDifferenceAdjusted = totalExtraTimeSeconds - adjustedLowTimeSeconds;
+  // Final time difference with adjusted low time and forwarding (per-month, no global pool)
+  const finalTimeDifferenceAdjusted = totalExtraTimeSeconds - adjustedLowTimeSeconds - forwardedOutSeconds + forwardedInSeconds;
 
   // Chart Data: Last 7 days worked hours
   const chartData = myAttendanceHistory
@@ -1019,30 +1262,77 @@ export const EmployeeDashboard: React.FC = () => {
                 </div>
 
                 <div className="flex flex-col gap-3 w-full md:w-auto">
-                  {!isCheckedIn && !isCheckedOut && (
-                    <Button size="lg" onClick={() => {
-                      setConfirmationPopup({
-                        show: true,
-                        title: 'Confirm Check In',
-                        message: 'Are you sure you want to check in?',
-                        onConfirm: async () => {
-                          const checkInTime = new Date();
-                          setLocalCheckInTime(checkInTime);
-                          try {
-                            await clockIn();
-                            setConfirmationPopup(null);
-                          } catch (error) {
-                            // Reset on error
-                            setLocalCheckInTime(null);
-                            setConfirmationPopup(null);
-                            throw error;
-                          }
-                        },
-                        onCancel: () => setConfirmationPopup(null)
-                      });
-                    }} className="w-full md:w-48 h-14 text-lg shadow-lg shadow-blue-200">
-                      <Clock className="mr-2" /> Check In
-                    </Button>
+                  {unresolvedAbsenceDates.length > 0 && !isCheckedIn && !isCheckedOut ? (
+                    <div className="bg-rose-50 border border-rose-200 rounded-2xl p-6 w-full md:w-[600px] shadow-sm">
+                      <div className="flex items-start gap-4">
+                        <div className="h-12 w-12 rounded-full bg-rose-100 flex items-center justify-center shrink-0">
+                          <AlertCircle className="h-6 w-6 text-rose-600" />
+                        </div>
+                        <div className="flex-1">
+                          <h4 className="text-lg font-bold text-rose-900">Pending Absences Detected</h4>
+                          <p className="text-sm text-rose-700 mt-1 mb-4">
+                            You have {unresolvedAbsenceDates.length} unresolved absence{unresolvedAbsenceDates.length > 1 ? 's' : ''}. 
+                            Please resolve each to enable Check In.
+                          </p>
+                          
+                          <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                            {unresolvedAbsenceDates.map((date) => (
+                              <div key={date} className="bg-white/60 border border-rose-100 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                <span className="font-bold text-gray-800">{convertToDDMMYYYY(date)}</span>
+                                <div className="flex gap-2">
+                                  <Button 
+                                    size="sm"
+                                    variant="danger" 
+                                    className="text-[10px] h-9 px-3 font-bold"
+                                    onClick={() => handleResolveAbsence(date, LeaveCategory.PAID)}
+                                    disabled={isResolvingAbsence}
+                                  >
+                                    Paid Leave
+                                  </Button>
+                                  <Button 
+                                    size="sm"
+                                    variant="primary" 
+                                    className="text-[10px] h-9 px-3 font-bold bg-indigo-600 hover:bg-indigo-700"
+                                    onClick={() => handleResolveAbsence(date, LeaveCategory.EXTRA_TIME)}
+                                    disabled={isResolvingAbsence}
+                                  >
+                                    Extra Time
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      {!isCheckedIn && !isCheckedOut && (
+                        <Button size="lg" onClick={() => {
+                          setConfirmationPopup({
+                            show: true,
+                            title: 'Confirm Check In',
+                            message: 'Are you sure you want to check in?',
+                            onConfirm: async () => {
+                              const checkInTime = new Date();
+                              setLocalCheckInTime(checkInTime);
+                              try {
+                                await clockIn();
+                                setConfirmationPopup(null);
+                              } catch (error) {
+                                // Reset on error
+                                setLocalCheckInTime(null);
+                                setConfirmationPopup(null);
+                                throw error;
+                              }
+                            },
+                            onCancel: () => setConfirmationPopup(null)
+                          });
+                        }} className="w-full md:w-48 h-14 text-lg shadow-lg shadow-blue-200">
+                          <Clock className="mr-2" /> Check In
+                        </Button>
+                      )}
+                    </>
                   )}
 
                   {isCheckedIn && !isCheckedOut && (
@@ -1098,82 +1388,164 @@ export const EmployeeDashboard: React.FC = () => {
                             </div>
                             <Button
                               onClick={handleResumeMistake}
-                              className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl text-sm font-bold shadow-md active:scale-95 transition-all"
                             >
                               Resume Work
                             </Button>
                           </div>
                         ) : (
-                          <Button variant="success" onClick={() => {
-                            setConfirmationPopup({
-                              show: true,
-                              title: 'End Break',
-                              message: 'Are you sure you want to end your break?',
-                              onConfirm: handleEndBreak, // Use the new handler
-                              onCancel: () => setConfirmationPopup(null),
-                              customButtons: (
-                                <div className="flex space-x-2">
-                                  <Button
-                                    onClick={handleEndBreak}
-                                    className="bg-orange-500 hover:bg-orange-600 text-white"
-                                  >
-                                    End Break
-                                  </Button>
-                                  <Button
-                                    onClick={handleResumeMistake}
-                                    className="bg-gray-500 hover:bg-gray-600 text-white text-sm"
-                                    title="Click if you closed the tab by mistake"
-                                  >
-                                    Resume (Mistake)
-                                  </Button>
-                                </div>
-                              )
-                            });
-                          }} className="w-full animate-pulse">End Break</Button>
+                          <div className="flex flex-col w-full gap-2">
+                            <Button
+                              onClick={() => {
+                                if (breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled) {
+                                  setConfirmationPopup({
+                                    show: true,
+                                    title: '⚠️ Break Progress',
+                                    message: `Mandatory Break Policy: You must take at least 20 minutes of break. ${Math.ceil((1200 - breakElapsed) / 60)} minutes remaining.`,
+                                    onConfirm: () => setConfirmationPopup(null),
+                                    onCancel: () => setConfirmationPopup(null),
+                                  });
+                                  return;
+                                }
+                                setConfirmationPopup({
+                                  show: true,
+                                  title: 'End Break',
+                                  message: 'Are you sure you want to end your break?',
+                                  onConfirm: handleEndBreak,
+                                  onCancel: () => setConfirmationPopup(null),
+                                  customButtons: (
+                                    <div className="flex space-x-2">
+                                      <Button
+                                        onClick={handleEndBreak}
+                                        disabled={breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled}
+                                        className={`${(breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled) ? 'bg-slate-100 text-slate-400' : 'bg-orange-500 hover:bg-orange-600 text-white'}`}
+                                      >
+                                        End Break
+                                      </Button>
+                                      <Button
+                                        onClick={handleResumeMistake}
+                                        className="bg-gray-500 hover:bg-gray-600 text-white text-sm"
+                                        title="Click if you closed the tab by mistake"
+                                      >
+                                        Resume (Mistake)
+                                      </Button>
+                                    </div>
+                                  )
+                                });
+                              }}
+                              variant="secondary"
+                              className={`w-full font-extrabold flex flex-col items-center py-2.5 rounded-xl transition-all active:scale-95 border ${breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled
+                                ? 'bg-slate-100 text-slate-500 border-slate-200 cursor-not-allowed shadow-none'
+                                : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-500 shadow-md shadow-indigo-100'
+                                }`}
+                            >
+                              <span className="text-sm uppercase tracking-wide">End Break</span>
+                              {breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled && (
+                                <span className="text-[10px] font-bold mt-0.5 bg-slate-200 text-slate-600 px-2 py-0.5 rounded-md">
+                                  {Math.ceil((1200 - breakElapsed) / 60)}m remaining
+                                </span>
+                              )}
+                            </Button>
+                          </div>
                         )
                       ) : (
-                        <Button variant="danger" onClick={() => {
-                          setConfirmationPopup({
-                            show: true,
-                            title: '📋 Task Sheet Reminder',
-                            message: 'Have you updated your task sheet for today? Please make sure all your tasks are recorded before checking out.',
-                            onConfirm: async () => {
-                              try {
-                                await clockOut();
-                                setConfirmationPopup(null);
-                              } catch (error) {
-                                setConfirmationPopup(null);
-                                throw error;
-                              }
-                            },
-                            onCancel: () => setConfirmationPopup(null),
-                            customButtons: (
-                              <div className="flex gap-3 justify-end w-full">
-                                <Button
-                                  variant="secondary"
-                                  onClick={() => setConfirmationPopup(null)}
-                                >
-                                  No, Go Back
-                                </Button>
-                                <Button
-                                  variant="danger"
-                                  onClick={async () => {
+                        /* CHECKOUT LOGIC: Mandatory 8h 15m (29700 seconds) */
+                        <div className="w-full flex flex-col gap-2">
+                          {/* Request Overtime Button (shows after 8h 22m) */}
+                          {isCheckedIn && !isCheckedOut && !isOnBreak && elapsed >= 30120 && (!todayRecord?.overtimeRequest || todayRecord.overtimeRequest.status === 'None') && (
+                            <Button
+                              onClick={() => setShowOvertimeModal(true)}
+                              className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-xl shadow-lg shadow-indigo-100 transition-all active:scale-95 uppercase tracking-widest text-xs flex items-center justify-center gap-2 mb-1"
+                            >
+                              <Clock size={16} /> Request Overtime
+                            </Button>
+                          )}
+
+                          {(elapsed >= 29700) || todayRecord?.earlyLogoutRequest === 'Approved' ? (
+                            <Button
+                              variant="danger"
+                              onClick={() => {
+                                setConfirmationPopup({
+                                  show: true,
+                                  title: '📋 Task Sheet Reminder',
+                                  message: 'Have you updated your task sheet for today? Please make sure all your tasks are recorded before checking out.',
+                                  onConfirm: async () => {
+                                    // MANDATORY 20-MINUTE BREAK CHECK
+                                    const standardBreaks = todayRecord?.breaks?.filter(b => b.type === 'Standard' && b.end) || [];
+                                    const hasCompletedFullBreak = standardBreaks.some(b => {
+                                      const duration = Math.floor((new Date(b.end).getTime() - new Date(b.start).getTime()) / 1000);
+                                      return duration >= 1200; // 20 minutes
+                                    });
+
+                                    if (!hasCompletedFullBreak && !todayRecord?.isCompulsoryBreakDisabled && todayRecord?.earlyLogoutRequest !== 'Approved') {
+                                      setConfirmationPopup({
+                                        show: true,
+                                        title: '⚠️ Break Policy Alert',
+                                        message: 'Mandatory Break Policy: You must take at least 20 minutes of standard break before checking out. Please take a break or contact an admin to exempt you.',
+                                        onConfirm: () => setConfirmationPopup(null),
+                                        onCancel: () => setConfirmationPopup(null),
+                                      });
+                                      return;
+                                    }
+
                                     try {
                                       await clockOut();
                                       setConfirmationPopup(null);
-                                    } catch (error) {
-                                      setConfirmationPopup(null);
-                                      throw error;
+                                    } catch (error: any) {
+                                      setConfirmationPopup({
+                                        show: true,
+                                        title: '❌ Checkout Failed',
+                                        message: error.message || 'An error occurred while checking out. Please try again.',
+                                        onConfirm: () => setConfirmationPopup(null),
+                                        onCancel: () => setConfirmationPopup(null),
+                                      });
                                     }
-                                  }}
+                                  },
+                                  onCancel: () => setConfirmationPopup(null)
+                                });
+                              }}
+                              className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-4 rounded-xl shadow-lg shadow-rose-100 transition-all active:scale-95"
+                            >
+                              Check Out
+                            </Button>
+                          ) : (
+                            <div className="w-full flex flex-col gap-2">
+                              {/* If shift is complete but break is missing, notify user */}
+                              {elapsed >= 29700 && !hasStandardBreak && (
+                                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl mb-1 text-center">
+                                  <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest block">Break Required</span>
+                                  <span className="text-[10px] font-bold text-amber-500">Take your mandatory 20-minute break before checkout.</span>
+                                </div>
+                              )}
+
+                              {todayRecord?.earlyLogoutRequest === 'Pending' ? (
+                                <div className="flex flex-col items-center justify-center p-4 bg-amber-50 border border-amber-100 rounded-xl">
+                                  <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Logout Req Pending</span>
+                                  <div className="flex items-center gap-1.5 mt-1">
+                                    <RotateCcw size={10} className="animate-spin text-amber-500" />
+                                    <span className="text-[10px] font-bold text-amber-500">Waiting for Admin</span>
+                                  </div>
+                                </div>
+                              ) : todayRecord?.earlyLogoutRequest === 'Rejected' ? (
+                                <Button
+                                  onClick={() => setShowCheckoutRequestModal(true)}
+                                  className="w-full py-4 bg-rose-100/50 text-rose-600 border-2 border-rose-100 font-black rounded-xl hover:bg-rose-100/80 transition-all uppercase tracking-widest text-xs"
                                 >
-                                  Yes, Check Out
+                                  Request Rejected - Re-Apply
                                 </Button>
-                              </div>
-                            )
-                          });
-                        }} className="w-full">Check Out</Button>
-                      )}
+                              ) : (
+                                <Button
+                                  onClick={() => setShowCheckoutRequestModal(true)}
+                                  className="w-full py-4 bg-slate-900 border border-slate-800 text-white font-black rounded-xl hover:bg-black shadow-lg shadow-slate-200 transition-all active:scale-95 uppercase tracking-widest text-xs"
+                                >
+                                  Early Checkout Request
+                                </Button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                      }
 
                       {/* Extra Break Reason Input Modal */}
                       {showExtraBreakReasonInput && (
@@ -1449,6 +1821,17 @@ export const EmployeeDashboard: React.FC = () => {
                 return;
               }
 
+              // Check if requested extra time leave days exceed available balance (using hours)
+              if (leaveForm.type === LeaveCategory.EXTRA_TIME) {
+                const requestedDays = calculateLeaveDays(leaveForm.start, leaveForm.end);
+                const requestedHours = requestedDays * 8.25;
+
+                if (requestedHours > remainingExtraTimeBalanceHours) {
+                  alert(`Requested Extra Time Leave exceeds your remaining balance (${formatHoursToHoursMinutes(remainingExtraTimeBalanceHours)}). Please work more extra time to increase your balance.`);
+                  return;
+                }
+              }
+
               // Check if requested paid leave days exceed available balance
               if (leaveForm.type === LeaveCategory.PAID) {
                 const requestedDays = calculateLeaveDays(leaveForm.start, leaveForm.end);
@@ -1681,70 +2064,56 @@ export const EmployeeDashboard: React.FC = () => {
               </div>
             </Card>
 
-            {/* Extra Time Leave Balance */}
-            {extraTimeLeaveDays > 0 && (
+            {/* Extra Time Leave Balance Restored UI */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 gap-4 mb-4">
               <Card title="Extra Time Leave Balance" className="h-fit">
-                <div className={`p-4 rounded-lg border ${remainingExtraTimeLeaveHours < 0
-                  ? 'bg-rose-50 border-rose-100'
-                  : remainingExtraTimeLeaveHours > 0
-                    ? 'bg-emerald-50 border-emerald-100'
-                    : 'bg-gray-50 border-gray-100'
-                  }`}>
+                <div className={`p-4 rounded-lg border ${remainingExtraTimeBalanceHours < 0 
+                  ? 'bg-orange-50 border-orange-100' 
+                  : 'bg-green-50 border-green-100'}`}>
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Extra Time Balance</p>
-                      <p className="text-xs text-gray-600 mt-1">
-                        {remainingExtraTimeLeaveHours >= 0
-                          ? 'Your net surplus of extra time'
-                          : 'Extra work needed to compensate for leaves'}
-                      </p>
+                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Remaining Extra Time</p>
+                      <p className="text-xs text-gray-600 mt-1">You must work extra time to compensate for Extra Time Leave</p>
                     </div>
                     <div className="text-right">
-                      <p className={`text-3xl font-bold ${remainingExtraTimeLeaveHours < 0 ? 'text-rose-700' :
-                        remainingExtraTimeLeaveHours > 0 ? 'text-emerald-700' : 'text-gray-400'
-                        }`}>
-                        {formatHoursToHoursMinutes(remainingExtraTimeLeaveHours)}
+                      <p className={`text-3xl font-bold ${remainingExtraTimeBalanceHours < 0 ? 'text-orange-700' : 'text-green-700'}`}>
+                        {formatHoursToHoursMinutes(remainingExtraTimeBalanceHours)}
                       </p>
-                      <p className="text-xs text-gray-500 mt-1">
-                        {remainingExtraTimeLeaveHours >= 0 ? 'Surplus' : 'Deficit'}
-                      </p>
+                      <p className="text-xs text-gray-500 mt-1">Remaining</p>
                     </div>
                   </div>
+                  
                   <div className="mt-3 space-y-2">
                     <div className="flex justify-between text-xs">
                       <span className="text-gray-600">Extra Time Leave Taken:</span>
-                      <span className="font-semibold text-gray-800">{formatHoursToHoursMinutes(extraTimeLeaveHours)}</span>
+                      <span className="font-semibold text-gray-800">{formatHoursToHoursMinutes(extraTimeLeaveHoursTaken)}</span>
                     </div>
                     <div className="flex justify-between text-xs">
                       <span className="text-gray-600">Extra Time Worked (Final Time):</span>
                       <span className="font-semibold text-gray-800">
-                        {extraTimeWorkedHours >= 0 ? '+' : ''}{formatHoursToHoursMinutes(Math.abs(extraTimeWorkedHours))}
+                        {extraTimeWorkedHours >= 0 ? '+' : ''}{formatHoursToHoursMinutes(extraTimeWorkedHours)}
                       </span>
                     </div>
                     <div className="flex justify-between text-xs">
                       <span className="text-gray-600">Remaining Balance:</span>
-                      <span className={`font-semibold ${remainingExtraTimeLeaveHours < 0 ? 'text-rose-700' :
-                        remainingExtraTimeLeaveHours > 0 ? 'text-emerald-700' : 'text-gray-400'
-                        }`}>
-                        {formatHoursToHoursMinutes(remainingExtraTimeLeaveHours)}
+                      <span className={`font-semibold ${remainingExtraTimeBalanceHours < 0 ? 'text-orange-700' : 'text-green-700'}`}>
+                        {formatHoursToHoursMinutes(remainingExtraTimeBalanceHours)}
                       </span>
                     </div>
                   </div>
-                  {remainingExtraTimeLeaveHours < 0 && isMonthEnd && (
-                    <div className="mt-3 p-2 bg-red-100 rounded border border-red-200">
-                      <p className="text-xs font-semibold text-red-700">
-                        ⚠️ Month end: {formatHoursToHoursMinutes(Math.abs(remainingExtraTimeLeaveHours))} will be added to Low Time
+
+                  {remainingExtraTimeBalanceHours < 0 && (
+                    <div className={`mt-3 p-2 rounded border ${isMonthEnd ? 'bg-red-100 border-red-200' : 'bg-orange-100 border-orange-200'}`}>
+                      <p className={`text-xs font-semibold ${isMonthEnd ? 'text-red-700' : 'text-orange-700'}`}>
+                        {isMonthEnd 
+                          ? `⚠️ Month end: ${formatHoursToHoursMinutes(Math.abs(remainingExtraTimeBalanceHours))} will be added to Low Time`
+                          : `⚠️ Deficit: Work ${formatHoursToHoursMinutes(Math.abs(remainingExtraTimeBalanceHours))} extra to compensate`
+                        }
                       </p>
                     </div>
                   )}
-                  {remainingExtraTimeLeaveHours < 0 && !isMonthEnd && (
-                    <div className="mt-3 p-2 bg-rose-100 rounded border border-rose-200">
-                      <p className="text-xs font-semibold text-rose-700">
-                        ⚠️ Deficit: Work {formatHoursToHoursMinutes(Math.abs(remainingExtraTimeLeaveHours))} extra to compensate
-                      </p>
-                    </div>
-                  )}
-                  {remainingExtraTimeLeaveHours <= 0 && (
+                  
+                  {remainingExtraTimeBalanceHours >= 0 && (
                     <div className="mt-3 p-2 bg-green-100 rounded border border-green-200">
                       <p className="text-xs font-semibold text-green-700">
                         ✅ All Extra Time Leave compensated!
@@ -1753,16 +2122,16 @@ export const EmployeeDashboard: React.FC = () => {
                   )}
                 </div>
               </Card>
-            )}
+            </div>
 
             {/* Current Month Time Statistics */}
             <Card
-              title={`Time Summary (${selectedMonthLabel})`}
-              className="h-fit"
+              title={`Time Performance (${selectedMonthLabel})`}
+              className="h-fit bg-gradient-to-br from-white to-slate-50/30"
               action={
                 <input
                   type="month"
-                  className="text-xs bg-white border border-gray-200 text-gray-700 px-2 py-1 rounded-lg ml-2"
+                  className="text-[10px] bg-slate-50 border border-slate-200 text-slate-700 px-2 py-1 rounded-lg ml-2 font-bold focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                   value={timeSummaryMonth}
                   max={`${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`}
                   onChange={e => setTimeSummaryMonth(e.target.value)}
@@ -1772,49 +2141,65 @@ export const EmployeeDashboard: React.FC = () => {
             >
               <div className="space-y-4">
                 {/* Total Low Time */}
-                <div className="p-4 bg-red-50 rounded-lg border border-red-100">
+                <div className="p-4 bg-rose-50/50 rounded-2xl border border-rose-100/60 shadow-sm transition-transform hover:scale-[1.01]">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-xs font-semibold text-red-700 uppercase tracking-wide">Total Low Time</p>
-                      <p className="text-xs text-red-600 mt-1">Time less than 8:15</p>
-                      {isMonthEnd && remainingExtraTimeLeaveHours > 0 && (
-                        <p className="text-xs text-orange-600 mt-1 font-semibold">
-                          + {formatDurationStyled(remainingExtraTimeLeaveSeconds)} (uncompleted Extra Time Leave)
+                      <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest">Total Low Time</p>
+                      <p className="text-[9px] text-rose-400 font-bold mt-0.5">Threshold: &lt; 8h 15m</p>
+                      {isMonthEnd && remainingExtraTimeBalanceHours > 0 && (
+                        <p className="text-xs text-orange-600 mt-2 font-bold flex items-center gap-1">
+                          <AlertCircle size={12} />
+                          + {formatDurationStyled(remainingExtraTimeLeaveSeconds)} (C/O)
                         </p>
                       )}
                     </div>
                     <div className="text-right">
-                      <p className="text-2xl font-bold text-red-700">{formatDurationStyled(adjustedLowTimeSeconds)}</p>
+                      <p className="text-2xl font-black text-rose-600 tabular-nums">{formatDurationStyled(displayLowTimeSeconds)}</p>
+                      {forwardedInSeconds < 0 && (
+                        <p className="text-[9px] text-rose-500 font-bold italic mt-0.5 animate-pulse">
+                          (Incl. {formatHoursToHoursMinutes(Math.abs(forwardedInSeconds) / 3600)} forwarded)
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
 
                 {/* Total Extra Time */}
-                <div className="p-4 bg-green-50 rounded-lg border border-green-100">
+                <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-100/60 shadow-sm transition-transform hover:scale-[1.01]">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-xs font-semibold text-green-700 uppercase tracking-wide">Total Extra Time</p>
-                      <p className="text-xs text-green-600 mt-1">Time more than 8:22</p>
+                      <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Total Extra Time</p>
+                      <p className="text-[9px] text-emerald-400 font-bold mt-0.5">Threshold: &gt; 8h 22m</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-2xl font-bold text-green-700">{formatDurationStyled(totalExtraTimeSeconds)}</p>
+                      <p className="text-2xl font-black text-emerald-600 tabular-nums">{formatDurationStyled(displayExtraTimeSeconds)}</p>
+                      {forwardedInSeconds > 0 && (
+                        <p className="text-[9px] text-emerald-500 font-bold italic mt-0.5 animate-pulse">
+                          (Incl. {formatHoursToHoursMinutes(forwardedInSeconds / 3600)} forwarded)
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
 
                 {/* Final Time Difference */}
-                <div className={`p-4 rounded-lg border ${finalTimeDifferenceAdjusted >= 0 ? 'bg-blue-50 border-blue-100' : 'bg-orange-50 border-orange-100'}`}>
+                <div className={`p-4 rounded-2xl border shadow-sm transition-all ${finalTimeDifferenceAdjusted >= 0 ? 'bg-indigo-50/50 border-indigo-100/60' : 'bg-orange-50/50 border-orange-100/60'}`}>
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: finalTimeDifferenceAdjusted >= 0 ? '#1e40af' : '#ea580c' }}>
-                        Final Time
+                      <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: finalTimeDifferenceAdjusted >= 0 ? '#4338ca' : '#ea580c' }}>
+                        Net Performance
                       </p>
-                      <p className="text-xs mt-1" style={{ color: finalTimeDifferenceAdjusted >= 0 ? '#2563eb' : '#f97316' }}>
-                        {finalTimeDifferenceAdjusted >= 0 ? 'Extra - Low' : 'Low - Extra'}
+                      <p className="text-[8px] font-bold opacity-70 mt-0.5" style={{ color: finalTimeDifferenceAdjusted >= 0 ? '#4338ca' : '#ea580c' }}>
+                        Extra - (ETL + Low) - Sent + Prev
                       </p>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <span className="text-[9px] font-bold opacity-60" style={{ color: finalTimeDifferenceAdjusted >= 0 ? '#4338ca' : '#ea580c' }}>
+                          {finalTimeDifferenceAdjusted >= 0 ? 'Surplus Balance' : 'Current Deficit'}
+                        </span>
+                      </div>
                     </div>
                     <div className="text-right">
-                      <p className={`text-2xl font-bold ${finalTimeDifferenceAdjusted >= 0 ? 'text-blue-700' : 'text-orange-700'}`}>
+                      <p className={`text-2xl font-black tabular-nums ${finalTimeDifferenceAdjusted >= 0 ? 'text-indigo-600' : 'text-orange-600'}`}>
                         {finalTimeDifferenceAdjusted >= 0 ? '+' : '-'}{formatDurationStyled(Math.abs(finalTimeDifferenceAdjusted))}
                       </p>
                     </div>
@@ -1822,7 +2207,7 @@ export const EmployeeDashboard: React.FC = () => {
                 </div>
 
                 {currentMonthAttendance.length === 0 && (
-                  <p className="text-xs text-gray-400 text-center py-2">No attendance records for this month</p>
+                  <p className="text-[10px] text-slate-400 text-center py-2 font-bold uppercase tracking-widest italic">No attendance records</p>
                 )}
               </div>
             </Card>
@@ -1851,6 +2236,75 @@ export const EmployeeDashboard: React.FC = () => {
             </Card>
           </div>
         </div>
+
+        {/* Overtime Request History */}
+        {overtimeHistory.length > 0 && (
+          <Card title="My Overtime Commitments" className="w-full border-indigo-100 bg-indigo-50/5">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left text-gray-500">
+                <thead className="text-xs text-indigo-700 uppercase bg-indigo-50/50 border-b">
+                  <tr>
+                    <th className="px-4 py-3">Date</th>
+                    <th className="px-4 py-3">Requested</th>
+                    <th className="px-4 py-3">Fulfillment</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {overtimeHistory.map(r => {
+                    const req = r.overtimeRequest!;
+                    const isApproved = req.status === 'Approved';
+                    const isRejected = req.status === 'Rejected';
+                    const isPending = req.status === 'Pending';
+                    
+                    // Calculate fulfillment for approved requests
+                    const actualOTMinutes = isApproved ? Math.max(0, Math.floor(((r.totalWorkedSeconds || 0) - 30120) / 60)) : 0;
+                    
+                    let fulfillmentDisplay = '--';
+                    if (isApproved && r.checkOut) {
+                        const percent = Math.min(100, Math.round((actualOTMinutes / req.durationMinutes) * 100));
+                        fulfillmentDisplay = `${actualOTMinutes}m / ${req.durationMinutes}m (${percent}%)`;
+                    } else if (isApproved && !r.checkOut && isCheckedIn && r.date === getTodayStr()) {
+                        fulfillmentDisplay = 'In Progress';
+                    }
+
+                    return (
+                      <tr key={r.id} className="bg-white border-b hover:bg-indigo-50/30 transition-colors">
+                        <td className="px-4 py-3 font-bold text-gray-900">{formatDate(r.date)}</td>
+                        <td className="px-4 py-3 font-mono text-indigo-600 font-bold">{req.durationMinutes}m</td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-medium text-gray-700">{fulfillmentDisplay}</span>
+                            {isApproved && r.checkOut && (
+                               <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                  <div 
+                                    className={`h-full ${actualOTMinutes >= req.durationMinutes ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                                    style={{ width: `${Math.min(100, (Math.max(0, Math.floor((r.totalWorkedSeconds - 30120) / 60)) / req.durationMinutes) * 100)}%` }}
+                                  />
+                               </div>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`px-2.5 py-1 text-[10px] rounded-lg font-black uppercase tracking-tight border
+                            ${isPending ? 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse' :
+                              isApproved ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                              'bg-rose-50 text-rose-700 border-rose-200'}`}>
+                            {req.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-gray-500 italic max-w-xs truncate" title={req.reason}>
+                          "{req.reason}"
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
 
         {/* Attendance History Table (FR20) */}
         <Card title="My Attendance History" className="w-full">
@@ -1933,7 +2387,28 @@ export const EmployeeDashboard: React.FC = () => {
                           ) : isHolidayWorkDay && r.checkIn && r.checkOut ? (
                             <span className="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full font-semibold">Holiday OT</span>
                           ) : (() => {
-                            const effectiveWorked = r.totalWorkedSeconds || 0;
+                            // Sync logic with summary cards (Subtract penalty, Add Extra Time Leave credits)
+                            const netWorkedRaw = r.totalWorkedSeconds || 0;
+                            let effectiveWorked = Math.max(0, netWorkedRaw - (r.penaltySeconds || 0));
+
+                            // Find approved Extra Time Leave for this date
+                            const extraTimeLeaveForDate = myLeaves.find(leave => {
+                              const status = (leave.status || '').trim();
+                              if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+                              if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
+                              const leaveStart = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : leave.startDate;
+                              const leaveEnd = typeof leave.endDate === 'string' ? leave.endDate.split('T')[0] : leave.endDate;
+                              return r.date >= leaveStart && r.date <= leaveEnd;
+                            });
+
+                            if (extraTimeLeaveForDate) {
+                              if (extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
+                                const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
+                                effectiveWorked += leaveHours * 3600;
+                              } else {
+                                effectiveWorked += 8.25 * 3600;
+                              }
+                            }
 
                             // Use half-day threshold if applicable
                             const MIN_NORMAL = halfDayLeave ? (255 * 60) : ((8 * 3600) + (15 * 60)); // 4h15m or 8h15m
@@ -1946,7 +2421,24 @@ export const EmployeeDashboard: React.FC = () => {
                                   {halfDayLeave && (
                                     <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
                                   )}
+                                  {extraTimeLeaveForDate && (
+                                    <span className="text-[10px] font-bold text-blue-600 uppercase tracking-tight">Extra Time Leave Credit</span>
+                                  )}
                                   <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-bold">+{formatDuration(diff)}</span>
+                                  
+                                  {/* Retrospective Overtime Request Button */}
+                                  {(!r.overtimeRequest || r.overtimeRequest.status === 'None') && (
+                                    <button
+                                      onClick={() => {
+                                        setOvertimeTargetDate(r.date);
+                                        setOvertimeMinutes(Math.max(0, Math.floor((effectiveWorked - MAX_NORMAL) / 60)));
+                                        setShowOvertimeModal(true);
+                                      }}
+                                      className="mt-1 text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-lg hover:bg-indigo-100 font-black uppercase tracking-tight transition-all active:scale-95"
+                                    >
+                                      Request OT
+                                    </button>
+                                  )}
                                 </div>
                               );
                             } else if (effectiveWorked < MIN_NORMAL) {
@@ -1955,6 +2447,9 @@ export const EmployeeDashboard: React.FC = () => {
                                 <div className="flex flex-col gap-1 items-center">
                                   {halfDayLeave && (
                                     <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
+                                  )}
+                                  {extraTimeLeaveForDate && (
+                                    <span className="text-[10px] font-bold text-blue-600 uppercase tracking-tight">Extra Time Leave Applied</span>
                                   )}
                                   <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full font-bold">-{formatDuration(diff)}</span>
                                 </div>
@@ -1965,7 +2460,24 @@ export const EmployeeDashboard: React.FC = () => {
                                   {halfDayLeave && (
                                     <span className="text-[10px] font-bold text-purple-600 uppercase tracking-tight">Leave: 04:00:00</span>
                                   )}
+                                  {extraTimeLeaveForDate && (
+                                    <span className="text-[10px] font-bold text-blue-600 uppercase tracking-tight">Extra Time Leave Applied</span>
+                                  )}
                                   <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full font-semibold">Normal</span>
+                                  
+                                  {/* Retrospective Overtime Request Button (for edge cases where precisely at threshold) */}
+                                  {effectiveWorked >= MAX_NORMAL && (!r.overtimeRequest || r.overtimeRequest.status === 'None') && (
+                                    <button
+                                      onClick={() => {
+                                        setOvertimeTargetDate(r.date);
+                                        setOvertimeMinutes(1); // Default to 1 min if precisely at 8:22
+                                        setShowOvertimeModal(true);
+                                      }}
+                                      className="mt-1 text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-lg hover:bg-indigo-100 font-black uppercase tracking-tight transition-all active:scale-95"
+                                    >
+                                      Request OT
+                                    </button>
+                                  )}
                                 </div>
                               );
                             }
@@ -2121,6 +2633,168 @@ export const EmployeeDashboard: React.FC = () => {
           )}
         </Card>
       </div>
-    </div >
+      {/* Early Checkout Request Modal */}
+      {showCheckoutRequestModal && (
+        <>
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100]" onClick={() => setShowCheckoutRequestModal(false)} />
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-sm z-[101] animate-scale-in px-4">
+          <Card className="border-none shadow-2xl relative overflow-hidden" bodyClassName="p-0">
+            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-rose-400 via-rose-500 to-rose-600" />
+            
+            <button 
+              onClick={() => setShowCheckoutRequestModal(false)}
+              className="absolute top-4 right-4 p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all"
+            >
+              <X size={18} />
+            </button>
+
+            <div className="p-8">
+              <div className="flex flex-col items-center text-center mb-6">
+                <div className="w-14 h-14 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mb-4 shadow-sm border border-rose-100">
+                  <AlertCircle size={28} />
+                </div>
+                <h3 className="text-xl font-bold text-slate-900 tracking-tight">Early Checkout Request</h3>
+                <div className="mt-2 text-sm text-slate-500 leading-relaxed px-2">
+                  Standard shift completion requires <span className="font-bold text-slate-900">8 hours and 15 minutes</span>. 
+                  Please specify your reason for an early checkout.
+                </div>
+              </div>
+
+              <form onSubmit={handleRequestEarlyCheckout} className="space-y-6">
+                <div className="relative group">
+                  <textarea
+                    value={checkoutRequestNote}
+                    onChange={(e) => setCheckoutRequestNote(e.target.value)}
+                    placeholder="Describe your reason here (e.g. Health issue, Family emergency...)"
+                    required
+                    className="w-full p-4 bg-slate-50/50 border-2 border-slate-100 rounded-2xl text-sm focus:ring-4 focus:ring-blue-100 focus:border-blue-500 transition-all resize-none min-h-[120px] outline-none group-hover:border-slate-200"
+                  />
+                  <div className="absolute bottom-3 right-3 text-[10px] text-slate-400 font-medium">
+                    {checkoutRequestNote.length} characters
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <Button
+                    type="button"
+                    onClick={() => setShowCheckoutRequestModal(false)}
+                    variant="secondary"
+                    className="flex-1 font-bold py-3.5 rounded-xl border border-slate-200"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    disabled={isSubmittingCheckoutRequest || !checkoutRequestNote.trim()}
+                    className="flex-1 font-bold py-3.5 rounded-xl shadow-xl shadow-blue-200 group relative overflow-hidden"
+                  >
+                    <span className="relative z-10 flex items-center justify-center gap-2">
+                      {isSubmittingCheckoutRequest ? (
+                        <>
+                          <RotateCcw className="animate-spin -ml-1 mr-2" size={18} />
+                          Processing...
+                        </>
+                      ) : (
+                        'Send Request'
+                      )}
+                    </span>
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </Card>
+          </div>
+        </>
+      )}
+
+      {/* Overtime Request Modal */}
+      {showOvertimeModal && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/50 z-[110] animate-fade-in"
+            onClick={() => {
+              if (!isSubmittingOvertime) {
+                setShowOvertimeModal(false);
+                setOvertimeTargetDate(null);
+              }
+            }}
+          />
+          <div className="fixed inset-0 z-[111] flex items-center justify-center px-4 animate-scale-in">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8 border border-indigo-100">
+              <div className="flex items-center gap-4 mb-6">
+                <div className="h-12 w-12 rounded-xl bg-indigo-100 flex items-center justify-center relative">
+                  <Clock className="text-indigo-600" size={24} />
+                  {overtimeTargetDate && (
+                    <div className="absolute -top-1 -right-1 bg-indigo-600 text-white rounded-full p-0.5 border-2 border-white">
+                      <Calendar size={10} />
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-gray-900 leading-tight">
+                    {overtimeTargetDate ? `Request for ${formatDate(overtimeTargetDate)}` : 'Request Overtime'}
+                  </h3>
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mt-0.5">Formal Approval Workflow</p>
+                </div>
+              </div>
+
+              <div className="space-y-5">
+                <div>
+                  <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1.5 ml-1">
+                    Overtime Duration (Minutes)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      value={overtimeMinutes || ''}
+                      onChange={(e) => setOvertimeMinutes(parseInt(e.target.value) || 0)}
+                      placeholder="e.g. 60"
+                      className="w-full h-12 bg-gray-50 border-2 border-gray-100 rounded-xl px-4 text-sm font-bold focus:bg-white focus:border-indigo-500 transition-all outline-none"
+                    />
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] font-black text-gray-400 uppercase">
+                      min
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1.5 ml-1">
+                    Reason for Overtime
+                  </label>
+                  <textarea
+                    value={overtimeReason}
+                    onChange={(e) => setOvertimeReason(e.target.value)}
+                    placeholder="Describe why overtime was needed..."
+                    className="w-full p-4 bg-gray-50 border-2 border-gray-100 rounded-xl text-sm font-medium focus:bg-white focus:border-indigo-500 transition-all outline-none resize-none"
+                    rows={4}
+                  />
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    className="flex-1 h-12 rounded-xl font-bold text-gray-600 border-2 border-gray-100 hover:bg-gray-50 transition-colors"
+                    onClick={() => {
+                      setShowOvertimeModal(false);
+                      setOvertimeTargetDate(null);
+                    }}
+                    disabled={isSubmittingOvertime}
+                  >
+                    Discard
+                  </button>
+                  <button
+                    className="flex-1 h-12 rounded-xl font-black bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-100 disabled:opacity-50 transition-all"
+                    onClick={handleOvertimeSubmit}
+                    disabled={isSubmittingOvertime || !overtimeReason.trim() || overtimeMinutes <= 0}
+                  >
+                    {isSubmittingOvertime ? 'Sending...' : 'Submit Request'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   );
 };

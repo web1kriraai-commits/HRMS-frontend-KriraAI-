@@ -202,7 +202,7 @@ export const attendanceAPI = {
     });
   },
 
-  adminCreateOrUpdate: async (data: { userId: string; date: string; checkIn?: string; checkOut?: string; breakDurationMinutes?: number; notes?: string; isPenaltyDisabled?: boolean }) => {
+  adminCreateOrUpdate: async (data: { userId: string; date: string; checkIn?: string; checkOut?: string; breakDurationMinutes?: number; notes?: string; isPenaltyDisabled?: boolean; isCompulsoryBreakDisabled?: boolean }) => {
     return apiRequest('/attendance/admin-create', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -232,6 +232,33 @@ export const attendanceAPI = {
     return apiRequest('/attendance/admin/bulk-manual-hours', {
       method: 'POST',
       body: JSON.stringify({ date, hours, note, department }),
+    });
+  },
+  requestEarlyCheckout: async (note: string) => {
+    return apiRequest('/attendance/request-early-checkout', {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    });
+  },
+  reviewEarlyCheckout: async (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => {
+    return apiRequest(`/attendance/admin/review-early-checkout/${recordId}`, {
+      method: 'POST',
+      body: JSON.stringify({ status, adminNote }),
+    });
+  },
+  requestOvertime: async (reason: string, durationMinutes: number, date?: string) => {
+    return apiRequest('/attendance/request-overtime', {
+      method: 'POST',
+      body: JSON.stringify({ reason, durationMinutes, date }),
+    });
+  },
+  getPendingOvertime: async () => {
+    return apiRequest('/attendance/admin/pending-overtime');
+  },
+  reviewOvertime: async (recordId: string, status: 'Approved' | 'Rejected') => {
+    return apiRequest(`/attendance/admin/review-overtime/${recordId}`, {
+      method: 'POST',
+      body: JSON.stringify({ status }),
     });
   },
 };
@@ -324,6 +351,9 @@ export const userAPI = {
       endDate: string;
       isPartialMonth: boolean;
     }>;
+    lastForwardedMonth?: string;
+    forwardedMonths?: Record<string, number>;
+    forwardedInMonths?: Record<string, number>;
     paidLeaveAction?: 'set' | 'add';
   }) => {
     return apiRequest(`/users/${id}`, {

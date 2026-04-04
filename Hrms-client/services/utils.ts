@@ -1,4 +1,4 @@
-import { Attendance, Bond, Break } from '../types';
+import { Attendance, Bond, Break, User } from '../types';
 
 // Business Rules
 // BR1: Low Time < 8:15 (495 mins), Extra Time > 8:22 (502 mins)
@@ -11,6 +11,8 @@ const HALF_DAY_LOW_THRESHOLD_MINUTES = 255; // (8h 15m - 4h) = 4h 15m
 const HALF_DAY_EXTRA_THRESHOLD_MINUTES = 262; // (8h 22m - 4h) = 4h 22m
 export const PENALTY_EFFECTIVE_DATE = '2026-03-01';
 export const LATE_PENALTY_SECONDS = 900; // 15 minutes
+export const ABSENCE_PENALTY_EFFECTIVE_DATE = '2026-04-06';
+export const OVERTIME_POLICY_EFFECTIVE_DATE = '2026-04-06';
 
 export const isLateCheckIn = (isoStr?: string): boolean => {
   if (!isoStr) return false;
@@ -27,6 +29,38 @@ export const isPenaltyEffective = (dateStr: string): boolean => {
   // Handle both ISO strings and YYYY-MM-DD
   const dateStrSimple = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr;
   return dateStrSimple >= PENALTY_EFFECTIVE_DATE;
+};
+
+/**
+ * DETERMINES THE START DATE FOR ABSENCE PENALTIES
+ * Rules (Revised 2026-04-04):
+ * 1. Pre-recorded (before 2026-04-06): Absence tracking starts exactly on 2026-04-06.
+ * 2. New Joiner (on/after 2026-04-06): Absence tracking starts from their FIRST check-in date.
+ *    If they haven't checked in yet, absence doesn't apply (return far future date).
+ */
+export const getAbsenceStartDate = (user?: User | null, firstCheckInDate?: string): string => {
+  let refStr: string;
+  
+  if (user?.joiningDate) {
+    refStr = convertToYYYYMMDD(user.joiningDate);
+  } else if (user?.createdAt) {
+    refStr = user.createdAt.split('T')[0];
+  } else {
+    return ABSENCE_PENALTY_EFFECTIVE_DATE;
+  }
+
+  // Rule 1: Joined before cutoff -> Tracking starts AT cutoff
+  if (refStr < ABSENCE_PENALTY_EFFECTIVE_DATE) {
+    return ABSENCE_PENALTY_EFFECTIVE_DATE;
+  }
+  
+  // Rule 2: Joined on/after cutoff -> Tracking starts from first actual check-in
+  if (firstCheckInDate) {
+    return firstCheckInDate;
+  }
+  
+  // If not checked in yet, tracking hasn't started for this user
+  return '9999-12-31';
 };
 
 /**
@@ -78,39 +112,65 @@ export const calculateWorkedSeconds = (attendance: Attendance, checkOutTime?: st
   return Math.max(0, totalSession - totalBreaks);
 };
 
-export const getFlags = (workedSeconds: number, isHalfDayApproved: boolean) => {
+export const getFlags = (workedSeconds: number, isHalfDayApproved: boolean, approvedOvertimeMinutes: number = 0) => {
   const workedMinutes = workedSeconds / 60;
 
   // If Half-Day, use adjusted threshold (Standard - 4h leave)
   const lowThreshold = isHalfDayApproved ? HALF_DAY_LOW_THRESHOLD_MINUTES : LOW_TIME_THRESHOLD_MINUTES;
   const extraThreshold = isHalfDayApproved ? HALF_DAY_EXTRA_THRESHOLD_MINUTES : EXTRA_TIME_THRESHOLD_MINUTES;
+  
+  // COMMITMENT RULE: Approved Overtime increases the target for extra work, 
+  // but Low Time is only triggered if work is below the standard minimum.
+  const targetMinutes = extraThreshold + approvedOvertimeMinutes;
 
   return {
     lowTime: workedMinutes > 0 && workedMinutes < lowThreshold,
-    extraTime: workedMinutes > extraThreshold
+    extraTime: approvedOvertimeMinutes > 0 && workedMinutes > extraThreshold
   };
 };
 
 /**
  * Calculates deficit (low time) and surplus (extra time) in seconds.
- * Deficit = Threshold - Worked (if Worked < Threshold)
- * Surplus = Worked - Threshold (if Worked > Threshold)
+ * 
+ * Rules:
+ * 1. Before OVERTIME_POLICY_EFFECTIVE_DATE: Extra time is granted for all work above threshold.
+ * 2. On/After OVERTIME_POLICY_EFFECTIVE_DATE: Extra time requires approved overtime request.
  */
-export const calculateDailyTimeStats = (effectiveWorkedSeconds: number, isHalfDayApproved: boolean, isHoliday: boolean) => {
+export const calculateDailyTimeStats = (effectiveWorkedSeconds: number, isHalfDayApproved: boolean, isHoliday: boolean, approvedOvertimeMinutes: number = 0, dateStr?: string) => {
   if (isHoliday) {
     return { lowTimeSeconds: 0, extraTimeSeconds: effectiveWorkedSeconds };
   }
 
   const lowThresholdSec = (isHalfDayApproved ? HALF_DAY_LOW_THRESHOLD_MINUTES : LOW_TIME_THRESHOLD_MINUTES) * 60;
   const extraThresholdSec = (isHalfDayApproved ? HALF_DAY_EXTRA_THRESHOLD_MINUTES : EXTRA_TIME_THRESHOLD_MINUTES) * 60;
-
+  
   let lowTimeSeconds = 0;
   let extraTimeSeconds = 0;
 
-  if (effectiveWorkedSeconds > 0 && effectiveWorkedSeconds < lowThresholdSec) {
-    lowTimeSeconds = lowThresholdSec - effectiveWorkedSeconds;
-  } else if (effectiveWorkedSeconds > extraThresholdSec) {
-    extraTimeSeconds = effectiveWorkedSeconds - extraThresholdSec;
+  // Deficit calculation: only against standard lower bound (not target)
+  if (effectiveWorkedSeconds < lowThresholdSec) {
+    // If they haven't started working, don't show full deficit
+    if (effectiveWorkedSeconds > 0) {
+      lowTimeSeconds = lowThresholdSec - effectiveWorkedSeconds;
+    } else {
+      lowTimeSeconds = lowThresholdSec;
+    }
+  } 
+  
+  if (effectiveWorkedSeconds > extraThresholdSec) {
+    const actualExtraSec = effectiveWorkedSeconds - extraThresholdSec;
+    
+    // Policy rule: Approved overtime request is required from April 6th onwards
+    const isPrePolicy = dateStr && dateStr < OVERTIME_POLICY_EFFECTIVE_DATE;
+    
+    if (isPrePolicy) {
+      // Before policy: give full extra time surplus
+      extraTimeSeconds = actualExtraSec;
+    } else if (approvedOvertimeMinutes > 0) {
+      // After policy: only if approved, capped by approved amount
+      const maxApprovedSec = approvedOvertimeMinutes * 60;
+      extraTimeSeconds = Math.min(actualExtraSec, maxApprovedSec);
+    }
   }
 
   return { lowTimeSeconds, extraTimeSeconds };
@@ -158,11 +218,72 @@ export const formatTime = (isoStr?: string, timeZone: string = 'Asia/Kolkata'): 
   }
 };
 
-export const getTodayStr = () => new Date().toISOString().split('T')[0];
+export const getTodayStr = () => getLocalISOString(new Date());
+
+/**
+ * Returns YYYY-MM-DD in local time
+ */
+export const getLocalISOString = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Calculate working days (excluding Sundays and holidays) between two dates
+export const calculateLeaveDays = (startDateStr: string, endDateStr: string, holidayDateSet: Set<string>, limitStart?: Date, limitEnd?: Date): number => {
+  if (!startDateStr || !endDateStr) return 0;
+
+  const start = new Date(startDateStr);
+  const end = new Date(endDateStr);
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
+
+  // Ensure start <= end
+  if (start > end) return 0;
+
+  let days = 0;
+  let current = new Date(start);
+  
+  // Apply bounds if provided
+  if (limitStart && current < limitStart) {
+    current = new Date(limitStart);
+    current.setHours(0, 0, 0, 0);
+  }
+  
+  let stopDate = new Date(end);
+  if (limitEnd && stopDate > limitEnd) {
+    stopDate = new Date(limitEnd);
+    stopDate.setHours(23, 59, 59, 999);
+  }
+
+  while (current <= stopDate) {
+    const dayOfWeek = current.getDay(); // 0 = Sunday
+    const dateStr = getLocalISOString(current);
+
+    // Exclude Sundays and holidays using the provided holidayDateSet
+    if (dayOfWeek !== 0 && !holidayDateSet.has(dateStr)) {
+      days += 1;
+    }
+    current.setDate(current.getDate() + 1);
+  }
+
+  return days;
+};
 
 // Convert date from yyyy-mm-dd (HTML date input) to dd-mm-yyyy format
-export const convertToDDMMYYYY = (dateStr: string): string => {
+export const convertToDDMMYYYY = (dateStr: string | Date): string => {
   if (!dateStr) return '';
+  
+  // If it's already a Date object, format it directly
+  if (dateStr instanceof Date) {
+    const day = String(dateStr.getDate()).padStart(2, '0');
+    const month = String(dateStr.getMonth() + 1).padStart(2, '0');
+    const year = dateStr.getFullYear();
+    return `${day}-${month}-${year}`;
+  }
+
+  if (typeof dateStr !== 'string') return String(dateStr);
+
   if (dateStr.match(/^\d{2}-\d{2}-\d{4}$/)) {
     // Already in dd-mm-yyyy format
     return dateStr;
@@ -188,15 +309,24 @@ export const convertToDDMMYYYY = (dateStr: string): string => {
 };
 
 // Convert date from dd-mm-yyyy to yyyy-mm-dd (for HTML date input)
-export const convertToYYYYMMDD = (dateStr: string): string => {
+export const convertToYYYYMMDD = (dateStr: string | Date): string => {
   if (!dateStr) return '';
+  
+  if (dateStr instanceof Date) {
+    return dateStr.toISOString().split('T')[0];
+  }
+
+  if (typeof dateStr !== 'string') return String(dateStr);
+
   if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
     // Already in yyyy-mm-dd format
     return dateStr;
   }
-  if (dateStr.match(/^\d{2}-\d{2}-\d{4}$/)) {
-    // Convert from dd-mm-yyyy to yyyy-mm-dd
-    const [day, month, year] = dateStr.split('-');
+  const dmYMatch = dateStr.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+  if (dmYMatch) {
+    const day = dmYMatch[1];
+    const month = dmYMatch[2];
+    const year = dmYMatch[3];
     return `${year}-${month}-${day}`;
   }
   // Try to parse as Date
@@ -212,14 +342,29 @@ export const convertToYYYYMMDD = (dateStr: string): string => {
 };
 
 // Parse dd-mm-yyyy date to Date object
-export const parseDDMMYYYY = (dateStr: string): Date | null => {
+export const parseDDMMYYYY = (dateStr: string | Date): Date | null => {
   if (!dateStr) return null;
+  if (dateStr instanceof Date) return dateStr;
+  
+  if (typeof dateStr !== 'string') return new Date(dateStr);
+
   try {
-    if (dateStr.match(/^\d{2}-\d{2}-\d{4}$/)) {
-      const [day, month, year] = dateStr.split('-');
-      return new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+    const dmYMatch = dateStr.match(/^(\d{2})[-/](\d{2})[-/](\d{2,4})$/);
+    if (dmYMatch) {
+      const day = parseInt(dmYMatch[1]);
+      const month = parseInt(dmYMatch[2]);
+      const yearStr = dmYMatch[3];
+      let year = parseInt(yearStr);
+      // Handle 2-digit years
+      if (yearStr.length === 2) {
+        year += year < 50 ? 2000 : 1900;
+      }
+      return new Date(year, month - 1, day);
     }
-    return new Date(dateStr);
+    // Try standard ISO parsing
+    const isoDate = new Date(dateStr);
+    if (!isNaN(isoDate.getTime())) return isoDate;
+    return null;
   } catch {
     return null;
   }
@@ -262,19 +407,22 @@ export const calculateBondRemaining = (bonds?: Bond[], joiningDate?: string) => 
     const bond = sortedBonds[i];
     let bondStartDate: Date;
 
-    // First bond starts from joining date (or bond.startDate if provided)
-    if (i === 0) {
-      bondStartDate = parseDDMMYYYY(bond.startDate) || joiningDateObj || today;
+    // Prioritize manual start date if provided
+    const manualStartDate = parseDDMMYYYY(bond.startDate);
+    
+    if (manualStartDate && !isNaN(manualStartDate.getTime())) {
+      bondStartDate = manualStartDate;
+    } else if (i === 0) {
+      // First bond falls back to joining date if no manual start date
+      bondStartDate = joiningDateObj || today;
+    } else if (cumulativeStartDate && !isNaN(cumulativeStartDate.getTime())) {
+      // Subsequent bonds start from previous bond's end date + 1 day if no manual start date
+      bondStartDate = new Date(cumulativeStartDate);
+      bondStartDate.setDate(bondStartDate.getDate() + 1);
+      bondStartDate.setHours(0, 0, 0, 0);
     } else {
-      // Subsequent bonds start from previous bond's end date + 1 day
-      if (cumulativeStartDate) {
-        bondStartDate = new Date(cumulativeStartDate);
-        bondStartDate.setDate(bondStartDate.getDate() + 1); // Add 1 day
-        bondStartDate.setHours(0, 0, 0, 0);
-      } else {
-        // Fallback to joining date if no previous bond
-        bondStartDate = joiningDateObj || today;
-      }
+      // Fallback
+      bondStartDate = today;
     }
 
     // Calculate end date
@@ -396,36 +544,18 @@ export const calculateBondRemaining = (bonds?: Bond[], joiningDate?: string) => 
     totalDisplay = 'Completed';
   }
 
-  // Calculate first completion bond date (end date of the first bond that will complete)
+  // Calculate final completion date (end date of the last bond in the sequence)
   let firstCompletionDate: Date | null = null;
   let firstCompletionBondType: string | null = null;
+  
   if (allBondsInfo.length > 0) {
-    // Find the first bond that is not expired
-    for (const bond of allBondsInfo) {
-      if (bond.endDate && !bond.remaining.isExpired) {
-        firstCompletionDate = bond.endDate;
-        firstCompletionBondType = bond.type;
-        break;
-      }
-    }
-    // If all bonds are expired, get the last bond
-    if (!firstCompletionDate && allBondsInfo.length > 0) {
-      const lastBond = allBondsInfo[allBondsInfo.length - 1];
-      if (lastBond.endDate) {
-        firstCompletionDate = lastBond.endDate;
-        firstCompletionBondType = lastBond.type;
-      }
-    }
+    const lastBond = allBondsInfo[allBondsInfo.length - 1];
+    firstCompletionDate = lastBond.endDate;
+    firstCompletionBondType = lastBond.type;
   }
 
   // Calculate finish date (end date of the last bond) - for backward compatibility
-  let finishDate: Date | null = null;
-  if (allBondsInfo.length > 0) {
-    const lastBond = allBondsInfo[allBondsInfo.length - 1];
-    if (lastBond.endDate) {
-      finishDate = lastBond.endDate;
-    }
-  }
+  let finishDate = firstCompletionDate;
 
   // Calculate current bond remaining time (only for the active bond, not total)
   let currentBondRemainingMonths = 0;

@@ -46,7 +46,10 @@ interface AppContextType {
     aadhaarNumber?: string; 
     guardianName?: string; 
     mobileNumber?: string; 
-    guardianMobileNumber?: string 
+    guardianMobileNumber?: string;
+    lastForwardedMonth?: string;
+    forwardedMonths?: Record<string, number>;
+    forwardedInMonths?: Record<string, number>;
   }) => Promise<void>;
 
   // Admin/HR Actions
@@ -55,7 +58,10 @@ interface AppContextType {
   autoAddSundays: () => Promise<void>;
   exportReports: (filters?: { start?: string; end?: string; department?: string }) => Promise<void>;
   updateSystemSettings: (settings: Partial<SystemSettings>) => Promise<void>;
-
+  reviewEarlyCheckout: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
+  pendingOvertimeRequests: Attendance[];
+  reviewOvertime: (recordId: string, status: 'Approved' | 'Rejected') => Promise<void>;
+  
   // Refresh functions
   refreshData: (silent?: boolean) => Promise<void>;
 }
@@ -102,7 +108,12 @@ const transformUser = (apiUser: any): User => ({
     isPaid: s.isPaid || false,
     paidAt: s.paidAt,
     paidBy: s.paidBy
-  })) : undefined
+  })) : undefined,
+  lastForwardedMonth: apiUser.lastForwardedMonth,
+  forwardedMonths: apiUser.forwardedMonths,
+  forwardedInMonths: apiUser.forwardedInMonths,
+  createdAt: apiUser.createdAt,
+  updatedAt: apiUser.updatedAt
 });
 
 // Helper to transform API attendance to frontend Attendance type
@@ -142,8 +153,12 @@ const transformAttendance = (apiAttendance: any): Attendance => {
     lateCheckIn: late,
     isManualFlag: apiAttendance.isManualFlag || false,
     isPenaltyDisabled: penaltyDisabled,
+    isCompulsoryBreakDisabled: !!apiAttendance.isCompulsoryBreakDisabled,
     notes: apiAttendance.notes,
-    manualHours: apiAttendance.manualHours || []
+    manualHours: apiAttendance.manualHours || [],
+    earlyLogoutRequest: apiAttendance.earlyLogoutRequest || 'None',
+    earlyLogoutRequestNote: apiAttendance.earlyLogoutRequestNote,
+    overtimeRequest: apiAttendance.overtimeRequest
   };
 };
 
@@ -215,6 +230,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [companyHolidays, setCompanyHolidays] = useState<CompanyHoliday[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [pendingOvertimeRequests, setPendingOvertimeRequests] = useState<Attendance[]>([]);
   const [systemSettings, setSystemSettings] = useState<SystemSettings>({ timezone: 'Asia/Kolkata' });
   const [loading, setLoading] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -247,14 +263,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ? api.leaveAPI.getAllLeaves().catch(() => [])
         : (auth.user?.id ? api.leaveAPI.getLeavesByUserId(auth.user.id).catch(() => []) : Promise.resolve([]));
 
-      const [usersData, attendanceHistory, leavesData, holidaysData, notifsData, settingsData] = await Promise.all([
+      const [usersData, attendanceHistory, leavesData, holidaysData, notifsData, settingsData, overtimeData] = await Promise.all([
         api.userAPI.getAllUsers().catch(() => []),
         attendancePromise,
         leavesPromise,
         api.holidayAPI.getHolidays().catch(() => []),
         api.notificationAPI.getMyNotifications().catch(() => []),
-        api.settingsAPI.getSettings().catch(() => ({ timezone: 'Asia/Kolkata' }))
-      ]) as [any[], any[], any[], any[], any[], any];
+        api.settingsAPI.getSettings().catch(() => ({ timezone: 'Asia/Kolkata' })),
+        isHRorAdmin ? api.attendanceAPI.getPendingOvertime().catch(() => []) : Promise.resolve([])
+      ]) as [any[], any[], any[], any[], any[], any, any[]];
 
       const transformedUsers = (Array.isArray(usersData) ? usersData : []).map(transformUser);
       setUsers(transformedUsers);
@@ -290,6 +307,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setCompanyHolidays((Array.isArray(holidaysData) ? holidaysData : []).map(transformHoliday));
       setNotifications((Array.isArray(notifsData) ? notifsData : []).map(transformNotification));
       setSystemSettings({ timezone: (settingsData as any)?.timezone || 'Asia/Kolkata' });
+      setPendingOvertimeRequests((Array.isArray(overtimeData) ? overtimeData : []).map(transformAttendance));
 
       // Load audit logs if admin
       if (auth.user?.role === Role.ADMIN) {
@@ -644,6 +662,33 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const reviewEarlyCheckout = async (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string): Promise<void> => {
+    try {
+      const data = await api.attendanceAPI.reviewEarlyCheckout(recordId, status, adminNote);
+      setAttendanceRecords(prev => prev.map(r =>
+        r.id === recordId ? transformAttendance(data) : r
+      ));
+      await refreshData(true); // Silent refresh to update UI consistency
+    } catch (error) {
+      console.error('Review early checkout error:', error);
+      throw error;
+    }
+  };
+
+  const reviewOvertime = async (recordId: string, status: 'Approved' | 'Rejected'): Promise<void> => {
+    try {
+      const data = await api.attendanceAPI.reviewOvertime(recordId, status) as any;
+      setAttendanceRecords(prev => prev.map(r =>
+        r.id === recordId ? transformAttendance(data) : r
+      ));
+      setPendingOvertimeRequests(prev => prev.filter(r => r.id !== recordId));
+      await refreshData(true);
+    } catch (error) {
+      console.error('Review overtime error:', error);
+      throw error;
+    }
+  };
+
   const exportReports = async (filters?: { start?: string; end?: string; department?: string }): Promise<void> => {
     try {
       const data = await api.reportAPI.exportAttendanceReport({
@@ -701,6 +746,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       },
       exportReports,
       updateSystemSettings,
+      reviewEarlyCheckout,
+      pendingOvertimeRequests,
+      reviewOvertime,
       refreshData
     }}>
       {children}
