@@ -2427,7 +2427,7 @@ export const EmployeeDashboard: React.FC = () => {
                                   <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-bold">+{formatDuration(diff)}</span>
                                   
                                   {/* Retrospective Overtime Request Button */}
-                                  {(!r.overtimeRequest || r.overtimeRequest.status === 'None') && (
+                                  {r.date >= '2026-04-06' && (!r.overtimeRequest || r.overtimeRequest.status === 'None') && (
                                     <button
                                       onClick={() => {
                                         setOvertimeTargetDate(r.date);
@@ -2466,7 +2466,7 @@ export const EmployeeDashboard: React.FC = () => {
                                   <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full font-semibold">Normal</span>
                                   
                                   {/* Retrospective Overtime Request Button (for edge cases where precisely at threshold) */}
-                                  {effectiveWorked >= MAX_NORMAL && (!r.overtimeRequest || r.overtimeRequest.status === 'None') && (
+                                  {r.date >= '2026-04-06' && effectiveWorked >= MAX_NORMAL && (!r.overtimeRequest || r.overtimeRequest.status === 'None') && (
                                     <button
                                       onClick={() => {
                                         setOvertimeTargetDate(r.date);
