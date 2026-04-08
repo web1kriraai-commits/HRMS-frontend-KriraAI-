@@ -117,6 +117,11 @@ export const AdminDashboard: React.FC = () => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
+
+  // Summary Tab Filtering & Pagination
+  const [summarySearchTerm, setSummarySearchTerm] = useState('');
+  const [summaryPage, setSummaryPage] = useState(1);
+  const SUMMARY_USERS_PER_PAGE = 8;
   
   // Forward Overtime Modal states
   const [isForwardModalOpen, setIsForwardModalOpen] = useState(false);
@@ -319,6 +324,41 @@ export const AdminDashboard: React.FC = () => {
     })
     .sort((a, b) => a.user.name.localeCompare(b.user.name)),
     [users, leaveRequests, companyHolidays]);
+
+  // Performance optimized attendance counting for Summary Table
+  const userAttendanceCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    attendanceRecords.forEach(r => {
+      const uid = typeof r.userId === 'string' ? r.userId : (r.userId?.id || r.userId?._id || r.userId);
+      if (uid) counts[uid] = (counts[uid] || 0) + 1;
+    });
+    return counts;
+  }, [attendanceRecords]);
+
+  // Filtered and Paginated users for Summary Tab
+  const filteredSummaryUsers = useMemo(() => {
+    return users.filter(u => {
+      if (u.role === Role.ADMIN) return false;
+      const matchesSearch =
+        u.name.toLowerCase().includes(summarySearchTerm.toLowerCase()) ||
+        u.department.toLowerCase().includes(summarySearchTerm.toLowerCase());
+      return matchesSearch;
+    });
+  }, [users, summarySearchTerm]);
+
+  const totalSummaryPages = Math.ceil(filteredSummaryUsers.length / SUMMARY_USERS_PER_PAGE);
+
+  const paginatedSummaryUsers = useMemo(() => {
+    const start = (summaryPage - 1) * SUMMARY_USERS_PER_PAGE;
+    return filteredSummaryUsers.slice(start, start + SUMMARY_USERS_PER_PAGE);
+  }, [filteredSummaryUsers, summaryPage]);
+
+  // Reset summary page if user search results change
+  useEffect(() => {
+    if (summaryPage > totalSummaryPages && totalSummaryPages > 0) {
+      setSummaryPage(totalSummaryPages);
+    }
+  }, [totalSummaryPages, summaryPage]);
 
   const filteredMonthlyLeaves = useMemo(() => monthlyLeaves.filter(leave => {
     if (leaveStatusFilter !== 'All') {
@@ -2597,74 +2637,79 @@ export const AdminDashboard: React.FC = () => {
             </>
           ) : (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-100 bg-gray-50">
-                <h3 className="text-lg font-bold text-gray-800">All Employees Overview</h3>
-                <p className="text-gray-500 text-sm">Select an employee above to view detailed monthly summary</p>
+              <div className="px-6 py-4 border-b border-gray-100 bg-gray-50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-gray-800">All Employees Overview</h3>
+                  <p className="text-gray-500 text-sm font-medium">Select an employee to view detailed monthly summary</p>
+                </div>
+                <div className="relative w-full sm:w-64">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <Users className="h-4 w-4 text-gray-400" />
+                    </div>
+                    <input
+                        type="text"
+                        placeholder="Search employee..."
+                        className="block w-full pl-10 pr-3 py-2 border border-gray-200 rounded-xl text-sm leading-5 bg-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 transition-all shadow-sm"
+                        value={summarySearchTerm}
+                        onChange={(e) => {
+                            setSummarySearchTerm(e.target.value);
+                            setSummaryPage(1); // Reset to first page on search
+                        }}
+                    />
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="bg-gray-50/80">
-                      <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase">Employee</th>
-                      <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase">Department</th>
-                      <th className="px-6 py-4 text-left text-xs font-black text-gray-500 uppercase">Email</th>
-                      <th className="px-6 py-4 text-center text-xs font-black text-gray-500 uppercase">Total Days</th>
-                      <th className="px-6 py-4 text-center text-xs font-black text-gray-500 uppercase">Action</th>
+                    <tr className="bg-gray-50/50">
+                      <th className="px-6 py-4 text-left text-xs font-black text-gray-400 uppercase tracking-wider">Employee</th>
+                      <th className="px-6 py-4 text-left text-xs font-black text-gray-400 uppercase tracking-wider">Department</th>
+                      <th className="px-6 py-4 text-left text-xs font-black text-gray-400 uppercase tracking-wider">Email</th>
+                      <th className="px-6 py-4 text-center text-xs font-black text-gray-400 uppercase tracking-wider">Total Days</th>
+                      <th className="px-6 py-4 text-center text-xs font-black text-gray-400 uppercase tracking-wider">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length === 0 && (
+                    {paginatedSummaryUsers.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="px-6 py-12 text-center text-gray-400">
-                          No employees found
+                        <td colSpan={5} className="px-6 py-12 text-center text-gray-400 italic">
+                          {summarySearchTerm ? `No employees found matching "${summarySearchTerm}"` : 'No employees found'}
                         </td>
                       </tr>
                     )}
-                    {users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).map(emp => {
-                      const empAttendance = attendanceRecords.filter(r => r.userId === emp.id);
+                    {paginatedSummaryUsers.map(emp => {
+                      const empAttendanceCount = userAttendanceCounts[emp.id] || 0;
                       const isHR = emp.role === Role.HR;
                       return (
-                        <tr key={emp.id} className={isHR ? 'bg-yellow-50 hover:bg-yellow-100' : 'hover:bg-gray-50'}>
+                        <tr key={emp.id} className={isHR ? 'bg-amber-50/30 hover:bg-amber-50/60' : 'hover:bg-slate-50 transition-colors'}>
                           <td className="px-6 py-4">
                             <div className="flex items-center gap-3">
-                              <div className={`h-10 w-10 rounded-lg flex items-center justify-center font-bold ${isHR ? 'bg-yellow-200 text-yellow-700' : 'bg-indigo-100 text-indigo-600'
+                              <div className={`h-10 w-10 rounded-xl flex items-center justify-center font-bold shadow-sm ${isHR ? 'bg-amber-100 text-amber-700 ring-1 ring-amber-200' : 'bg-indigo-100 text-indigo-700 ring-1 ring-indigo-200'
                                 }`}>
                                 {emp.name.charAt(0).toUpperCase()}
                               </div>
                               <div>
                                 <div className="flex items-center gap-2">
-                                  <p className="font-semibold text-gray-800">{emp.name}</p>
-                                  {isHR && <span className="px-2 py-0.5 bg-yellow-200 text-yellow-800 text-xs font-bold rounded">HR</span>}
+                                  <p className="font-bold text-slate-800">{emp.name}</p>
+                                  {isHR && <span className="px-1.5 py-0.5 bg-amber-500 text-white text-[9px] font-black rounded uppercase tracking-tighter">HR</span>}
                                 </div>
-                                <p className="text-xs text-gray-400">@{emp.username}</p>
+                                <p className="text-[10px] text-slate-400 font-bold tracking-tight">@{emp.username}</p>
                               </div>
                             </div>
                           </td>
-                          <td className="px-6 py-4 text-gray-600">{emp.department}</td>
-                          <td className="px-6 py-4 text-gray-500 text-sm">{emp.email}</td>
+                          <td className="px-6 py-4 text-slate-600 font-medium text-sm">{emp.department}</td>
+                          <td className="px-6 py-4 text-slate-400 text-xs font-medium">{emp.email}</td>
                           <td className="px-6 py-4 text-center">
-                            <span className={`font-bold ${isHR ? 'text-yellow-700' : 'text-indigo-600'}`}>{empAttendance.length}</span>
-                            <span className="text-gray-400 text-sm ml-1">days</span>
+                            <span className={`font-black text-sm tabular-nums ${isHR ? 'text-amber-600' : 'text-indigo-600'}`}>{empAttendanceCount}</span>
+                            <span className="text-slate-400 text-[10px] font-bold ml-1 uppercase">days</span>
                           </td>
                           <td className="px-6 py-4 text-center">
                             <button
                               onClick={() => setSelectedUserId(emp.id)}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${isHR ? 'bg-yellow-200 text-yellow-800 hover:bg-yellow-300' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'
+                              className={`px-4 py-1.5 rounded-xl text-xs font-black uppercase tracking-tight transition-all shadow-sm ${isHR ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'
                                 }`}
                             >
                               View Details
-                            </button>
-                            <button
-                              onClick={() => {
-                                setDeductSalaryUser(emp);
-                                setDeductSalaryMonth(new Date().getMonth() + 1);
-                                setDeductSalaryYear(new Date().getFullYear());
-                                setDeductionAmount('');
-                              }}
-                              className="ml-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
-                              title="Deduct Salary"
-                            >
-                              <DollarSign size={14} />
                             </button>
                           </td>
                         </tr>
@@ -2673,6 +2718,31 @@ export const AdminDashboard: React.FC = () => {
                   </tbody>
                 </table>
               </div>
+              
+              {/* Pagination for Summary Tab */}
+              {totalSummaryPages > 1 && (
+                <div className="px-6 py-4 border-t border-gray-100 bg-gray-50/50 flex items-center justify-between">
+                  <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                    Page <span className="text-indigo-600 font-black">{summaryPage}</span> of {totalSummaryPages}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setSummaryPage(p => Math.max(1, p - 1))}
+                      disabled={summaryPage === 1}
+                      className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${summaryPage === 1 ? 'bg-gray-100 text-gray-400 cursor-not-allowed opacity-50' : 'bg-white text-indigo-600 border border-indigo-100 hover:bg-indigo-50 shadow-sm underline decoration-2 underline-offset-4'}`}
+                    >
+                      Previous
+                    </button>
+                    <button
+                      onClick={() => setSummaryPage(p => Math.min(totalSummaryPages, p + 1))}
+                      disabled={summaryPage === totalSummaryPages}
+                      className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${summaryPage === totalSummaryPages ? 'bg-gray-100 text-gray-400 cursor-not-allowed opacity-50' : 'bg-white text-indigo-600 border border-indigo-100 hover:bg-indigo-50 shadow-sm underline decoration-2 underline-offset-4'}`}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

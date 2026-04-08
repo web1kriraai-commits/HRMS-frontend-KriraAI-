@@ -10,8 +10,9 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 
 
 // Format duration with small text for units
 const formatDurationStyled = (seconds: number) => {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
+  const totalMinutes = Math.round(seconds / 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
 
   if (h === 0 && m === 0) return <><span>0</span><span className="text-sm font-normal ml-1">minutes</span></>;
   if (h === 0) return <><span>{m}</span><span className="text-sm font-normal ml-1">minutes</span></>;
@@ -1000,6 +1001,22 @@ export const EmployeeDashboard: React.FC = () => {
   // Extra Time Worked = Final Time (convert from seconds to hours)
   const extraTimeWorkedHours = finalTimeDifference / 3600;
 
+  // Time Restrictions Logic
+  const isCheckInRestricted = useMemo(() => {
+    if (user?.role === 'Admin') return false;
+    const h = now.getHours();
+    const m = now.getMinutes();
+    return h < 8 || (h === 8 && m < 30);
+  }, [now, user?.role]);
+
+  const isCheckOutRestricted = useMemo(() => {
+    if (user?.role === 'Admin') return false;
+    if (todayRecord?.earlyLogoutRequest === 'Approved') return false;
+    const h = now.getHours();
+    const m = now.getMinutes();
+    return h < 17 || (h === 17 && m < 30);
+  }, [now, user?.role, todayRecord?.earlyLogoutRequest]);
+
   // OLD LOGIC: Extra Time Leave Balance = Extra Time Worked (Final Time) - Extra Time Leave Taken
   const extraTimeLeaveHoursTaken = baseExtraTimeLeaveHours;
   const remainingExtraTimeBalanceHours = extraTimeWorkedHours - extraTimeLeaveHoursTaken;
@@ -1013,8 +1030,8 @@ export const EmployeeDashboard: React.FC = () => {
     ? totalLowTimeSeconds + Math.abs(remainingExtraTimeLeaveSeconds)
     : totalLowTimeSeconds;
 
-  // Final time difference with adjusted low time and forwarding (per-month, no global pool)
-  const finalTimeDifferenceAdjusted = totalExtraTimeSeconds - adjustedLowTimeSeconds - forwardedOutSeconds + forwardedInSeconds;
+  // Final time difference with ETL deduction, adjusted low time and forwarding (per-month, no global pool)
+  const finalTimeDifferenceAdjusted = totalExtraTimeSeconds - adjustedLowTimeSeconds - forwardedOutSeconds + forwardedInSeconds - (extraTimeLeaveHoursTaken * 3600);
 
   // Chart Data: Last 7 days worked hours
   const chartData = myAttendanceHistory
@@ -1292,11 +1309,11 @@ export const EmployeeDashboard: React.FC = () => {
                                   <Button 
                                     size="sm"
                                     variant="primary" 
-                                    className="text-[10px] h-9 px-3 font-bold bg-indigo-600 hover:bg-indigo-700"
-                                    onClick={() => handleResolveAbsence(date, LeaveCategory.EXTRA_TIME)}
+                                    className="text-[10px] h-9 px-3 font-bold bg-amber-600 hover:bg-amber-700"
+                                    onClick={() => handleResolveAbsence(date, LeaveCategory.UNPAID)}
                                     disabled={isResolvingAbsence}
                                   >
-                                    Extra Time
+                                    Unpaid Leave
                                   </Button>
                                 </div>
                               </div>
@@ -1308,28 +1325,32 @@ export const EmployeeDashboard: React.FC = () => {
                   ) : (
                     <>
                       {!isCheckedIn && !isCheckedOut && (
-                        <Button size="lg" onClick={() => {
-                          setConfirmationPopup({
-                            show: true,
-                            title: 'Confirm Check In',
-                            message: 'Are you sure you want to check in?',
-                            onConfirm: async () => {
-                              const checkInTime = new Date();
-                              setLocalCheckInTime(checkInTime);
-                              try {
-                                await clockIn();
-                                setConfirmationPopup(null);
-                              } catch (error) {
-                                // Reset on error
-                                setLocalCheckInTime(null);
-                                setConfirmationPopup(null);
-                                throw error;
-                              }
-                            },
-                            onCancel: () => setConfirmationPopup(null)
-                          });
-                        }} className="w-full md:w-48 h-14 text-lg shadow-lg shadow-blue-200">
-                          <Clock className="mr-2" /> Check In
+                        <Button 
+                          size="lg" 
+                          disabled={isCheckInRestricted}
+                          onClick={() => {
+                            setConfirmationPopup({
+                              show: true,
+                              title: 'Confirm Check In',
+                              message: 'Are you sure you want to check in?',
+                              onConfirm: async () => {
+                                const checkInTime = new Date();
+                                setLocalCheckInTime(checkInTime);
+                                try {
+                                  await clockIn();
+                                  setConfirmationPopup(null);
+                                } catch (error) {
+                                  // Reset on error
+                                  setLocalCheckInTime(null);
+                                  setConfirmationPopup(null);
+                                  throw error;
+                                }
+                              },
+                              onCancel: () => setConfirmationPopup(null)
+                            });
+                          }} className={`w-full md:w-48 h-14 text-lg shadow-lg ${isCheckInRestricted ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed shadow-none' : 'shadow-blue-200'}`}>
+                          <Clock className="mr-2" /> 
+                          {isCheckInRestricted ? 'Starts at 8:30 AM' : 'Check In'}
                         </Button>
                       )}
                     </>
@@ -1464,6 +1485,7 @@ export const EmployeeDashboard: React.FC = () => {
                           {(elapsed >= 29700) || todayRecord?.earlyLogoutRequest === 'Approved' ? (
                             <Button
                               variant="danger"
+                              disabled={isCheckOutRestricted}
                               onClick={() => {
                                 setConfirmationPopup({
                                   show: true,
@@ -1504,9 +1526,9 @@ export const EmployeeDashboard: React.FC = () => {
                                   onCancel: () => setConfirmationPopup(null)
                                 });
                               }}
-                              className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-4 rounded-xl shadow-lg shadow-rose-100 transition-all active:scale-95"
+                              className={`w-full font-bold py-4 rounded-xl shadow-lg transition-all active:scale-95 ${isCheckOutRestricted ? 'bg-gray-50 text-gray-600 border border-gray-200 cursor-not-allowed shadow-none' : 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-100'}`}
                             >
-                              Check Out
+                              {isCheckOutRestricted ? 'Available at 5:30 PM' : 'Check Out'}
                             </Button>
                           ) : (
                             <div className="w-full flex flex-col gap-2">
@@ -1684,6 +1706,7 @@ export const EmployeeDashboard: React.FC = () => {
             <span className="flex items-center"><div className="w-2 h-2 rounded-full mr-1" style={{ backgroundColor: '#f59e0b' }}></div> Holiday Work</span>
           </div>
         </Card>
+      </div>
 
 
 
@@ -1798,272 +1821,143 @@ export const EmployeeDashboard: React.FC = () => {
                       disabled={isSubmittingManual || (!manualHoursInput && !manualMinutesInput)}
                     >
                       {isSubmittingManual ? 'Saving...' : 'Add Hours'}
-                    </Button>
+</Button>
                   </div>
                 </form>
               </div>
             </div>
           </>
         )}
+        {/* Layout: Left Column (Request Form & Paid Balance), Right Column (OT Balance & Stats) */}
+        <div className="flex flex-wrap gap-6 mb-8 mt-12 w-full items-start">
+          {/* Left Column */}
+          <div className="flex-1 min-w-[320px] space-y-6">
+            <Card title="Request Leave" className="h-fit overflow-hidden">
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                if (!leaveForm.start || !leaveForm.reason) return;
+                if (leaveForm.type !== LeaveCategory.HALF_DAY && leaveForm.type !== LeaveCategory.EXTRA_TIME && !leaveForm.end) return;
 
-        {/* Leave Request Form */}
-        <div className="flex flex-wrap gap-6 w-full">
-          <Card title="Request Leave" className="flex-1 min-w-[300px]">
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              if (!leaveForm.start || !leaveForm.reason) return;
-              // For non-half-day/non-extra-time leaves, end date is required
-              if (leaveForm.type !== LeaveCategory.HALF_DAY && leaveForm.type !== LeaveCategory.EXTRA_TIME && !leaveForm.end) return;
-
-              // Prevent submitting Paid Leave if exhausted
-              if (leaveForm.type === LeaveCategory.PAID && isPaidLeaveExhausted) {
-                alert(`All ${TOTAL_PAID_LEAVES} paid leaves have been used. Please select another leave type.`);
-                return;
-              }
-
-              // Check if requested extra time leave days exceed available balance (using hours)
-              if (leaveForm.type === LeaveCategory.EXTRA_TIME) {
-                const requestedDays = calculateLeaveDays(leaveForm.start, leaveForm.end);
-                const requestedHours = requestedDays * 8.25;
-
-                if (requestedHours > remainingExtraTimeBalanceHours) {
-                  alert(`Requested Extra Time Leave exceeds your remaining balance (${formatHoursToHoursMinutes(remainingExtraTimeBalanceHours)}). Please work more extra time to increase your balance.`);
+                if (leaveForm.type === LeaveCategory.PAID && isPaidLeaveExhausted) {
+                  alert(`All ${TOTAL_PAID_LEAVES} paid leaves have been used. Please select another leave type.`);
                   return;
                 }
-              }
 
-              // Check if requested paid leave days exceed available balance
-              if (leaveForm.type === LeaveCategory.PAID) {
-                const requestedDays = calculateLeaveDays(leaveForm.start, leaveForm.end);
-
-                if (requestedDays > availablePaidLeaves) {
-                  alert(`You only have ${availablePaidLeaves} paid leave(s) remaining. You cannot request ${requestedDays} day(s).`);
-                  return;
+                if (leaveForm.type === LeaveCategory.EXTRA_TIME) {
+                  const requestedDays = calculateLeaveDays(leaveForm.start, leaveForm.end, holidayDateSet);
+                  const requestedHours = requestedDays * 8.25;
+                  if (requestedHours > remainingExtraTimeBalanceHours) {
+                    alert(`Requested Extra Time Leave exceeds your remaining balance (${formatHoursToHoursMinutes(remainingExtraTimeBalanceHours)}).`);
+                    return;
+                  }
                 }
-              }
 
-              // Check half-day leave with paid leave selection
-              if (leaveForm.type === LeaveCategory.HALF_DAY && leaveForm.halfDayLeaveType === 'paid') {
-                if (availablePaidLeaves < 0.5) {
-                  alert(`You need at least 0.5 paid leave(s) remaining for half-day leave. You only have ${availablePaidLeaves} paid leave(s) remaining.`);
-                  return;
+                if (leaveForm.type === LeaveCategory.PAID) {
+                  const requestedDays = calculateLeaveDays(leaveForm.start, leaveForm.end, holidayDateSet);
+                  if (requestedDays > availablePaidLeaves) {
+                    alert(`You only have ${availablePaidLeaves} paid leave(s) remaining.`);
+                    return;
+                  }
                 }
-              }
 
-              const isSingleDay = leaveForm.type === LeaveCategory.HALF_DAY || leaveForm.type === LeaveCategory.EXTRA_TIME;
+                const isSingleDay = leaveForm.type === LeaveCategory.HALF_DAY || leaveForm.type === LeaveCategory.EXTRA_TIME;
+                const leaveData: any = {
+                  startDate: leaveForm.start,
+                  endDate: isSingleDay ? leaveForm.start : leaveForm.end,
+                  category: leaveForm.type,
+                  reason: leaveForm.reason
+                };
 
-              const leaveData: any = {
-                startDate: leaveForm.start,
-                endDate: isSingleDay ? leaveForm.start : leaveForm.end,
-                category: leaveForm.type,
-                reason: leaveForm.reason
-              };
-              if (leaveForm.type === LeaveCategory.HALF_DAY) {
-                // Add half day leave type info to reason
-                const halfDayTypeLabel = leaveForm.halfDayLeaveType === 'paid' ? 'Paid Leave' : 'Extra Time Leave';
-                leaveData.reason = `[${halfDayTypeLabel}] ${leaveForm.reason}`;
-              }
-
-              // Add time fields for half day leave only
-              if (leaveForm.type === LeaveCategory.HALF_DAY) {
-                if (!leaveForm.startTime) {
-                  alert('Please provide start time for Half Day Leave');
-                  return;
+                if (leaveForm.type === LeaveCategory.HALF_DAY) {
+                  const halfDayTypeLabel = leaveForm.halfDayLeaveType === 'paid' ? 'Paid Leave' : 'Unpaid Leave';
+                  leaveData.reason = `[${halfDayTypeLabel}] ${leaveForm.reason}`;
+                  if (!leaveForm.startTime) return alert('Please provide start time');
+                  leaveData.startTime = leaveForm.startTime;
                 }
-                leaveData.startTime = leaveForm.startTime;
-                if (leaveForm.endTime) {
-                  leaveData.endTime = leaveForm.endTime;
-                }
-              }
 
-              requestLeave(leaveData);
-              // Reset form but keep the selected leave type (don't force change to Paid Leave)
-              setLeaveForm({
-                start: '',
-                end: '',
-                type: leaveForm.type, // Keep the selected type
-                reason: '',
-                halfDayTime: 'morning',
-                halfDayLeaveType: 'paid', // Reset to default
-                startTime: '',
-                endTime: ''
-              });
-            }} className="space-y-4">
-              <div className={`grid gap-4 ${leaveForm.type === LeaveCategory.HALF_DAY || leaveForm.type === LeaveCategory.EXTRA_TIME ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                requestLeave(leaveData);
+                setLeaveForm({ ...leaveForm, start: '', end: '', reason: '', startTime: '' });
+              }} className="space-y-3">
+                <div className={`grid gap-4 ${leaveForm.type === LeaveCategory.HALF_DAY || leaveForm.type === LeaveCategory.EXTRA_TIME ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">From/Date</label>
+                    <input type="date" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all" required value={leaveForm.start} onChange={e => setLeaveForm({ ...leaveForm, start: e.target.value })} />
+                  </div>
+                  {leaveForm.type !== LeaveCategory.HALF_DAY && leaveForm.type !== LeaveCategory.EXTRA_TIME && (
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">To</label>
+                      <input type="date" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all" required value={leaveForm.end} onChange={e => setLeaveForm({ ...leaveForm, end: e.target.value })} />
+                    </div>
+                  )}
+                </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">{leaveForm.type === LeaveCategory.HALF_DAY || leaveForm.type === LeaveCategory.EXTRA_TIME ? 'Date' : 'From'}</label>
-                  <input type="date" className="w-full p-2 border rounded text-sm" required value={leaveForm.start} onChange={e => setLeaveForm({ ...leaveForm, start: e.target.value })} />
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Category</label>
+                  <select className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all appearance-none" value={leaveForm.type} onChange={e => setLeaveForm({ ...leaveForm, type: e.target.value as LeaveCategory })}>
+                    {Object.values(LeaveCategory).filter(c => c !== LeaveCategory.EXTRA_TIME).map(c => (
+                      <option key={c} value={c} disabled={c === LeaveCategory.PAID && isPaidLeaveExhausted}>{c}{c === LeaveCategory.PAID && isPaidLeaveExhausted ? ' (Exhausted)' : ''}</option>
+                    ))}
+                  </select>
                 </div>
-                {leaveForm.type !== LeaveCategory.HALF_DAY && leaveForm.type !== LeaveCategory.EXTRA_TIME && (
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">To</label>
-                    <input type="date" className="w-full p-2 border rounded text-sm" required value={leaveForm.end} onChange={e => setLeaveForm({ ...leaveForm, end: e.target.value })} />
+                {leaveForm.type === LeaveCategory.HALF_DAY && (
+                  <div className="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Start Time</label>
+                      <input type="time" className="w-full p-2 border border-slate-200 rounded-lg text-sm" required value={leaveForm.startTime} onChange={e => setLeaveForm({ ...leaveForm, startTime: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Deduct From</label>
+                      <select className="w-full p-2 border border-slate-200 rounded-lg text-sm" value={leaveForm.halfDayLeaveType} onChange={e => setLeaveForm({ ...leaveForm, halfDayLeaveType: e.target.value })}>
+                        <option value="paid">Paid Leave</option>
+                        <option value="unpaid">Unpaid Leave</option>
+                      </select>
+                    </div>
                   </div>
                 )}
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
-                <select
-                  className="w-full p-2 border rounded text-sm"
-                  value={leaveForm.type}
-                  onChange={(e) => {
-                    const selectedType = e.target.value as LeaveCategory;
-                    // Only prevent selecting Paid Leave if exhausted, allow all other types freely
-                    if (selectedType === LeaveCategory.PAID && isPaidLeaveExhausted) {
-                      alert(`All ${TOTAL_PAID_LEAVES} paid leaves have been used. Please select another leave type.`);
-                      // Don't change the type, keep current selection
-                      return;
-                    }
-                    // Allow selection of any leave type (Extra Time Leave, Unpaid Leave, Half Day Leave, etc.)
-                    setLeaveForm({ ...leaveForm, type: selectedType });
-                  }}
-                >
-                  {Object.values(LeaveCategory).map(c => (
-                    <option
-                      key={c}
-                      value={c}
-                      disabled={c === LeaveCategory.PAID && isPaidLeaveExhausted}
-                    >
-                      {c}{c === LeaveCategory.PAID && isPaidLeaveExhausted ? ' (Exhausted)' : ''}
-                    </option>
-                  ))}
-                </select>
-                {leaveForm.type === LeaveCategory.PAID && isPaidLeaveExhausted && (
-                  <p className="text-xs text-red-600 mt-1 font-semibold">
-                    ⚠️ All paid leaves have been used. Please select another leave type.
-                  </p>
-                )}
-                {leaveForm.type === LeaveCategory.PAID && !isPaidLeaveExhausted && (
-                  <p className="text-xs text-blue-600 mt-1">
-                    Available: {availablePaidLeaves} paid leave(s) remaining
-                  </p>
-                )}
-              </div>
-              {leaveForm.type === LeaveCategory.HALF_DAY && (
-                <>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">Start Time <span className="text-red-500">*</span></label>
-                    <input
-                      type="time"
-                      className="w-full p-2 border rounded text-sm"
-                      required
-                      value={leaveForm.startTime}
-                      onChange={e => setLeaveForm({ ...leaveForm, startTime: e.target.value })}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">Deduct From</label>
-                    <select
-                      className="w-full p-2 border rounded text-sm"
-                      value={leaveForm.halfDayLeaveType}
-                      onChange={(e) => {
-                        const selectedType = e.target.value;
-                        if (selectedType === 'paid' && availablePaidLeaves < 0.5) {
-                          alert(`You need at least 0.5 paid leave(s) remaining. You only have ${availablePaidLeaves} paid leave(s) remaining.`);
-                          return;
-                        }
-                        setLeaveForm({ ...leaveForm, halfDayLeaveType: selectedType });
-                      }}
-                    >
-                      <option value="paid">Paid Leave (0.5 days)</option>
-                      <option value="extraTime">Extra Time Leave (4 hours)</option>
-                    </select>
-                    {leaveForm.halfDayLeaveType === 'paid' && availablePaidLeaves < 0.5 && (
-                      <p className="text-xs text-red-600 mt-1 font-semibold">
-                        ⚠️ You need at least 0.5 paid leave(s) remaining. Available: {availablePaidLeaves}
-                      </p>
-                    )}
-                    {leaveForm.halfDayLeaveType === 'paid' && availablePaidLeaves >= 0.5 && (
-                      <p className="text-xs text-blue-600 mt-1">
-                        Will deduct 0.5 days from paid leave. Available: {availablePaidLeaves} paid leave(s)
-                      </p>
-                    )}
-                    {leaveForm.halfDayLeaveType === 'extraTime' && (
-                      <p className="text-xs text-orange-600 mt-1">
-                        Will add 4 hours to Extra Time Leave taken
-                      </p>
-                    )}
-                  </div>
-                </>
-              )}
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Reason</label>
-                <textarea className="w-full p-2 border rounded text-sm h-16" required placeholder="Describe reason..." value={leaveForm.reason} onChange={e => setLeaveForm({ ...leaveForm, reason: e.target.value })}></textarea>
-              </div>
-              <Button type="submit" className="w-full">Submit Request</Button>
-            </form>
-          </Card>
-
-          <div className="flex-1 min-w-[300px] space-y-6">
-            {/* Paid Leave Balance */}
-            <Card title="Paid Leave Balance" className="h-fit">
-              <div className={`p-4 rounded-lg border ${availablePaidLeaves > 0
-                ? 'bg-blue-50 border-blue-100'
-                : 'bg-red-50 border-red-100'
-                }`}>
-                <div className="space-y-4">
-                  {/* Summary Row */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Yearly Summary</p>
-                      <p className="text-xs text-gray-600 mt-1">
-                        Admin Allocated: {user?.paidLeaveAllocation || 0}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className={`text-3xl font-bold ${availablePaidLeaves > 0 ? 'text-blue-700' : 'text-red-700'
-                        }`}>
-                        {availablePaidLeaves}
-                      </p>
-                      <p className="text-xs text-gray-500 mt-1">Remaining</p>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-5 gap-3 pt-3 border-t border-gray-200 text-center">
-                    <div>
-                      <p className="text-[10px] text-gray-400 uppercase mb-1">Allocated</p>
-                      <p className="text-lg font-bold text-gray-800">{TOTAL_PAID_LEAVES}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-gray-400 uppercase mb-1">Paid</p>
-                      <p className="text-lg font-bold text-rose-600">{usedPaidLeaves}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-gray-400 uppercase mb-1">Extra</p>
-                      <p className="text-lg font-bold text-emerald-600">{totalExtraTimeUsed}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-gray-400 uppercase mb-1">Unpaid</p>
-                      <p className="text-lg font-bold text-rose-700">{totalUnpaidUsed}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-gray-400 uppercase mb-1">Remain</p>
-                      <p className={`text-lg font-bold ${availablePaidLeaves > 0 ? 'text-blue-600' : 'text-red-600'}`}>
-                        {availablePaidLeaves}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Last Allocated Date */}
-                  {user?.paidLeaveLastAllocatedDate && (
-                    <div className="pt-2 border-t border-gray-200">
-                      <p className="text-xs text-gray-500">
-                        Last Allocated: <span className="font-semibold text-gray-700">{formatDate(user.paidLeaveLastAllocatedDate)}</span>
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Warning Message */}
-                  {isPaidLeaveExhausted && (
-                    <div className="mt-3 p-2 bg-red-100 rounded border border-red-200">
-                      <p className="text-xs font-semibold text-red-700">
-                        ⚠️ All paid leaves have been used. Please use other leave types.
-                      </p>
-                    </div>
-                  )}
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Reason</label>
+                  <textarea className="w-full p-2 border border-slate-200 rounded-lg text-sm h-12 resize-none outline-none focus:ring-2 focus:ring-blue-500" required placeholder="Reason for leave..." value={leaveForm.reason} onChange={e => setLeaveForm({ ...leaveForm, reason: e.target.value })} />
                 </div>
-              </div>
+                <Button type="submit" className="w-full font-bold shadow-lg shadow-blue-100 py-3 active:scale-95 transition-all">Submit Request</Button>
+              </form>
             </Card>
 
+            <Card title="Paid Leave Balance" className="h-fit">
+              <div className={`p-4 rounded-2xl border ${availablePaidLeaves > 0 ? 'bg-indigo-50/50 border-indigo-100/60' : 'bg-rose-50/50 border-rose-100/60'}`}>
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Yearly Summary</p>
+                    <p className="text-[10px] text-slate-400 font-bold mt-0.5">Allocated: {user?.paidLeaveAllocation || 0}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className={`text-3xl font-black tabular-nums ${availablePaidLeaves > 0 ? 'text-indigo-600' : 'text-rose-600'}`}>{availablePaidLeaves}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Remaining</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-5 gap-1 pt-4 border-t border-slate-100 text-center">
+                  {[
+                    { label: 'Total', value: TOTAL_PAID_LEAVES, color: 'slate' },
+                    { label: 'Paid', value: usedPaidLeaves, color: 'rose' },
+                    { label: 'Extra', value: totalExtraTimeUsed, color: 'emerald' },
+                    { label: 'Unpaid', value: totalUnpaidUsed, color: 'orange' },
+                    { label: 'Net', value: availablePaidLeaves, color: availablePaidLeaves > 0 ? 'indigo' : 'rose' }
+                  ].map(stat => (
+                    <div key={stat.label}>
+                      <p className="text-[8px] text-slate-400 font-black uppercase tracking-tighter mb-1">{stat.label}</p>
+                      <p className={`text-sm font-black text-${stat.color}-600`}>{stat.value}</p>
+                    </div>
+                  ))}
+                </div>
+                {isPaidLeaveExhausted && (
+                  <div className="mt-4 p-2 bg-rose-100/50 border border-rose-200 rounded-xl">
+                    <p className="text-[10px] font-black text-rose-700 uppercase leading-tight">⚠️ Paid leaves exhausted. Use Unpaid or Extra Time.</p>
+                  </div>
+                )}
+              </div>
+            </Card>
+          </div>
+
+          {/* Right Column */}
+          <div className="flex-1 min-w-[320px] space-y-6">
             {/* Extra Time Leave Balance Restored UI */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 gap-4 mb-4">
               <Card title="Extra Time Leave Balance" className="h-fit">
@@ -2387,9 +2281,9 @@ export const EmployeeDashboard: React.FC = () => {
                           ) : isHolidayWorkDay && r.checkIn && r.checkOut ? (
                             <span className="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full font-semibold">Holiday OT</span>
                           ) : (() => {
-                            // Sync logic with summary cards (Subtract penalty, Add Extra Time Leave credits)
-                            const netWorkedRaw = r.totalWorkedSeconds || 0;
-                            let effectiveWorked = Math.max(0, netWorkedRaw - (r.penaltySeconds || 0));
+                            // totalWorkedSeconds is already net of late penalty on the server; subtracting
+                            // penaltySeconds again would double-count and wrongly show "low time" (see monthly stats above).
+                            let effectiveWorked = r.totalWorkedSeconds || 0;
 
                             // Find approved Extra Time Leave for this date
                             const extraTimeLeaveForDate = myLeaves.find(leave => {
@@ -2632,7 +2526,6 @@ export const EmployeeDashboard: React.FC = () => {
             </div>
           )}
         </Card>
-      </div>
       {/* Early Checkout Request Modal */}
       {showCheckoutRequestModal && (
         <>
