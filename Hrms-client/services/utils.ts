@@ -13,6 +13,8 @@ export const PENALTY_EFFECTIVE_DATE = '2026-03-01';
 export const LATE_PENALTY_SECONDS = 900; // 15 minutes
 export const ABSENCE_PENALTY_EFFECTIVE_DATE = '2026-04-06';
 export const OVERTIME_POLICY_EFFECTIVE_DATE = '2026-04-06';
+/** Aligned with Hrms-server COMPULSORY_BREAK_EFFECTIVE_DATE */
+export const COMPULSORY_BREAK_EFFECTIVE_DATE = '2026-04-06';
 
 export const isLateCheckIn = (isoStr?: string): boolean => {
   if (!isoStr) return false;

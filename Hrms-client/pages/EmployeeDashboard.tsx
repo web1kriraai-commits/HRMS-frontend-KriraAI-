@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
-import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate } from '../services/utils';
+import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate } from '../services/utils';
 import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -19,6 +19,10 @@ const formatDurationStyled = (seconds: number) => {
   if (m === 0) return <><span>{h}</span><span className="text-sm font-normal ml-1">hours</span></>;
   return <><span>{h}</span><span className="text-sm font-normal ml-1">hours</span> <span>{m}</span><span className="text-sm font-normal ml-1">min</span></>;
 };
+
+/** Half-day minimum net worked time (matches server: Math.floor(495/2)*60). */
+const HALF_DAY_MIN_SHIFT_SECONDS = Math.floor(495 / 2) * 60;
+const FULL_DAY_MIN_SHIFT_SECONDS = (8 * 3600) + (15 * 60);
 
 // Helper to format penalty duration (e.g. 900 -> 15m, 3720 -> 1h 2m)
 const formatPenaltyDisplay = (seconds: number) => {
@@ -230,7 +234,25 @@ export const EmployeeDashboard: React.FC = () => {
     }
   }, [refreshData]);
 
+  const approvedHalfDayToday = useMemo(() => {
+    const today = getTodayStr();
+    return leaveRequests.some(l => {
+      const status = String(l.status || '').trim();
+      if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
+      if (l.userId !== user?.id) return false;
+      if (l.category !== LeaveCategory.HALF_DAY) return false;
+      const startDate = new Date(l.startDate);
+      const endDate = new Date(l.endDate);
+      return new Date(today) >= startDate && new Date(today) <= endDate;
+    });
+  }, [leaveRequests, user?.id]);
 
+  const compulsoryBreakEnforced = useMemo(() => {
+    if (getTodayStr() < COMPULSORY_BREAK_EFFECTIVE_DATE) return false;
+    if (todayRecord?.isCompulsoryBreakDisabled) return false;
+    if (approvedHalfDayToday) return false;
+    return true;
+  }, [todayRecord?.isCompulsoryBreakDisabled, approvedHalfDayToday]);
 
   // Check if standard break already taken today
   const hasStandardBreak = todayRecord?.breaks.some(b => b.type === 'Standard' && b.end) || false;
@@ -240,8 +262,8 @@ export const EmployeeDashboard: React.FC = () => {
 
   // Handler for ending break
   const handleEndBreak = useCallback(async () => {
-    // ENFORCE 20 MINUTE BREAK (1200 seconds)
-    if (breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled) {
+    // ENFORCE 20 MINUTE BREAK (1200 seconds) when compulsory policy applies
+    if (breakElapsed < 1200 && compulsoryBreakEnforced) {
       const remainingSecs = Math.ceil(1200 - breakElapsed);
       const remainingMins = Math.ceil(remainingSecs / 60);
       setConfirmationPopup({
@@ -266,7 +288,7 @@ export const EmployeeDashboard: React.FC = () => {
       setConfirmationPopup(null); // Close the popup even on error
       throw error;
     }
-  }, [endBreak, activeBreakStartTime, breakElapsed]);
+  }, [endBreak, activeBreakStartTime, breakElapsed, compulsoryBreakEnforced]);
 
   const handleAddManualHours = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -346,6 +368,10 @@ export const EmployeeDashboard: React.FC = () => {
   const isOnLeaveToday = !!todayLeave;
   const isFullDayLeaveToday = todayLeave && todayLeave.category !== LeaveCategory.HALF_DAY;
   const isHalfDayLeaveToday = todayLeave && todayLeave.category === LeaveCategory.HALF_DAY;
+  const minShiftSecondsForTodayCheckout = useMemo(
+    () => (isHalfDayLeaveToday ? HALF_DAY_MIN_SHIFT_SECONDS : FULL_DAY_MIN_SHIFT_SECONDS),
+    [isHalfDayLeaveToday]
+  );
   // Filter out pending leaves from display - only show approved/rejected in history
   const myLeavesHistory = myLeaves.filter(l => {
     const status = String(l.status || '').trim();
@@ -1012,10 +1038,11 @@ export const EmployeeDashboard: React.FC = () => {
   const isCheckOutRestricted = useMemo(() => {
     if (user?.role === 'Admin') return false;
     if (todayRecord?.earlyLogoutRequest === 'Approved') return false;
+    if (isHalfDayLeaveToday) return false;
     const h = now.getHours();
     const m = now.getMinutes();
     return h < 17 || (h === 17 && m < 30);
-  }, [now, user?.role, todayRecord?.earlyLogoutRequest]);
+  }, [now, user?.role, todayRecord?.earlyLogoutRequest, isHalfDayLeaveToday]);
 
   // OLD LOGIC: Extra Time Leave Balance = Extra Time Worked (Final Time) - Extra Time Leave Taken
   const extraTimeLeaveHoursTaken = baseExtraTimeLeaveHours;
@@ -1226,7 +1253,7 @@ export const EmployeeDashboard: React.FC = () => {
                         // Compute live penalty from check-in time (same rules as backend getFlags)
                         const checkInTime = localCheckInTime || (todayRecord?.checkIn ? new Date(todayRecord.checkIn) : null);
                         let livePenaltySeconds = 0;
-                        if (!isOnBreak && checkInTime && !todayRecord?.checkOut && !todayRecord?.isPenaltyDisabled) {
+                        if (!isOnBreak && checkInTime && !todayRecord?.checkOut && !todayRecord?.isPenaltyDisabled && !approvedHalfDayToday) {
                           if (isPenaltyEffective(getTodayStr())) {
                             livePenaltySeconds = calculateLatenessPenaltySeconds(checkInTime.toISOString());
                           }
@@ -1418,7 +1445,7 @@ export const EmployeeDashboard: React.FC = () => {
                           <div className="flex flex-col w-full gap-2">
                             <Button
                               onClick={() => {
-                                if (breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled) {
+                                if (breakElapsed < 1200 && compulsoryBreakEnforced) {
                                   setConfirmationPopup({
                                     show: true,
                                     title: '⚠️ Break Progress',
@@ -1438,8 +1465,8 @@ export const EmployeeDashboard: React.FC = () => {
                                     <div className="flex space-x-2">
                                       <Button
                                         onClick={handleEndBreak}
-                                        disabled={breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled}
-                                        className={`${(breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled) ? 'bg-slate-100 text-slate-400' : 'bg-orange-500 hover:bg-orange-600 text-white'}`}
+                                        disabled={breakElapsed < 1200 && compulsoryBreakEnforced}
+                                        className={`${(breakElapsed < 1200 && compulsoryBreakEnforced) ? 'bg-slate-100 text-slate-400' : 'bg-orange-500 hover:bg-orange-600 text-white'}`}
                                       >
                                         End Break
                                       </Button>
@@ -1455,13 +1482,13 @@ export const EmployeeDashboard: React.FC = () => {
                                 });
                               }}
                               variant="secondary"
-                              className={`w-full font-extrabold flex flex-col items-center py-2.5 rounded-xl transition-all active:scale-95 border ${breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled
+                              className={`w-full font-extrabold flex flex-col items-center py-2.5 rounded-xl transition-all active:scale-95 border ${breakElapsed < 1200 && compulsoryBreakEnforced
                                 ? 'bg-slate-100 text-slate-500 border-slate-200 cursor-not-allowed shadow-none'
                                 : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-500 shadow-md shadow-indigo-100'
                                 }`}
                             >
                               <span className="text-sm uppercase tracking-wide">End Break</span>
-                              {breakElapsed < 1200 && !todayRecord?.isCompulsoryBreakDisabled && (
+                              {breakElapsed < 1200 && compulsoryBreakEnforced && (
                                 <span className="text-[10px] font-bold mt-0.5 bg-slate-200 text-slate-600 px-2 py-0.5 rounded-md">
                                   {Math.ceil((1200 - breakElapsed) / 60)}m remaining
                                 </span>
@@ -1470,7 +1497,7 @@ export const EmployeeDashboard: React.FC = () => {
                           </div>
                         )
                       ) : (
-                        /* CHECKOUT LOGIC: Mandatory 8h 15m (29700 seconds) */
+                        /* CHECKOUT: full day 8h15m; half-day leave = ~4h7.5m minimum (server-aligned) */
                         <div className="w-full flex flex-col gap-2">
                           {/* Request Overtime Button (shows after 8h 22m) */}
                           {isCheckedIn && !isCheckedOut && !isOnBreak && elapsed >= 30120 && (!todayRecord?.overtimeRequest || todayRecord.overtimeRequest.status === 'None') && (
@@ -1482,7 +1509,7 @@ export const EmployeeDashboard: React.FC = () => {
                             </Button>
                           )}
 
-                          {(elapsed >= 29700) || todayRecord?.earlyLogoutRequest === 'Approved' ? (
+                          {(elapsed >= minShiftSecondsForTodayCheckout) || todayRecord?.earlyLogoutRequest === 'Approved' ? (
                             <Button
                               variant="danger"
                               disabled={isCheckOutRestricted}
@@ -1499,7 +1526,7 @@ export const EmployeeDashboard: React.FC = () => {
                                       return duration >= 1200; // 20 minutes
                                     });
 
-                                    if (!hasCompletedFullBreak && !todayRecord?.isCompulsoryBreakDisabled && todayRecord?.earlyLogoutRequest !== 'Approved') {
+                                    if (!hasCompletedFullBreak && compulsoryBreakEnforced && todayRecord?.earlyLogoutRequest !== 'Approved') {
                                       setConfirmationPopup({
                                         show: true,
                                         title: '⚠️ Break Policy Alert',
@@ -1533,7 +1560,7 @@ export const EmployeeDashboard: React.FC = () => {
                           ) : (
                             <div className="w-full flex flex-col gap-2">
                               {/* If shift is complete but break is missing, notify user */}
-                              {elapsed >= 29700 && !hasStandardBreak && (
+                              {elapsed >= minShiftSecondsForTodayCheckout && !hasStandardBreak && compulsoryBreakEnforced && (
                                 <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl mb-1 text-center">
                                   <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest block">Break Required</span>
                                   <span className="text-[10px] font-bold text-amber-500">Take your mandatory 20-minute break before checkout.</span>
