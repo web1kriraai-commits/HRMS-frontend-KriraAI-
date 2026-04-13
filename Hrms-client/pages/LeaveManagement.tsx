@@ -24,7 +24,8 @@ import {
     Pencil,
     RotateCcw,
     Trash2,
-    Filter
+    Filter,
+    Loader2
 } from 'lucide-react';
 import { formatDate, getTodayStr } from '../services/utils';
 import { userAPI } from '../services/api';
@@ -43,6 +44,7 @@ export const LeaveManagement: React.FC = () => {
     const [allocationAction, setAllocationAction] = useState<'set' | 'add'>('add');
     const [searchQuery, setSearchQuery] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [togglingPaidAccessUserId, setTogglingPaidAccessUserId] = useState<string | null>(null);
     const [selectedHistoryUser, setSelectedHistoryUser] = useState<any>(null);
     const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
     const [isAllocationModalOpen, setIsAllocationModalOpen] = useState(false);
@@ -56,6 +58,7 @@ export const LeaveManagement: React.FC = () => {
     const [manualExtraTimeAdjustment, setManualExtraTimeAdjustment] = useState('');
     const [manualUnpaidAdjustment, setManualUnpaidAdjustment] = useState('');
     const [manualHalfDayAdjustment, setManualHalfDayAdjustment] = useState('');
+    const [paidLeaveAccessEnabled, setPaidLeaveAccessEnabled] = useState(true);
 
     // Global History Filters & Pagination
     const [histStatusFilter, setHistStatusFilter] = useState<'All' | 'Pending' | 'Approved' | 'Rejected' | 'Cancelled'>('All');
@@ -93,6 +96,7 @@ export const LeaveManagement: React.FC = () => {
             setManualUnpaidAdjustment(totalUnpaid.toString());
             setManualHalfDayAdjustment('0');
             setAllocationAction('set'); // Default to set for existing users
+            setPaidLeaveAccessEnabled(user.paidLeaveAccess !== false);
         }
     };
 
@@ -105,6 +109,7 @@ export const LeaveManagement: React.FC = () => {
         setManualUnpaidAdjustment('');
         setManualHalfDayAdjustment('');
         setAllocationAction('add');
+        setPaidLeaveAccessEnabled(true);
     };
 
     const location = useLocation();
@@ -235,6 +240,7 @@ export const LeaveManagement: React.FC = () => {
                     email: user.email,
                     role: user.role,
                     department: user.department,
+                    paidLeaveAccess: user.paidLeaveAccess !== false,
                     paidAllocated: allocated,
                     extraTimeAllocated,
                     usedPaidLeaves: totalPaid,
@@ -303,6 +309,18 @@ export const LeaveManagement: React.FC = () => {
         currentPageHist * HIST_ITEMS_PER_PAGE
     );
 
+    const toggleEmployeePaidLeaveAccess = async (stat: { id: string; paidLeaveAccess: boolean }) => {
+        if (togglingPaidAccessUserId) return;
+        setTogglingPaidAccessUserId(stat.id);
+        try {
+            await updateUser(stat.id, { paidLeaveAccess: !stat.paidLeaveAccess });
+        } catch (err: any) {
+            alert(err?.message || 'Could not update paid leave access. Only Admin can change this.');
+        } finally {
+            setTogglingPaidAccessUserId(null);
+        }
+    };
+
     const handleAllocationSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!selectedUserForAllocation) return;
@@ -319,6 +337,7 @@ export const LeaveManagement: React.FC = () => {
             await updateUser(selectedUserForAllocation, {
                 ...(allocationAmount !== '' && { paidLeaveAllocation: Number(allocationAmount) }),
                 paidLeaveAction: allocationAction,
+                paidLeaveAccess: paidLeaveAccessEnabled,
                 manualPaidLeaveAdjustment: newPaidOffset,
                 manualExtraTimeAdjustment: newExtraOffset,
                 manualUnpaidLeaveAdjustment: newUnpaidOffset,
@@ -417,6 +436,9 @@ export const LeaveManagement: React.FC = () => {
                             Employee Leave Summary
                         </h3>
                         <p className="text-slate-400 text-xs font-medium mt-1 uppercase tracking-wider">Historical breakdown per category</p>
+                        <p className="text-slate-500 text-[11px] font-medium mt-2 normal-case tracking-normal max-w-xl">
+                            <strong className="text-slate-700">Paid use:</strong> click <span className="text-emerald-700 font-semibold">Yes</span> / <span className="text-slate-600 font-semibold">No</span> to allow or block paid leave for that employee. When <strong>No</strong>, their dashboard hides Paid Leave and half-day can only be unpaid.
+                        </p>
                     </div>
                     <div className="relative">
                         <input
@@ -434,7 +456,8 @@ export const LeaveManagement: React.FC = () => {
                     <table className="w-full text-sm">
                         <thead>
                             <tr className="bg-slate-50/70 text-slate-400 uppercase text-[10px] font-black tracking-[0.15em] border-b border-slate-100">
-                                <th className="px-8 py-5 text-left w-[20%] font-black uppercase tracking-widest text-slate-400">Employee</th>
+                                <th className="px-8 py-5 text-left w-[18%] font-black uppercase tracking-widest text-slate-400">Employee</th>
+                                <th className="px-3 py-5 text-center font-black uppercase tracking-widest text-slate-400" title="Click Yes to allow paid leave; No = unpaid only (also in Adjust Leave Balances)">Paid use</th>
                                 <th className="px-4 py-5 text-center font-black uppercase tracking-widest text-slate-400">Allocated</th>
                                 <th className="px-4 py-5 text-center font-black uppercase tracking-widest text-slate-400">Paid</th>
                                 <th className="px-4 py-5 text-center font-black uppercase tracking-widest text-slate-400">Extra Time</th>
@@ -457,6 +480,26 @@ export const LeaveManagement: React.FC = () => {
                                             </div>
                                         </div>
                                     </td>
+                                    <td className="px-3 py-5 text-center">
+                                        <button
+                                            type="button"
+                                            onClick={() => toggleEmployeePaidLeaveAccess(stat)}
+                                            disabled={!!togglingPaidAccessUserId}
+                                            title={stat.paidLeaveAccess ? 'Paid leave allowed — click to turn off (employee will only see Unpaid)' : 'Paid leave off — click to allow again'}
+                                            className={`min-w-[3.25rem] inline-flex items-center justify-center gap-1 text-[9px] font-black uppercase tracking-wider px-2.5 py-1.5 rounded-lg border transition-all shadow-sm disabled:opacity-60 ${stat.paidLeaveAccess
+                                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100 cursor-pointer'
+                                                : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200 cursor-pointer'
+                                                }`}
+                                        >
+                                            {togglingPaidAccessUserId === stat.id ? (
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            ) : stat.paidLeaveAccess ? (
+                                                'Yes'
+                                            ) : (
+                                                'No'
+                                            )}
+                                        </button>
+                                    </td>
                                     <td className="px-4 py-5 text-center">
                                         <div className="flex items-center justify-center gap-2 group/palloc">
                                             <span className="font-black text-slate-700 bg-slate-50 border border-slate-100 px-3 py-1.5 rounded-xl text-xs">{formatDisplayDays(stat.paidAllocated)}</span>
@@ -470,6 +513,7 @@ export const LeaveManagement: React.FC = () => {
                                                     setManualUnpaidAdjustment(stat.totalUnpaid.toString());
                                                     setManualHalfDayAdjustment('0');
                                                     setAllocationAction('set');
+                                                    setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
                                                     setIsAllocationModalOpen(true);
                                                 }}
                                                 className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-blue-600 hover:text-white transition-all opacity-0 group-hover/palloc:opacity-100 shadow-sm"
@@ -492,6 +536,7 @@ export const LeaveManagement: React.FC = () => {
                                                     setManualUnpaidAdjustment(stat.totalUnpaid.toString());
                                                     setManualHalfDayAdjustment('0');
                                                     setAllocationAction('set');
+                                                    setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
                                                     setIsAllocationModalOpen(true);
                                                 }}
                                                 className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-rose-600 hover:text-white transition-all opacity-0 group-hover/paid:opacity-100 shadow-sm"
@@ -519,6 +564,7 @@ export const LeaveManagement: React.FC = () => {
                                                     setManualUnpaidAdjustment(stat.totalUnpaid.toString());
                                                     setManualHalfDayAdjustment('0');
                                                     setAllocationAction('set');
+                                                    setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
                                                     setIsAllocationModalOpen(true);
                                                 }}
                                                 className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-emerald-600 hover:text-white transition-all opacity-0 group-hover/extra:opacity-100 shadow-sm"
@@ -546,6 +592,7 @@ export const LeaveManagement: React.FC = () => {
                                                     setManualUnpaidAdjustment(stat.totalUnpaid.toString());
                                                     setManualHalfDayAdjustment('0');
                                                     setAllocationAction('set');
+                                                    setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
                                                     setIsAllocationModalOpen(true);
                                                 }}
                                                 className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-rose-700 hover:text-white transition-all opacity-0 group-hover/unpaid:opacity-100 shadow-sm"
@@ -572,6 +619,7 @@ export const LeaveManagement: React.FC = () => {
                                                     setManualUnpaidAdjustment(stat.totalUnpaid.toString());
                                                     setManualHalfDayAdjustment('0');
                                                     setAllocationAction('set');
+                                                    setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
                                                     setIsAllocationModalOpen(true);
                                                 }}
                                                 className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-slate-900 hover:text-white transition-all opacity-0 group-hover/balance:opacity-100 shadow-sm"
@@ -903,6 +951,25 @@ export const LeaveManagement: React.FC = () => {
                                     </div>
                                 </div>
                             </div>
+
+                            {selectedUserForAllocation && (
+                                <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-2">
+                                    <label className="flex items-start gap-3 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                            checked={paidLeaveAccessEnabled}
+                                            onChange={(e) => setPaidLeaveAccessEnabled(e.target.checked)}
+                                        />
+                                        <span>
+                                            <span className="block text-sm font-bold text-slate-800">Allow paid leave requests</span>
+                                            <span className="block text-[11px] text-slate-500 mt-1 leading-snug">
+                                                Turn off so this employee can only request <strong className="text-slate-700">Unpaid Leave</strong> and half-day as <strong className="text-slate-700">unpaid</strong>. Existing approved paid history is unchanged.
+                                            </span>
+                                        </span>
+                                    </label>
+                                </div>
+                            )}
 
                             {/* Action Toggle */}
                             <div className="space-y-2">

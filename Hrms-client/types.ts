@@ -34,6 +34,8 @@ export interface User {
   password?: string; // Simulated hashed password
   isFirstLogin: boolean;
   lastLogin?: string; // ISO String
+  /** false = employee may only use unpaid leave (set by Admin on Leave Management). */
+  paidLeaveAccess?: boolean;
   paidLeaveAllocation?: number | null; // Custom paid leave allocation (null = use default)
   extraTimeLeaveAllocation?: number | null; // Custom extra time leave allocation (null = 0 by default)
   paidLeaveLastAllocatedDate?: string; // ISO string - Last date when paid leave was allocated

@@ -329,6 +329,7 @@ export const userAPI = {
 
   updateUser: async (id: string, updates: {
     paidLeaveAllocation?: number | null;
+    paidLeaveAccess?: boolean;
     manualPaidLeaveAdjustment?: number;
     manualExtraTimeAdjustment?: number;
     manualUnpaidLeaveAdjustment?: number;

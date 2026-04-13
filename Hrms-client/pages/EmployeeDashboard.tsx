@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
-import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate } from '../services/utils';
+import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn } from '../services/utils';
 import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -64,6 +64,7 @@ const formatDisplayDays = (val: number) => {
 export const EmployeeDashboard: React.FC = () => {
   const { auth, attendanceRecords, clockIn, clockOut, startBreak, endBreak, requestLeave, leaveRequests, notifications, companyHolidays, systemSettings, refreshData, updateLeaveStatus } = useApp();
   const user = auth.user;
+  const canRequestPaidLeave = user ? user.paidLeaveAccess !== false : true;
 
   // Real-time timer
   const [elapsed, setElapsed] = useState(0);
@@ -101,6 +102,13 @@ export const EmployeeDashboard: React.FC = () => {
   const [overtimeMinutes, setOvertimeMinutes] = useState<number>(0);
   const [overtimeTargetDate, setOvertimeTargetDate] = useState<string | null>(null);
   const [isSubmittingOvertime, setIsSubmittingOvertime] = useState(false);
+
+  /** Updates every second so check-in/checkout time gates unlock without waiting for unrelated re-renders */
+  const [wallClockNow, setWallClockNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setWallClockNow(new Date()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   // On mount: if page was reloaded (refresh), auto-cancel any lingering Pause break
   useEffect(() => {
@@ -343,6 +351,16 @@ export const EmployeeDashboard: React.FC = () => {
     startTime: '', // For extra time leave and half day leave
     endTime: '' // For extra time leave
   });
+
+  useLayoutEffect(() => {
+    if (!user || user.paidLeaveAccess !== false) return;
+    setLeaveForm((prev) => {
+      const next = { ...prev };
+      if (prev.type === LeaveCategory.PAID) next.type = LeaveCategory.UNPAID;
+      if (prev.halfDayLeaveType === 'paid') next.halfDayLeaveType = 'unpaid';
+      return next;
+    });
+  }, [user?.id, user?.paidLeaveAccess]);
 
   const isOnBreak = localBreakStartTime !== null || todayRecord?.breaks.some(b => !b.end);
   const isCheckedIn = !!localCheckInTime || !!todayRecord?.checkIn;
@@ -966,6 +984,11 @@ export const EmployeeDashboard: React.FC = () => {
   const handleResolveAbsence = async (date: string, category: LeaveCategory) => {
     if (!date || !user || isResolvingAbsence) return;
 
+    if (category === LeaveCategory.PAID && !canRequestPaidLeave) {
+      alert('Paid leave is not enabled for your account. Please resolve using Unpaid Leave or contact your administrator.');
+      return;
+    }
+
     // Check if enough paid leaves available
     if (category === LeaveCategory.PAID && availablePaidLeaves < 1) {
       alert(`You do not have enough Paid Leave balance (Available: ${availablePaidLeaves}). Please use Extra Time or contact HR.`);
@@ -1027,22 +1050,20 @@ export const EmployeeDashboard: React.FC = () => {
   // Extra Time Worked = Final Time (convert from seconds to hours)
   const extraTimeWorkedHours = finalTimeDifference / 3600;
 
-  // Time Restrictions Logic
+  // Time Restrictions Logic (8:30 AM earliest check-in = company timezone; checkout gate uses device local time to match prior UI)
   const isCheckInRestricted = useMemo(() => {
     if (user?.role === 'Admin') return false;
-    const h = now.getHours();
-    const m = now.getMinutes();
-    return h < 8 || (h === 8 && m < 30);
-  }, [now, user?.role]);
+    return isBeforeEarliestCheckIn(wallClockNow, systemSettings.timezone);
+  }, [wallClockNow, user?.role, systemSettings.timezone]);
 
   const isCheckOutRestricted = useMemo(() => {
     if (user?.role === 'Admin') return false;
     if (todayRecord?.earlyLogoutRequest === 'Approved') return false;
     if (isHalfDayLeaveToday) return false;
-    const h = now.getHours();
-    const m = now.getMinutes();
+    const h = wallClockNow.getHours();
+    const m = wallClockNow.getMinutes();
     return h < 17 || (h === 17 && m < 30);
-  }, [now, user?.role, todayRecord?.earlyLogoutRequest, isHalfDayLeaveToday]);
+  }, [wallClockNow, user?.role, todayRecord?.earlyLogoutRequest, isHalfDayLeaveToday]);
 
   // OLD LOGIC: Extra Time Leave Balance = Extra Time Worked (Final Time) - Extra Time Leave Taken
   const extraTimeLeaveHoursTaken = baseExtraTimeLeaveHours;
@@ -1323,7 +1344,8 @@ export const EmployeeDashboard: React.FC = () => {
                             {unresolvedAbsenceDates.map((date) => (
                               <div key={date} className="bg-white/60 border border-rose-100 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                                 <span className="font-bold text-gray-800">{convertToDDMMYYYY(date)}</span>
-                                <div className="flex gap-2">
+                                <div className="flex gap-2 flex-wrap">
+                                  {canRequestPaidLeave && (
                                   <Button 
                                     size="sm"
                                     variant="danger" 
@@ -1333,6 +1355,7 @@ export const EmployeeDashboard: React.FC = () => {
                                   >
                                     Paid Leave
                                   </Button>
+                                  )}
                                   <Button 
                                     size="sm"
                                     variant="primary" 
@@ -1352,33 +1375,69 @@ export const EmployeeDashboard: React.FC = () => {
                   ) : (
                     <>
                       {!isCheckedIn && !isCheckedOut && (
+                        <div className="flex flex-col items-stretch md:items-start gap-2">
                         <Button 
                           size="lg" 
                           disabled={isCheckInRestricted}
+                          title={
+                            isCheckInRestricted
+                              ? `Check-in is available from 8:30 AM (${systemSettings.timezone})`
+                              : undefined
+                          }
                           onClick={() => {
+                            if (isCheckInRestricted) return;
+                            if (user?.role !== 'Admin' && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone)) {
+                              alert(`Check-in is only allowed from 8:30 AM (${systemSettings.timezone}).`);
+                              return;
+                            }
                             setConfirmationPopup({
                               show: true,
                               title: 'Confirm Check In',
                               message: 'Are you sure you want to check in?',
                               onConfirm: async () => {
+                                if (user?.role !== 'Admin' && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone)) {
+                                  alert(`Check-in is only allowed from 8:30 AM (${systemSettings.timezone}).`);
+                                  setConfirmationPopup(null);
+                                  return;
+                                }
                                 const checkInTime = new Date();
                                 setLocalCheckInTime(checkInTime);
                                 try {
                                   await clockIn();
                                   setConfirmationPopup(null);
-                                } catch (error) {
-                                  // Reset on error
+                                } catch (error: unknown) {
                                   setLocalCheckInTime(null);
                                   setConfirmationPopup(null);
-                                  throw error;
+                                  const msg =
+                                    error instanceof Error
+                                      ? error.message
+                                      : 'Check-in failed. Please try again.';
+                                  alert(msg);
                                 }
                               },
                               onCancel: () => setConfirmationPopup(null)
                             });
                           }} className={`w-full md:w-48 h-14 text-lg shadow-lg ${isCheckInRestricted ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed shadow-none' : 'shadow-blue-200'}`}>
                           <Clock className="mr-2" /> 
-                          {isCheckInRestricted ? 'Starts at 8:30 AM' : 'Check In'}
+                          {isCheckInRestricted ? 'From 8:30 AM' : 'Check In'}
                         </Button>
+                        {isCheckInRestricted && (
+                          <p className="text-xs text-slate-500 max-w-xs leading-relaxed">
+                            Check-in opens at{' '}
+                            <span className="font-semibold text-slate-600">8:30 AM</span> in{' '}
+                            <span className="font-mono">{systemSettings.timezone}</span>.
+                            Now:{' '}
+                            <span className="font-mono tabular-nums">
+                              {wallClockNow.toLocaleTimeString('en-US', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit',
+                                timeZone: systemSettings.timezone
+                              })}
+                            </span>
+                          </p>
+                        )}
+                        </div>
                       )}
                     </>
                   )}
@@ -1865,6 +1924,16 @@ export const EmployeeDashboard: React.FC = () => {
                 if (!leaveForm.start || !leaveForm.reason) return;
                 if (leaveForm.type !== LeaveCategory.HALF_DAY && leaveForm.type !== LeaveCategory.EXTRA_TIME && !leaveForm.end) return;
 
+                if (leaveForm.type === LeaveCategory.PAID && !canRequestPaidLeave) {
+                  alert('Paid leave is not enabled for your account. Please choose Unpaid Leave or contact your administrator.');
+                  return;
+                }
+
+                if (leaveForm.type === LeaveCategory.HALF_DAY && leaveForm.halfDayLeaveType === 'paid' && !canRequestPaidLeave) {
+                  alert('Paid leave is not enabled for your account. Use half-day as Unpaid or contact your administrator.');
+                  return;
+                }
+
                 if (leaveForm.type === LeaveCategory.PAID && isPaidLeaveExhausted) {
                   alert(`All ${TOTAL_PAID_LEAVES} paid leaves have been used. Please select another leave type.`);
                   return;
@@ -1920,8 +1989,13 @@ export const EmployeeDashboard: React.FC = () => {
                 <div>
                   <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Category</label>
                   <select className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all appearance-none" value={leaveForm.type} onChange={e => setLeaveForm({ ...leaveForm, type: e.target.value as LeaveCategory })}>
-                    {Object.values(LeaveCategory).filter(c => c !== LeaveCategory.EXTRA_TIME).map(c => (
-                      <option key={c} value={c} disabled={c === LeaveCategory.PAID && isPaidLeaveExhausted}>{c}{c === LeaveCategory.PAID && isPaidLeaveExhausted ? ' (Exhausted)' : ''}</option>
+                    {Object.values(LeaveCategory).filter(c =>
+                      c !== LeaveCategory.EXTRA_TIME &&
+                      (canRequestPaidLeave || c !== LeaveCategory.PAID)
+                    ).map(c => (
+                      <option key={c} value={c} disabled={c === LeaveCategory.PAID && isPaidLeaveExhausted}>
+                        {c}{c === LeaveCategory.PAID && isPaidLeaveExhausted ? ' (Exhausted)' : ''}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -1932,11 +2006,16 @@ export const EmployeeDashboard: React.FC = () => {
                       <input type="time" className="w-full p-2 border border-slate-200 rounded-lg text-sm" required value={leaveForm.startTime} onChange={e => setLeaveForm({ ...leaveForm, startTime: e.target.value })} />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Deduct From</label>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                        {canRequestPaidLeave ? 'Deduct From' : 'Balance type'}
+                      </label>
                       <select className="w-full p-2 border border-slate-200 rounded-lg text-sm" value={leaveForm.halfDayLeaveType} onChange={e => setLeaveForm({ ...leaveForm, halfDayLeaveType: e.target.value })}>
-                        <option value="paid">Paid Leave</option>
+                        {canRequestPaidLeave && <option value="paid">Paid Leave</option>}
                         <option value="unpaid">Unpaid Leave</option>
                       </select>
+                      {!canRequestPaidLeave && (
+                        <p className="text-[10px] text-amber-700 mt-1 font-medium">Paid half-day is not available for your account.</p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1949,7 +2028,12 @@ export const EmployeeDashboard: React.FC = () => {
             </Card>
 
             <Card title="Paid Leave Balance" className="h-fit">
-              <div className={`p-4 rounded-2xl border ${availablePaidLeaves > 0 ? 'bg-indigo-50/50 border-indigo-100/60' : 'bg-rose-50/50 border-rose-100/60'}`}>
+              <div className={`p-4 rounded-2xl border ${!canRequestPaidLeave ? 'bg-amber-50/50 border-amber-100/60' : availablePaidLeaves > 0 ? 'bg-indigo-50/50 border-indigo-100/60' : 'bg-rose-50/50 border-rose-100/60'}`}>
+                {!canRequestPaidLeave && (
+                  <p className="text-xs text-amber-900 font-semibold mb-3 leading-relaxed border-b border-amber-100/80 pb-3">
+                    Paid leave requests are turned off for your account. You can still request <strong>Unpaid Leave</strong> (and half-day as unpaid). Contact your administrator if this should change.
+                  </p>
+                )}
                 <div className="flex items-center justify-between mb-4">
                   <div>
                     <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Yearly Summary</p>
@@ -2246,17 +2330,21 @@ export const EmployeeDashboard: React.FC = () => {
                   <tr><td colSpan={6} className="text-center py-4">No records found.</td></tr>
                 ) : (
                   myAttendanceHistory.map(r => {
-                    // Find if there's an approved half day leave for this date
+                    const recordDate = typeof r.date === 'string' ? r.date.split('T')[0] : getLocalISOString(new Date(r.date));
+                    const halfDayThisDate =
+                      user?.id && hasApprovedHalfDayLeaveOnDate(myLeaves, user.id, recordDate);
+                    // Find leave row for label (time range)
                     const halfDayLeave = myLeaves.find(l => {
                       const status = String(l.status || '').trim();
                       const isApproved = status === 'Approved' || status === LeaveStatus.APPROVED;
                       if (!isApproved || l.category !== LeaveCategory.HALF_DAY) return false;
-                      const leaveDate = new Date(l.startDate).toISOString().split('T')[0];
-                      return leaveDate === r.date;
+                      const start = typeof l.startDate === 'string' ? l.startDate.split('T')[0] : getLocalISOString(new Date(l.startDate));
+                      const end = typeof l.endDate === 'string' ? l.endDate.split('T')[0] : getLocalISOString(new Date(l.endDate));
+                      return recordDate >= start && recordDate <= end;
                     });
 
                     // Check if this day is a company holiday
-                    const isHolidayWorkDay = holidayDateSet.has(r.date);
+                    const isHolidayWorkDay = holidayDateSet.has(recordDate);
 
                     return (
                       <tr key={r.id} className={`bg-white border-b hover:bg-gray-50 ${isHolidayWorkDay ? 'bg-amber-50' : ''}`}>
@@ -2280,7 +2368,7 @@ export const EmployeeDashboard: React.FC = () => {
                             const isLate = !!r.lateCheckIn;
                             const hasPenalty = (r.penaltySeconds || 0) > 0;
                             const shouldShowPenalty = isPenaltyEffective(r.date);
-                            return (isLate && hasPenalty && shouldShowPenalty) ? (
+                            return (isLate && hasPenalty && shouldShowPenalty && !halfDayThisDate) ? (
                               <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
                                 <AlertCircle size={10} /> Late Penalty: {formatPenaltyDisplay(r.penaltySeconds || 0)}
                               </div>
@@ -2288,12 +2376,16 @@ export const EmployeeDashboard: React.FC = () => {
                           })()}
                         </td>
                         <td className="px-4 py-3 font-mono font-bold">
-                          {formatDuration(r.totalWorkedSeconds)}
+                          {formatDuration(
+                            halfDayThisDate
+                              ? (r.totalWorkedSeconds || 0) + (r.penaltySeconds || 0)
+                              : r.totalWorkedSeconds || 0
+                          )}
                           {(() => {
                             const isLate = !!r.lateCheckIn;
                             const hasPenalty = (r.penaltySeconds || 0) > 0;
                             const shouldShowPenalty = isPenaltyEffective(r.date);
-                            return (isLate && hasPenalty && shouldShowPenalty) ? (
+                            return (isLate && hasPenalty && shouldShowPenalty && !halfDayThisDate) ? (
                               <div className="text-[10px] text-gray-400 font-normal">
                                 (-{formatPenaltyDisplay(r.penaltySeconds || 0)} penalty applied)
                               </div>

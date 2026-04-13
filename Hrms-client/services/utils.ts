@@ -1,4 +1,4 @@
-import { Attendance, Bond, Break, User } from '../types';
+import { Attendance, Bond, Break, User, LeaveRequest, LeaveCategory, LeaveStatus } from '../types';
 
 // Business Rules
 // BR1: Low Time < 8:15 (495 mins), Extra Time > 8:22 (502 mins)
@@ -15,6 +15,31 @@ export const ABSENCE_PENALTY_EFFECTIVE_DATE = '2026-04-06';
 export const OVERTIME_POLICY_EFFECTIVE_DATE = '2026-04-06';
 /** Aligned with Hrms-server COMPULSORY_BREAK_EFFECTIVE_DATE */
 export const COMPULSORY_BREAK_EFFECTIVE_DATE = '2026-04-06';
+
+const normYmd = (s: string) => {
+  if (!s) return '';
+  const x = s.includes('T') ? s.split('T')[0] : s;
+  return x.slice(0, 10);
+};
+
+/** Approved half-day leave covering this calendar day → no late check-in penalty (UI + summaries). */
+export const hasApprovedHalfDayLeaveOnDate = (
+  leaves: Array<Pick<LeaveRequest, 'userId' | 'startDate' | 'endDate' | 'category' | 'status'>>,
+  userId: string,
+  dateStr: string
+): boolean => {
+  const d = normYmd(dateStr);
+  return leaves.some(l => {
+    if (l.userId !== userId) return false;
+    const st = String(l.status || '').trim();
+    if (st !== 'Approved' && st !== LeaveStatus.APPROVED) return false;
+    const cat = String(l.category || '');
+    if (cat !== LeaveCategory.HALF_DAY && cat !== 'Half Day Leave') return false;
+    const start = normYmd(l.startDate);
+    const end = normYmd(l.endDate);
+    return d >= start && d <= end;
+  });
+};
 
 export const isLateCheckIn = (isoStr?: string): boolean => {
   if (!isoStr) return false;
@@ -204,6 +229,31 @@ export const formatDate = (dateStr: string | Date): string => {
   if (isNaN(date.getTime())) return 'Invalid Date';
 
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+/** True if local time in `timeZone` is still before 8:30 (employees cannot check in yet). */
+export const isBeforeEarliestCheckIn = (
+  date: Date,
+  timeZone: string = 'Asia/Kolkata',
+  earliestHour = 8,
+  earliestMinute = 30
+): boolean => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false
+    });
+    const parts = formatter.formatToParts(date);
+    const h = parseInt(parts.find((p) => p.type === 'hour')!.value, 10);
+    const m = parseInt(parts.find((p) => p.type === 'minute')!.value, 10);
+    return h < earliestHour || (h === earliestHour && m < earliestMinute);
+  } catch {
+    const h = date.getHours();
+    const m = date.getMinutes();
+    return h < earliestHour || (h === earliestHour && m < earliestMinute);
+  }
 };
 
 // BR6: Display timestamps in company timezone

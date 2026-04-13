@@ -79,6 +79,7 @@ const transformUser = (apiUser: any): User => ({
   isActive: apiUser.isActive,
   isFirstLogin: apiUser.isFirstLogin,
   lastLogin: apiUser.lastLogin,
+  paidLeaveAccess: apiUser.paidLeaveAccess !== false,
   paidLeaveAllocation: apiUser.paidLeaveAllocation !== undefined ? apiUser.paidLeaveAllocation : null,
   paidLeaveLastAllocatedDate: apiUser.paidLeaveLastAllocatedDate ? new Date(apiUser.paidLeaveLastAllocatedDate).toISOString() : undefined,
   manualPaidLeaveAdjustment: apiUser.manualPaidLeaveAdjustment || 0,
@@ -523,7 +524,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const updateUser = async (id: string, updates: { 
     paidLeaveAllocation?: number | null; 
-    paidLeaveAction?: 'set' | 'add'; 
+    paidLeaveAction?: 'set' | 'add';
+    paidLeaveAccess?: boolean;
     manualPaidLeaveAdjustment?: number;
     manualExtraTimeAdjustment?: number;
     manualUnpaidLeaveAdjustment?: number;

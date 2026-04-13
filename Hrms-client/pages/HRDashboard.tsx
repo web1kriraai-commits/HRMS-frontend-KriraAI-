@@ -1868,10 +1868,12 @@ export const HRDashboard: React.FC = () => {
                           const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
                           const halfDayLeave = monthlyLeaves.find(l => {
                             const status = String(l.status || '').trim();
-                            const isApproved = status === 'Approved' || status === 'Approved';
-                            if (!isApproved || l.category !== 'Half Day Leave') return false;
-                            const leaveDate = typeof l.startDate === 'string' ? l.startDate.split('T')[0] : new Date(l.startDate).toISOString().split('T')[0];
-                            return leaveDate === recordDateISO;
+                            const isApproved = status === 'Approved' || status === LeaveStatus.APPROVED;
+                            if (!isApproved) return false;
+                            if (l.category !== LeaveCategory.HALF_DAY && l.category !== 'Half Day Leave') return false;
+                            const start = typeof l.startDate === 'string' ? l.startDate.split('T')[0] : new Date(l.startDate).toISOString().split('T')[0];
+                            const end = typeof l.endDate === 'string' ? l.endDate.split('T')[0] : new Date(l.endDate).toISOString().split('T')[0];
+                            return recordDateISO >= start && recordDateISO <= end;
                           });
 
                           // Normal time: 8:15 to 8:22, Low < 8:15, Extra > 8:22
@@ -1918,7 +1920,7 @@ export const HRDashboard: React.FC = () => {
                               <span className="text-emerald-600 font-semibold">
                                 {formatTime(record.checkIn)}
                               </span>
-                              {isLateCheckIn && record.penaltySeconds > 0 && (
+                              {isLateCheckIn && record.penaltySeconds > 0 && !halfDayLeave && (
                                 <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
                                   <AlertCircle size={10} /> Late Penalty: 15m
                                 </div>
@@ -1951,7 +1953,7 @@ export const HRDashboard: React.FC = () => {
                               <span className="font-bold text-gray-800">
                                 {netWorkedRawSeconds > 0 ? formatDuration(netWorkedRawSeconds) : '-'}
                               </span>
-                              {isLateCheckIn && record.penaltySeconds > 0 && (
+                              {isLateCheckIn && record.penaltySeconds > 0 && !halfDayLeave && (
                                 <div className="text-[10px] text-gray-400 font-normal">
                                   (-15m penalty applied)
                                 </div>

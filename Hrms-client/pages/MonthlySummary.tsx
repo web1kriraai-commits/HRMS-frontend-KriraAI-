@@ -16,7 +16,8 @@ import {
   LayoutDashboard,
   ChevronRight,
   ChevronLeft,
-  Briefcase
+  Briefcase,
+  Users
 } from 'lucide-react';
 import { 
   formatDate, 
@@ -29,9 +30,24 @@ import {
   isPenaltyEffective,
   calculateLatenessPenaltySeconds,
   getAbsenceStartDate,
-  calculateLeaveDays
+  calculateLeaveDays,
+  hasApprovedHalfDayLeaveOnDate
 } from '../services/utils';
 import { Role, LeaveCategory, LeaveStatus, Attendance, LeaveRequest } from '../types';
+
+/** Select value for organization-wide summary (all non-admin employees). */
+const ALL_EMPLOYEES_VALUE = 'all';
+
+/** Fixed absence deduction shown in penalty list (must match aggregated seconds). */
+const ABSENCE_PENALTY_SECONDS = 8 * 3600 + 15 * 60;
+
+const formatHoursMinutes = (totalMinutes: number) => {
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (h > 0 && m > 0) return `${h}h ${m}m`;
+  if (h > 0) return `${h}h`;
+  return `${m}m`;
+};
 
 export const MonthlySummary: React.FC = () => {
   const { users, attendanceRecords, leaveRequests, companyHolidays, loading } = useApp();
@@ -42,10 +58,23 @@ export const MonthlySummary: React.FC = () => {
   });
   
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>(ALL_EMPLOYEES_VALUE);
+
+  const isAllEmployees =
+    selectedEmployeeId === ALL_EMPLOYEES_VALUE || selectedEmployeeId === '';
   const [leaveTypeFilter, setLeaveTypeFilter] = useState<string>('All');
   const [activeTableTab, setActiveTableTab] = useState<'penalties' | 'leaves' | 'earlyCheckout' | 'overtime'>('penalties');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+
+  const employeeOptions = useMemo(
+    () =>
+      users
+        .filter(u => u.role !== Role.ADMIN)
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [users]
+  );
 
   // Derive numeric month (0-indexed) and year from the selected value
   const [selectedYear, selectedMonthIdx] = useMemo(() => {
@@ -60,7 +89,7 @@ export const MonthlySummary: React.FC = () => {
   // Reset page when tab or filters change
   React.useEffect(() => {
     setCurrentPage(1);
-  }, [activeTableTab, searchQuery, leaveTypeFilter, selectedMonth]);
+  }, [activeTableTab, searchQuery, leaveTypeFilter, selectedMonth, selectedEmployeeId]);
 
   // 1. Penalty History Logic
   const penaltyHistory = useMemo(() => {
@@ -70,7 +99,10 @@ export const MonthlySummary: React.FC = () => {
     const endDate = new Date(year, month, 0, 23, 59, 59);
     const todayStr = getTodayStr();
 
-    users.filter(u => u.role !== Role.ADMIN).forEach(user => {
+    users
+      .filter(u => u.role !== Role.ADMIN)
+      .filter(u => isAllEmployees || u.id === selectedEmployeeId)
+      .forEach(user => {
       // Real attendance records
       const userRecords = attendanceRecords.filter(r => {
         if (r.userId !== user.id) return false;
@@ -102,7 +134,13 @@ export const MonthlySummary: React.FC = () => {
       userRecords.forEach(r => {
         const dateStr = typeof r.date === 'string' && !r.date.includes('T') ? r.date : getLocalISOString(new Date(r.date));
         const isHoliday = holidayDateSet.has(dateStr);
-        if (!isHoliday && !r.isPenaltyDisabled && r.lateCheckIn && r.penaltySeconds) {
+        if (
+          !isHoliday &&
+          !r.isPenaltyDisabled &&
+          r.lateCheckIn &&
+          r.penaltySeconds &&
+          !hasApprovedHalfDayLeaveOnDate(leaveRequests, user.id, dateStr)
+        ) {
           penalties.push({
             id: `late-${r.id}`,
             userId: user.id,
@@ -111,6 +149,7 @@ export const MonthlySummary: React.FC = () => {
             date: dateStr,
             type: 'Late Check-in',
             amount: formatDuration(r.penaltySeconds),
+            amountSeconds: r.penaltySeconds || 0,
             details: `Checked in at ${new Date(r.checkIn!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
           });
         }
@@ -143,6 +182,7 @@ export const MonthlySummary: React.FC = () => {
             date: dateStr,
             type: 'Absence',
             amount: '8h 15m',
+            amountSeconds: ABSENCE_PENALTY_SECONDS,
             details: 'Unexcused absence'
           });
         }
@@ -150,8 +190,17 @@ export const MonthlySummary: React.FC = () => {
       }
     });
 
-    return penalties.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [attendanceRecords, users, selectedMonth, leaveRequests, holidayDateSet]);
+    let sorted = penalties.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      sorted = sorted.filter(
+        (p) =>
+          (p.userName || '').toLowerCase().includes(q) ||
+          (p.department || '').toLowerCase().includes(q)
+      );
+    }
+    return sorted;
+  }, [attendanceRecords, users, selectedMonth, leaveRequests, holidayDateSet, selectedEmployeeId, searchQuery, isAllEmployees]);
 
   // 2. Leave History Logic
   const filteredLeaves = useMemo(() => {
@@ -168,6 +217,7 @@ export const MonthlySummary: React.FC = () => {
       
       if (!inMonth) return false;
       if (leave.status !== LeaveStatus.APPROVED) return false;
+      if (!isAllEmployees && leave.userId !== selectedEmployeeId) return false;
       if (leaveTypeFilter !== 'All' && leave.category !== leaveTypeFilter) return false;
       if (searchQuery && !leave.userName.toLowerCase().includes(searchQuery.toLowerCase())) return false;
       
@@ -176,7 +226,7 @@ export const MonthlySummary: React.FC = () => {
       ...leave,
       totalDays: calculateLeaveDays(leave.startDate, leave.endDate, holidayDateSet)
     })).sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
-  }, [leaveRequests, selectedMonth, leaveTypeFilter, searchQuery, holidayDateSet]);
+  }, [leaveRequests, selectedMonth, leaveTypeFilter, searchQuery, holidayDateSet, selectedEmployeeId, isAllEmployees]);
 
   const totalLeaveDays = useMemo(() => {
     return filteredLeaves.reduce((sum, leave) => sum + (leave.totalDays || 0), 0);
@@ -192,7 +242,8 @@ export const MonthlySummary: React.FC = () => {
       const d = new Date(r.date);
       const inMonth = d >= startDate && d <= endDate;
       if (!inMonth) return false;
-      
+      if (!isAllEmployees && r.userId !== selectedEmployeeId) return false;
+
       const hasRequest = r.earlyLogoutRequest && r.earlyLogoutRequest !== 'None';
       if (!hasRequest) return false;
 
@@ -207,7 +258,7 @@ export const MonthlySummary: React.FC = () => {
       userName: users.find(u => u.id === r.userId)?.name || 'Unknown',
       department: users.find(u => u.id === r.userId)?.department || 'N/A'
     })).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [attendanceRecords, users, selectedMonth, searchQuery]);
+  }, [attendanceRecords, users, selectedMonth, searchQuery, selectedEmployeeId, isAllEmployees]);
 
   const totalEarlyCheckoutMinutes = useMemo(() => {
     return earlyCheckouts.reduce((sum, r) => {
@@ -227,6 +278,7 @@ export const MonthlySummary: React.FC = () => {
       const d = new Date(r.date);
       const inMonth = d >= startDate && d <= endDate;
       if (!inMonth) return false;
+      if (!isAllEmployees && r.userId !== selectedEmployeeId) return false;
 
       const hasOT = r.overtimeRequest && r.overtimeRequest.status !== 'None';
       if (!hasOT) return false;
@@ -253,15 +305,117 @@ export const MonthlySummary: React.FC = () => {
         approvedMinutes: r.overtimeRequest?.status === 'Approved' ? requested : 0
       };
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [attendanceRecords, users, selectedMonth, searchQuery, holidayDateSet]);
+  }, [attendanceRecords, users, selectedMonth, searchQuery, holidayDateSet, selectedEmployeeId, isAllEmployees]);
 
   const totalOvertimeMinutes = useMemo(() => {
     return overtimeHistory.reduce((sum, o) => sum + (o.completedMinutes || 0), 0);
   }, [overtimeHistory]);
 
+  /** Aggregates the full filtered list for the active tab (same scope as export), not only the current page. */
+  const penaltyEmployeeAnalysis = useMemo(() => {
+    const map = new Map<
+      string,
+      { userId: string; userName: string; department: string; count: number; totalSeconds: number }
+    >();
+    for (const p of penaltyHistory) {
+      const row = map.get(p.userId) ?? {
+        userId: p.userId,
+        userName: p.userName,
+        department: p.department || 'N/A',
+        count: 0,
+        totalSeconds: 0,
+      };
+      row.count += 1;
+      row.totalSeconds += typeof p.amountSeconds === 'number' ? p.amountSeconds : 0;
+      map.set(p.userId, row);
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => b.totalSeconds - a.totalSeconds || b.count - a.count || a.userName.localeCompare(b.userName)
+    );
+  }, [penaltyHistory]);
+
+  const leaveEmployeeAnalysis = useMemo(() => {
+    const map = new Map<
+      string,
+      { userId: string; userName: string; department: string; count: number; totalDays: number }
+    >();
+    for (const l of filteredLeaves) {
+      const dept = users.find(u => u.id === l.userId)?.department || 'N/A';
+      const row = map.get(l.userId) ?? {
+        userId: l.userId,
+        userName: l.userName,
+        department: dept,
+        count: 0,
+        totalDays: 0,
+      };
+      row.count += 1;
+      row.totalDays += l.totalDays || 0;
+      map.set(l.userId, row);
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => b.totalDays - a.totalDays || b.count - a.count || a.userName.localeCompare(b.userName)
+    );
+  }, [filteredLeaves, users]);
+
+  const earlyCheckoutEmployeeAnalysis = useMemo(() => {
+    const map = new Map<
+      string,
+      { userId: string; userName: string; department: string; count: number; totalEarlyMinutes: number }
+    >();
+    for (const e of earlyCheckouts) {
+      const isHoliday = holidayDateSet.has(e.date);
+      const stats = calculateDailyTimeStats(e.totalWorkedSeconds || 0, false, isHoliday, 0, e.date);
+      const minutes = Math.floor(stats.lowTimeSeconds / 60);
+      const row = map.get(e.userId) ?? {
+        userId: e.userId,
+        userName: e.userName,
+        department: e.department || 'N/A',
+        count: 0,
+        totalEarlyMinutes: 0,
+      };
+      row.count += 1;
+      row.totalEarlyMinutes += minutes;
+      map.set(e.userId, row);
+    }
+    return Array.from(map.values()).sort(
+      (a, b) =>
+        b.totalEarlyMinutes - a.totalEarlyMinutes || b.count - a.count || a.userName.localeCompare(b.userName)
+    );
+  }, [earlyCheckouts, holidayDateSet]);
+
+  const overtimeEmployeeAnalysis = useMemo(() => {
+    const map = new Map<
+      string,
+      { userId: string; userName: string; department: string; count: number; totalCompletedMinutes: number }
+    >();
+    for (const o of overtimeHistory) {
+      const row = map.get(o.userId) ?? {
+        userId: o.userId,
+        userName: o.userName,
+        department: o.department || 'N/A',
+        count: 0,
+        totalCompletedMinutes: 0,
+      };
+      row.count += 1;
+      row.totalCompletedMinutes += o.completedMinutes || 0;
+      map.set(o.userId, row);
+    }
+    return Array.from(map.values()).sort(
+      (a, b) =>
+        b.totalCompletedMinutes - a.totalCompletedMinutes ||
+        b.count - a.count ||
+        a.userName.localeCompare(b.userName)
+    );
+  }, [overtimeHistory]);
+
   const exportData = () => {
     let dataToExport: any[] = [];
     let filename = '';
+    const empSuffix = isAllEmployees
+      ? '_All_Employees'
+      : selectedEmployeeLabel
+        ? `_${selectedEmployeeLabel.replace(/[^\w\-]+/g, '_')}`
+        : '';
 
     if (activeTableTab === 'penalties') {
       dataToExport = penaltyHistory.map(p => ({
@@ -271,7 +425,7 @@ export const MonthlySummary: React.FC = () => {
         Amount: p.amount,
         Details: p.details
       }));
-      filename = `Penalty_History_${selectedMonth}.csv`;
+      filename = `Penalty_History_${selectedMonth}${empSuffix}.csv`;
     } else if (activeTableTab === 'leaves') {
       dataToExport = filteredLeaves.map(l => ({
         Employee: l.userName,
@@ -281,7 +435,7 @@ export const MonthlySummary: React.FC = () => {
         Status: l.status,
         Reason: l.reason
       }));
-      filename = `Leave_History_${selectedMonth}.csv`;
+      filename = `Leave_History_${selectedMonth}${empSuffix}.csv`;
     } else if (activeTableTab === 'earlyCheckout') {
       dataToExport = earlyCheckouts.map(e => ({
         Employee: e.userName,
@@ -289,7 +443,7 @@ export const MonthlySummary: React.FC = () => {
         Reason: e.earlyLogoutRequestNote,
         Status: e.earlyLogoutRequest
       }));
-      filename = `Early_Checkout_History_${selectedMonth}.csv`;
+      filename = `Early_Checkout_History_${selectedMonth}${empSuffix}.csv`;
     } else if (activeTableTab === 'overtime') {
       dataToExport = overtimeHistory.map(o => ({
         Employee: o.userName,
@@ -299,7 +453,7 @@ export const MonthlySummary: React.FC = () => {
         Status: o.overtimeRequest?.status,
         Reason: o.overtimeRequest?.reason
       }));
-      filename = `Overtime_History_${selectedMonth}.csv`;
+      filename = `Overtime_History_${selectedMonth}${empSuffix}.csv`;
     }
 
     downloadCSV(filename, dataToExport);
@@ -308,6 +462,11 @@ export const MonthlySummary: React.FC = () => {
   const getMonthName = () => {
     return new Date(selectedYear, selectedMonthIdx).toLocaleString('default', { month: 'long', year: 'numeric' });
   };
+
+  const selectedEmployeeLabel = useMemo(() => {
+    if (isAllEmployees) return null;
+    return employeeOptions.find(u => u.id === selectedEmployeeId)?.name ?? null;
+  }, [selectedEmployeeId, employeeOptions, isAllEmployees]);
 
   return (
     <div className="space-y-6 pb-12 animate-fade-in">
@@ -322,10 +481,31 @@ export const MonthlySummary: React.FC = () => {
           </h1>
           <p className="text-slate-500 mt-1 font-medium italic">
             Comprehensive overview for {getMonthName()}
+            <span className="text-indigo-600 font-bold not-italic">
+              {isAllEmployees ? ' — All employees' : selectedEmployeeLabel ? ` — ${selectedEmployeeLabel}` : ''}
+            </span>
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative group min-w-[200px]">
+            <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-400 group-focus-within:text-indigo-500 transition-colors z-10">
+              <User size={18} />
+            </div>
+            <select
+              value={isAllEmployees ? ALL_EMPLOYEES_VALUE : selectedEmployeeId}
+              onChange={e => setSelectedEmployeeId(e.target.value)}
+              className="pl-10 pr-8 py-2.5 w-full min-w-[220px] max-w-[min(100vw-2rem,320px)] bg-white border border-slate-200 rounded-xl shadow-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all font-bold text-slate-700 text-sm appearance-none cursor-pointer"
+              aria-label="Filter by employee"
+            >
+              <option value={ALL_EMPLOYEES_VALUE}>All employees</option>
+              {employeeOptions.map(u => (
+                <option key={u.id} value={u.id}>
+                  {u.name} ({u.department})
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="relative group">
             <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-400 group-focus-within:text-indigo-500 transition-colors">
               <Calendar size={18} />
@@ -709,6 +889,171 @@ export const MonthlySummary: React.FC = () => {
             </div>
           </div>
         )}
+
+        <div className="border-t border-slate-200 bg-gradient-to-b from-slate-50/80 to-white px-6 py-6">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="h-9 w-9 rounded-xl bg-indigo-100 text-indigo-600 flex items-center justify-center">
+              <Users size={18} />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-slate-800 uppercase tracking-wide">By employee</h3>
+              <p className="text-xs text-slate-500 font-medium">
+                Totals for everyone in the list above (all pages), using the same month, employee filter, and search.
+              </p>
+            </div>
+          </div>
+
+          {activeTableTab === 'penalties' && (
+            penaltyEmployeeAnalysis.length === 0 ? (
+              <p className="text-sm text-slate-400 font-medium italic py-4">No penalty data to summarize.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <table className="w-full text-left border-collapse min-w-[520px]">
+                  <thead>
+                    <tr className="bg-slate-50 text-[11px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100">
+                      <th className="px-4 py-3">Employee</th>
+                      <th className="px-4 py-3 text-center">Penalty count</th>
+                      <th className="px-4 py-3 text-right">Total deduction</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {penaltyEmployeeAnalysis.map(row => (
+                      <tr key={row.userId} className="hover:bg-slate-50/60">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className="h-8 w-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-xs shrink-0">
+                              {row.userName.charAt(0)}
+                            </div>
+                            <div>
+                              <p className="font-bold text-slate-800 text-sm">{row.userName}</p>
+                              <p className="text-[10px] text-slate-400 font-bold uppercase">{row.department}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className="inline-flex min-w-[2rem] justify-center rounded-lg bg-rose-50 text-rose-700 font-black text-sm px-2 py-0.5">
+                            {row.count}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-black text-slate-800 tabular-nums">
+                          {formatDuration(row.totalSeconds)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+
+          {activeTableTab === 'leaves' && (
+            leaveEmployeeAnalysis.length === 0 ? (
+              <p className="text-sm text-slate-400 font-medium italic py-4">No leave data to summarize.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <table className="w-full text-left border-collapse min-w-[520px]">
+                  <thead>
+                    <tr className="bg-slate-50 text-[11px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100">
+                      <th className="px-4 py-3">Employee</th>
+                      <th className="px-4 py-3 text-center">Leave records</th>
+                      <th className="px-4 py-3 text-right">Total days</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {leaveEmployeeAnalysis.map(row => (
+                      <tr key={row.userId} className="hover:bg-slate-50/60">
+                        <td className="px-4 py-3">
+                          <p className="font-bold text-slate-800 text-sm">{row.userName}</p>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase">{row.department}</p>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className="inline-flex min-w-[2rem] justify-center rounded-lg bg-indigo-50 text-indigo-700 font-black text-sm px-2 py-0.5">
+                            {row.count}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-black text-slate-800 tabular-nums">
+                          {row.totalDays} {row.totalDays === 1 ? 'day' : 'days'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+
+          {activeTableTab === 'earlyCheckout' && (
+            earlyCheckoutEmployeeAnalysis.length === 0 ? (
+              <p className="text-sm text-slate-400 font-medium italic py-4">No early checkout data to summarize.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <table className="w-full text-left border-collapse min-w-[520px]">
+                  <thead>
+                    <tr className="bg-slate-50 text-[11px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100">
+                      <th className="px-4 py-3">Employee</th>
+                      <th className="px-4 py-3 text-center">Requests</th>
+                      <th className="px-4 py-3 text-right">Total short time</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {earlyCheckoutEmployeeAnalysis.map(row => (
+                      <tr key={row.userId} className="hover:bg-slate-50/60">
+                        <td className="px-4 py-3">
+                          <p className="font-bold text-slate-800 text-sm">{row.userName}</p>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase">{row.department}</p>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className="inline-flex min-w-[2rem] justify-center rounded-lg bg-amber-50 text-amber-800 font-black text-sm px-2 py-0.5">
+                            {row.count}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-black text-slate-800 tabular-nums">
+                          {formatHoursMinutes(row.totalEarlyMinutes)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+
+          {activeTableTab === 'overtime' && (
+            overtimeEmployeeAnalysis.length === 0 ? (
+              <p className="text-sm text-slate-400 font-medium italic py-4">No overtime data to summarize.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <table className="w-full text-left border-collapse min-w-[520px]">
+                  <thead>
+                    <tr className="bg-slate-50 text-[11px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100">
+                      <th className="px-4 py-3">Employee</th>
+                      <th className="px-4 py-3 text-center">Records</th>
+                      <th className="px-4 py-3 text-right">Total completed (OT)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {overtimeEmployeeAnalysis.map(row => (
+                      <tr key={row.userId} className="hover:bg-slate-50/60">
+                        <td className="px-4 py-3">
+                          <p className="font-bold text-slate-800 text-sm">{row.userName}</p>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase">{row.department}</p>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className="inline-flex min-w-[2rem] justify-center rounded-lg bg-emerald-50 text-emerald-800 font-black text-sm px-2 py-0.5">
+                            {row.count}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-black text-slate-800 tabular-nums">
+                          {formatHoursMinutes(row.totalCompletedMinutes)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+        </div>
       </div>
       
       {/* Visual Footer Decor */}
