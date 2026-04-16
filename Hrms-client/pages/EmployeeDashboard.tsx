@@ -1529,13 +1529,6 @@ export const EmployeeDashboard: React.FC = () => {
                                       >
                                         End Break
                                       </Button>
-                                      <Button
-                                        onClick={handleResumeMistake}
-                                        className="bg-gray-500 hover:bg-gray-600 text-white text-sm"
-                                        title="Click if you closed the tab by mistake"
-                                      >
-                                        Resume (Mistake)
-                                      </Button>
                                     </div>
                                   )
                                 });
