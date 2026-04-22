@@ -62,7 +62,8 @@ export const LeaveManagement: React.FC = () => {
 
     // Global History Filters & Pagination
     const [histStatusFilter, setHistStatusFilter] = useState<'All' | 'Pending' | 'Approved' | 'Rejected' | 'Cancelled'>('All');
-    const [histDateFilter, setHistDateFilter] = useState('');
+    const [histStartDateFilter, setHistStartDateFilter] = useState('');
+    const [histEndDateFilter, setHistEndDateFilter] = useState('');
     const [histMonthFilter, setHistMonthFilter] = useState('');
     const [histSearchQuery, setHistSearchQuery] = useState('');
     const [currentPageHist, setCurrentPageHist] = useState(1);
@@ -284,8 +285,13 @@ export const LeaveManagement: React.FC = () => {
                     (leave.reason || '').toLowerCase().includes(histSearchQuery.toLowerCase());
 
                 let dateMatch = true;
-                if (histDateFilter) {
-                    dateMatch = leave.startDate === histDateFilter || leave.endDate === histDateFilter;
+                if (histStartDateFilter && histEndDateFilter) {
+                    // Logic: Overlap with [histStartDateFilter, histEndDateFilter]
+                    dateMatch = leave.startDate <= histEndDateFilter && leave.endDate >= histStartDateFilter;
+                } else if (histStartDateFilter) {
+                    dateMatch = leave.endDate >= histStartDateFilter;
+                } else if (histEndDateFilter) {
+                    dateMatch = leave.startDate <= histEndDateFilter;
                 }
 
                 let monthMatch = true;
@@ -296,12 +302,12 @@ export const LeaveManagement: React.FC = () => {
                 return statusMatch && searchMatch && dateMatch && monthMatch;
             })
             .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
-    }, [leaveRequests, histStatusFilter, histSearchQuery, histDateFilter, histMonthFilter]);
+    }, [leaveRequests, histStatusFilter, histSearchQuery, histStartDateFilter, histEndDateFilter, histMonthFilter]);
 
     // Reset history pagination on filter change
     useEffect(() => {
         setCurrentPageHist(1);
-    }, [histStatusFilter, histSearchQuery, histDateFilter, histMonthFilter]);
+    }, [histStatusFilter, histSearchQuery, histStartDateFilter, histEndDateFilter, histMonthFilter]);
 
     const totalPagesHist = Math.ceil(filteredGlobalLeaves.length / HIST_ITEMS_PER_PAGE);
     const paginatedHistory = filteredGlobalLeaves.slice(
@@ -739,13 +745,23 @@ export const LeaveManagement: React.FC = () => {
                             <option value="Cancelled">Cancelled</option>
                         </select>
 
-                        <input
-                            type="date"
-                            className="bg-slate-50 border-none rounded-xl px-4 py-2.5 text-xs font-bold text-slate-600 focus:ring-4 focus:ring-indigo-100"
-                            value={histDateFilter}
-                            onChange={(e) => setHistDateFilter(e.target.value)}
-                            title="Filter by day"
-                        />
+                        <div className="flex items-center gap-2">
+                            <input
+                                type="date"
+                                className="bg-slate-50 border-none rounded-xl px-4 py-2.5 text-xs font-bold text-slate-600 focus:ring-4 focus:ring-indigo-100"
+                                value={histStartDateFilter}
+                                onChange={(e) => setHistStartDateFilter(e.target.value)}
+                                title="Start Date"
+                            />
+                            <span className="text-slate-400 font-bold text-xs">to</span>
+                            <input
+                                type="date"
+                                className="bg-slate-50 border-none rounded-xl px-4 py-2.5 text-xs font-bold text-slate-600 focus:ring-4 focus:ring-indigo-100"
+                                value={histEndDateFilter}
+                                onChange={(e) => setHistEndDateFilter(e.target.value)}
+                                title="End Date"
+                            />
+                        </div>
 
                         <input
                             type="month"
