@@ -69,6 +69,8 @@ export const LeaveManagement: React.FC = () => {
     const [currentPageHist, setCurrentPageHist] = useState(1);
     const HIST_ITEMS_PER_PAGE = 10;
 
+    const [isOverviewModalOpen, setIsOverviewModalOpen] = useState(false);
+
     const handleUserSelect = (userId: string) => {
         setSelectedUserForAllocation(userId);
         if (!userId) {
@@ -303,6 +305,29 @@ export const LeaveManagement: React.FC = () => {
             })
             .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
     }, [leaveRequests, histStatusFilter, histSearchQuery, histStartDateFilter, histEndDateFilter, histMonthFilter]);
+
+    const overviewData = useMemo(() => {
+        const approvedLeaves = filteredGlobalLeaves.filter(l => l.status === 'Approved' || l.status === LeaveStatus.APPROVED);
+        const summary: { [userName: string]: { fullDays: number; halfDays: number; totalDays: number; count: number } } = {};
+        approvedLeaves.forEach(leave => {
+            const name = leave.userName || 'Unknown User';
+            if (!summary[name]) {
+                summary[name] = { fullDays: 0, halfDays: 0, totalDays: 0, count: 0 };
+            }
+            if (leave.category === LeaveCategory.HALF_DAY) {
+                summary[name].halfDays += 0.5;
+                summary[name].totalDays += 0.5;
+            } else {
+                const days = calculateLeaveDays(leave.startDate, leave.endDate);
+                summary[name].fullDays += days;
+                summary[name].totalDays += days;
+            }
+            summary[name].count += 1;
+        });
+        return Object.entries(summary)
+            .map(([name, stats]) => ({ name, ...stats }))
+            .sort((a, b) => b.totalDays - a.totalDays);
+    }, [filteredGlobalLeaves, holidayDateSet]);
 
     // Reset history pagination on filter change
     useEffect(() => {
@@ -770,6 +795,14 @@ export const LeaveManagement: React.FC = () => {
                             onChange={(e) => setHistMonthFilter(e.target.value)}
                             title="Filter by month"
                         />
+
+                        <button
+                            onClick={() => setIsOverviewModalOpen(true)}
+                            className="bg-indigo-600 text-white px-4 py-2.5 rounded-xl text-xs font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 active:scale-95 flex items-center gap-2"
+                        >
+                            <FileText size={16} />
+                            Overview
+                        </button>
                     </div>
                 </div>
 
@@ -924,7 +957,7 @@ export const LeaveManagement: React.FC = () => {
 
             {/* Allocation Modal */}
             {isAllocationModalOpen && (
-                <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
+                <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xl animate-in fade-in duration-300">
                     <Card className="w-full max-w-lg border-none shadow-2xl overflow-hidden bg-white animate-in zoom-in-95 duration-200">
                         {/* Modal Header */}
                         <div className="bg-slate-900 p-6 py-6 text-white relative">
@@ -1117,7 +1150,7 @@ export const LeaveManagement: React.FC = () => {
 
             {/* History Modal */}
             {isHistoryModalOpen && selectedHistoryUser && (
-                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
+                <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xl animate-in fade-in duration-300">
                     <div className="bg-white rounded-[32px] shadow-2xl w-full max-w-2xl overflow-hidden animate-in zoom-in-95 duration-200 border border-white/20">
                         <div className="bg-slate-900 p-8 text-white flex items-center justify-between">
                             <div>
@@ -1197,6 +1230,121 @@ export const LeaveManagement: React.FC = () => {
                             >
                                 Close View
                             </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* Overview Modal */}
+            {isOverviewModalOpen && (
+                <div 
+                    onClick={() => setIsOverviewModalOpen(false)}
+                    className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-xl animate-in fade-in duration-300"
+                >
+                    <div 
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white rounded-[24px] shadow-2xl w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-200 border border-white/20 relative"
+                    >
+                        <div className="bg-indigo-600 p-6 text-white relative">
+                            <button
+                                onClick={() => setIsOverviewModalOpen(false)}
+                                className="absolute top-5 right-5 h-10 w-10 rounded-2xl bg-white/10 flex items-center justify-center hover:bg-white/20 transition-all active:scale-90 z-[50] cursor-pointer group"
+                                title="Close Report"
+                            >
+                                <X size={22} className="text-white group-hover:rotate-90 transition-transform duration-300" />
+                            </button>
+                            <div className="relative z-10">
+                                <p className="text-[9px] font-black uppercase tracking-[0.2em] text-indigo-100 mb-1">Consolidated Report</p>
+                                <h2 className="text-xl font-black tracking-tight flex items-center gap-2">
+                                    Leave Overview
+                                </h2>
+                                <div className="flex items-center gap-4 mt-4">
+                                    <div className="bg-white/10 backdrop-blur-md rounded-xl px-4 py-2 border border-white/10">
+                                        <p className="text-[8px] font-bold uppercase tracking-widest text-indigo-200 mb-0.5">Timeframe</p>
+                                        <p className="text-[10px] font-black">
+                                            {histStartDateFilter && histEndDateFilter 
+                                                ? `${formatDate(histStartDateFilter)} - ${formatDate(histEndDateFilter)}`
+                                                : histMonthFilter 
+                                                    ? `Month: ${histMonthFilter}` 
+                                                    : 'All Filtered History'}
+                                        </p>
+                                    </div>
+                                    <div className="bg-white/10 backdrop-blur-md rounded-xl px-4 py-2 border border-white/10">
+                                        <p className="text-[8px] font-bold uppercase tracking-widest text-indigo-200 mb-0.5">Total Employees</p>
+                                        <p className="text-[10px] font-black">{overviewData.length} Staff</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-6 max-h-[45vh] overflow-y-auto bg-slate-50/50 custom-scrollbar">
+                            {overviewData.length === 0 ? (
+                                <div className="text-center py-16 bg-white rounded-2xl border-2 border-dashed border-slate-100">
+                                    <AlertCircle size={32} className="mx-auto mb-4 text-slate-200" />
+                                    <p className="text-slate-400 font-black uppercase tracking-widest text-[10px]">No approved records</p>
+                                </div>
+                            ) : (
+                                <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                                    <table className="w-full text-xs">
+                                        <thead>
+                                            <tr className="bg-slate-50 text-slate-400 uppercase text-[9px] font-black tracking-[0.1em] border-b border-slate-100">
+                                                <th className="px-5 py-4 text-left">Employee Name</th>
+                                                <th className="px-4 py-4 text-center">Full Day Leave</th>
+                                                <th className="px-5 py-4 text-right">Half Day Leave</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-50">
+                                            {overviewData.map((stat, idx) => (
+                                                <tr key={idx} className="hover:bg-indigo-50/30 transition-colors group">
+                                                    <td className="px-5 py-4">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="h-8 w-8 rounded-lg bg-slate-100 flex items-center justify-center text-slate-600 font-black text-[10px] group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                                                                {stat.name.charAt(0)}
+                                                            </div>
+                                                            <p className="font-bold text-slate-800 uppercase tracking-tight group-hover:text-indigo-600 transition-colors text-[11px]">{stat.name}</p>
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-4 py-4 text-center">
+                                                        <div className="inline-flex items-center gap-1.5 bg-blue-50 text-blue-600 px-3 py-1 rounded-lg font-black text-[10px] border border-blue-100 group-hover:bg-blue-600 group-hover:text-white transition-all">
+                                                            {formatDisplayDays(stat.fullDays)}
+                                                            <span className="text-[8px] opacity-70 uppercase">{stat.fullDays === 1 ? 'Day' : 'Days'}</span>
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-5 py-4 text-right">
+                                                        <div className="inline-flex items-center gap-1.5 bg-rose-50 text-rose-600 px-3 py-1 rounded-lg font-black text-[10px] border border-rose-100 group-hover:bg-rose-600 group-hover:text-white transition-all">
+                                                            {formatDisplayDays(stat.halfDays)}
+                                                            <span className="text-[8px] opacity-70 uppercase">{stat.halfDays === 1 ? 'Day' : 'Days'}</span>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                        <tfoot>
+                                            <tr className="bg-slate-900 text-white">
+                                                <td className="px-5 py-4 font-black uppercase tracking-widest text-[9px]">Grand Total</td>
+                                                <td className="px-4 py-4 text-center">
+                                                    <div className="inline-flex items-center gap-1 text-[11px] font-black">
+                                                        {formatDisplayDays(overviewData.reduce((sum, s) => sum + s.fullDays, 0))}
+                                                        <span className="text-[8px] text-indigo-300 uppercase">Days</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-5 py-4 text-right">
+                                                    <div className="inline-flex items-center gap-1 text-[11px] font-black">
+                                                        {formatDisplayDays(overviewData.reduce((sum, s) => sum + s.halfDays, 0))}
+                                                        <span className="text-[8px] text-indigo-300 uppercase">Days</span>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </tfoot>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="p-4 bg-white border-t border-slate-100 flex items-center justify-center">
+                            <div className="flex items-center gap-2 text-slate-400">
+                                <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                <span className="text-[9px] font-black uppercase tracking-[0.1em]">Live Aggregated Overview</span>
+                            </div>
                         </div>
                     </div>
                 </div>
