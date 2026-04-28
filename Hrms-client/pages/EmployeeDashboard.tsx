@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
-import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn } from '../services/utils';
+import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn, HALF_DAY_EXTRA_THRESHOLD_SECONDS } from '../services/utils';
 import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -23,6 +23,13 @@ const formatDurationStyled = (seconds: number) => {
 /** Half-day minimum net worked time (matches server: Math.floor(495/2)*60). */
 const HALF_DAY_MIN_SHIFT_SECONDS = Math.floor(495 / 2) * 60;
 const FULL_DAY_MIN_SHIFT_SECONDS = (8 * 3600) + (15 * 60);
+/** Full day: upper bound of normal before extra time (8h 22m). */
+const FULL_DAY_MAX_NORMAL_SECONDS = (8 * 3600) + (22 * 60);
+/**
+ * Half day: server `getFlags` uses 502/2 min — used for “Request Overtime” when still clocked in.
+ * Fulfillment & attendance “+extra” use `HALF_DAY_EXTRA_THRESHOLD_SECONDS` (4h 22m) per `calculateDailyTimeStats`.
+ */
+const HALF_DAY_MAX_NORMAL_SECONDS = (502 / 2) * 60;
 
 // Helper to format penalty duration (e.g. 900 -> 15m, 3720 -> 1h 2m)
 const formatPenaltyDisplay = (seconds: number) => {
@@ -388,6 +395,10 @@ export const EmployeeDashboard: React.FC = () => {
   const isHalfDayLeaveToday = todayLeave && todayLeave.category === LeaveCategory.HALF_DAY;
   const minShiftSecondsForTodayCheckout = useMemo(
     () => (isHalfDayLeaveToday ? HALF_DAY_MIN_SHIFT_SECONDS : FULL_DAY_MIN_SHIFT_SECONDS),
+    [isHalfDayLeaveToday]
+  );
+  const overtimeRequestMinSeconds = useMemo(
+    () => (isHalfDayLeaveToday ? HALF_DAY_MAX_NORMAL_SECONDS : FULL_DAY_MAX_NORMAL_SECONDS),
     [isHalfDayLeaveToday]
   );
   // Filter out pending leaves from display - only show approved/rejected in history
@@ -1551,8 +1562,8 @@ export const EmployeeDashboard: React.FC = () => {
                       ) : (
                         /* CHECKOUT: full day 8h15m; half-day leave = ~4h7.5m minimum (server-aligned) */
                         <div className="w-full flex flex-col gap-2">
-                          {/* Request Overtime Button (shows after 8h 22m) */}
-                          {isCheckedIn && !isCheckedOut && !isOnBreak && elapsed >= 30120 && (!todayRecord?.overtimeRequest || todayRecord.overtimeRequest.status === 'None') && (
+                          {/* Request Overtime — after full-day normal (8h 22m) or half-day normal (251m), matches server getFlags */}
+                          {isCheckedIn && !isCheckedOut && !isOnBreak && elapsed > overtimeRequestMinSeconds && (!todayRecord?.overtimeRequest || todayRecord.overtimeRequest.status === 'None') && (
                             <Button
                               onClick={() => setShowOvertimeModal(true)}
                               className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-xl shadow-lg shadow-indigo-100 transition-all active:scale-95 uppercase tracking-widest text-xs flex items-center justify-center gap-2 mb-1"
@@ -2255,9 +2266,13 @@ export const EmployeeDashboard: React.FC = () => {
                     const isApproved = req.status === 'Approved';
                     const isRejected = req.status === 'Rejected';
                     const isPending = req.status === 'Pending';
+                    // Use same “normal cap” as attendance history + calculateDailyTimeStats (262m for half day), not 502/2 (251m)
+                    const maxNormSec = user && hasApprovedHalfDayLeaveOnDate(myLeaves, user.id, r.date)
+                      ? HALF_DAY_EXTRA_THRESHOLD_SECONDS
+                      : FULL_DAY_MAX_NORMAL_SECONDS;
                     
                     // Calculate fulfillment for approved requests
-                    const actualOTMinutes = isApproved ? Math.max(0, Math.floor(((r.totalWorkedSeconds || 0) - 30120) / 60)) : 0;
+                    const actualOTMinutes = isApproved ? Math.max(0, Math.floor(((r.totalWorkedSeconds || 0) - maxNormSec) / 60)) : 0;
                     
                     let fulfillmentDisplay = '--';
                     if (isApproved && r.checkOut) {
@@ -2278,7 +2293,7 @@ export const EmployeeDashboard: React.FC = () => {
                                <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                                   <div 
                                     className={`h-full ${actualOTMinutes >= req.durationMinutes ? 'bg-emerald-500' : 'bg-amber-500'}`}
-                                    style={{ width: `${Math.min(100, (Math.max(0, Math.floor((r.totalWorkedSeconds - 30120) / 60)) / req.durationMinutes) * 100)}%` }}
+                                    style={{ width: `${Math.min(100, (Math.max(0, Math.floor(((r.totalWorkedSeconds || 0) - maxNormSec) / 60)) / req.durationMinutes) * 100)}%` }}
                                   />
                                </div>
                             )}

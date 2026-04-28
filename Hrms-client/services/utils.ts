@@ -9,6 +9,8 @@ const EXTRA_TIME_THRESHOLD_MINUTES = 502; // 8h 22m
 const HALF_DAY_LEAVE_MINUTES = 240; // 4h 00m credit
 const HALF_DAY_LOW_THRESHOLD_MINUTES = 255; // (8h 15m - 4h) = 4h 15m
 const HALF_DAY_EXTRA_THRESHOLD_MINUTES = 262; // (8h 22m - 4h) = 4h 22m
+/** Upper bound of “normal” for a half-day leave day (extra time is above this) — same as `calculateDailyTimeStats` and attendance status column. */
+export const HALF_DAY_EXTRA_THRESHOLD_SECONDS = HALF_DAY_EXTRA_THRESHOLD_MINUTES * 60;
 export const PENALTY_EFFECTIVE_DATE = '2026-03-01';
 export const LATE_PENALTY_SECONDS = 900; // 15 minutes
 export const ABSENCE_PENALTY_EFFECTIVE_DATE = '2026-04-06';
