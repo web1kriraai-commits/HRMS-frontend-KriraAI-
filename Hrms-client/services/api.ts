@@ -261,6 +261,16 @@ export const attendanceAPI = {
       body: JSON.stringify({ status }),
     });
   },
+  recalculateHolidayFlags: async () => {
+    return apiRequest<{ message: string; total: number; updated: number }>('/attendance/admin/recalculate-holiday-flags', {
+      method: 'POST',
+    });
+  },
+  recalculateHalfDayFlags: async () => {
+    return apiRequest<{ message: string; total: number; updated: number }>('/attendance/admin/recalculate-halfday-flags', {
+      method: 'POST',
+    });
+  },
 };
 
 // Leave API

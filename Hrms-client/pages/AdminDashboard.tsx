@@ -111,6 +111,40 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const [isRecalculating, setIsRecalculating] = useState(false);
+
+  const handleRecalculateHolidays = async () => {
+    if (!confirm('This will recalculate overtime and penalties for ALL attendance records on holiday dates. This process may take a moment. Continue?')) {
+      return;
+    }
+    setIsRecalculating(true);
+    try {
+      const result = await attendanceAPI.recalculateHolidayFlags();
+      alert(`Recalculation complete! ${result.updated} records updated out of ${result.total} processed.`);
+      await refreshData();
+    } catch (error: any) {
+      alert(error.message || 'Recalculation failed');
+    } finally {
+      setIsRecalculating(false);
+    }
+  };
+
+  const handleRecalculateHalfDays = async () => {
+    if (!confirm('This will recalculate overtime and penalties for ALL records with approved Half Day Leave. Continue?')) {
+      return;
+    }
+    setIsRecalculating(true);
+    try {
+      const result = await attendanceAPI.recalculateHalfDayFlags();
+      alert(`Recalculation complete! ${result.updated} records updated out of ${result.total} processed.`);
+      await refreshData();
+    } catch (error: any) {
+      alert(error.message || 'Recalculation failed');
+    } finally {
+      setIsRecalculating(false);
+    }
+  };
+
   // Summary states
   const [selectedUserId, setSelectedUserId] = useState('');
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -3321,6 +3355,104 @@ export const AdminDashboard: React.FC = () => {
                     </tfoot>
                   )}
                 </table>
+              </div>
+            </Card>
+          </div>
+
+          {/* System Maintenance & Report Export Section */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+            {/* System Maintenance */}
+            <Card title="System Maintenance" className="h-fit">
+              <div className="space-y-4">
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                  <div className="flex gap-3">
+                    <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-bold text-amber-900">Maintenance Tools</p>
+                      <p className="text-xs text-amber-700 mt-1">Use these tools to ensure all past attendance records follow the latest business rules (Holidays & Half-Days).</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Button 
+                    type="button" 
+                    onClick={handleRecalculateHolidays}
+                    disabled={isRecalculating}
+                    className="w-full bg-white border-2 border-indigo-200 text-indigo-700 hover:bg-indigo-50 flex flex-col items-center justify-center p-6 h-auto gap-3 rounded-2xl shadow-sm hover:shadow-md transition-all group"
+                  >
+                    <div className="h-12 w-12 rounded-xl bg-indigo-100 flex items-center justify-center group-hover:scale-110 transition-transform">
+                      <Scroll className="h-6 w-6 text-indigo-600" />
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-black uppercase tracking-tight">Recalculate Holidays</p>
+                      <p className="text-[10px] text-indigo-400 font-bold mt-1">Fix overtime/penalties on holidays</p>
+                    </div>
+                  </Button>
+
+                  <Button 
+                    type="button" 
+                    onClick={handleRecalculateHalfDays}
+                    disabled={isRecalculating}
+                    className="w-full bg-white border-2 border-emerald-200 text-emerald-700 hover:bg-emerald-50 flex flex-col items-center justify-center p-6 h-auto gap-3 rounded-2xl shadow-sm hover:shadow-md transition-all group"
+                  >
+                    <div className="h-12 w-12 rounded-xl bg-emerald-100 flex items-center justify-center group-hover:scale-110 transition-transform">
+                      <Clock className="h-6 w-6 text-emerald-600" />
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-black uppercase tracking-tight">Recalculate Half-Days</p>
+                      <p className="text-[10px] text-emerald-400 font-bold mt-1">Sync rules for half-day leaves</p>
+                    </div>
+                  </Button>
+                </div>
+
+                {isRecalculating && (
+                  <div className="flex items-center justify-center gap-3 py-2 text-indigo-600 font-bold animate-pulse">
+                    <RotateCcw className="h-5 w-5 animate-spin" />
+                    <span className="text-sm">Processing records, please wait...</span>
+                  </div>
+                )}
+              </div>
+            </Card>
+
+            {/* Export Reports */}
+            <Card title="Export Attendance Logs" className="h-fit">
+              <div className="space-y-4">
+                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+                  <div className="flex gap-3">
+                    <Download className="h-5 w-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-bold text-emerald-900">Data Export</p>
+                      <p className="text-xs text-emerald-700 mt-1">Generate and download detailed CSV reports for any period and department.</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Start Date</label>
+                    <input type="date" className="w-full p-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:bg-white transition-all" value={reportFilters.start} onChange={e => setReportFilters({ ...reportFilters, start: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase mb-1">End Date</label>
+                    <input type="date" className="w-full p-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:bg-white transition-all" value={reportFilters.end} onChange={e => setReportFilters({ ...reportFilters, end: e.target.value })} />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Department</label>
+                  <select className="w-full p-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:bg-white transition-all" value={reportFilters.department} onChange={e => setReportFilters({ ...reportFilters, department: e.target.value })}>
+                    <option value="">All Departments</option>
+                    {[...new Set(users.map(u => u.department))].filter(Boolean).map(dept => (
+                      <option key={dept} value={dept}>{dept}</option>
+                    ))}
+                  </select>
+                </div>
+                <Button 
+                  onClick={() => exportReports({ start: reportFilters.start, end: reportFilters.end, department: reportFilters.department })} 
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-100 py-3 rounded-xl"
+                >
+                  <Download size={16} className="mr-2" /> Download Detailed Report (CSV)
+                </Button>
               </div>
             </Card>
           </div>
