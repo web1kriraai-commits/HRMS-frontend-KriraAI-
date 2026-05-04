@@ -262,12 +262,23 @@ export const EmployeeDashboard: React.FC = () => {
     });
   }, [leaveRequests, user?.id]);
 
+  // Move these up to fix ReferenceErrors in helper functions and initial render logic
+  const holidayDateSet = useMemo(() => new Set(
+    companyHolidays.map(h => {
+      const dateStr = typeof h.date === 'string' ? h.date : new Date(h.date).toISOString().split('T')[0];
+      return dateStr.split('T')[0];
+    })
+  ), [companyHolidays]);
+
+  const isTodayHoliday = useMemo(() => holidayDateSet.has(getTodayStr()), [holidayDateSet]);
+
   const compulsoryBreakEnforced = useMemo(() => {
+    if (isTodayHoliday) return false;
     if (getTodayStr() < COMPULSORY_BREAK_EFFECTIVE_DATE) return false;
     if (todayRecord?.isCompulsoryBreakDisabled) return false;
     if (approvedHalfDayToday) return false;
     return true;
-  }, [todayRecord?.isCompulsoryBreakDisabled, approvedHalfDayToday]);
+  }, [todayRecord?.isCompulsoryBreakDisabled, approvedHalfDayToday, isTodayHoliday]);
 
   // Check if standard break already taken today
   const hasStandardBreak = todayRecord?.breaks.some(b => b.type === 'Standard' && b.end) || false;
@@ -438,13 +449,6 @@ export const EmployeeDashboard: React.FC = () => {
   const [leaveFilterDate, setLeaveFilterDate] = useState('');
   const [leaveFilterMonth, setLeaveFilterMonth] = useState('');
 
-  // Move these up to fix ReferenceErrors in helper functions and initial render logic
-  const holidayDateSet = useMemo(() => new Set(
-    companyHolidays.map(h => {
-      const dateStr = typeof h.date === 'string' ? h.date : new Date(h.date).toISOString().split('T')[0];
-      return dateStr.split('T')[0];
-    })
-  ), [companyHolidays]);
 
   const attendanceMap = useMemo(() => {
     const map = new Map();
@@ -1063,18 +1067,18 @@ export const EmployeeDashboard: React.FC = () => {
 
   // Time Restrictions Logic (8:30 AM earliest check-in = company timezone; checkout gate uses device local time to match prior UI)
   const isCheckInRestricted = useMemo(() => {
-    if (user?.role === 'Admin') return false;
+    if (user?.role === 'Admin' || isTodayHoliday) return false;
     return isBeforeEarliestCheckIn(wallClockNow, systemSettings.timezone);
-  }, [wallClockNow, user?.role, systemSettings.timezone]);
+  }, [wallClockNow, user?.role, systemSettings.timezone, isTodayHoliday]);
 
   const isCheckOutRestricted = useMemo(() => {
-    if (user?.role === 'Admin') return false;
+    if (user?.role === 'Admin' || isTodayHoliday) return false;
     if (todayRecord?.earlyLogoutRequest === 'Approved') return false;
     if (isHalfDayLeaveToday) return false;
     const h = wallClockNow.getHours();
     const m = wallClockNow.getMinutes();
     return h < 17 || (h === 17 && m < 30);
-  }, [wallClockNow, user?.role, todayRecord?.earlyLogoutRequest, isHalfDayLeaveToday]);
+  }, [wallClockNow, user?.role, todayRecord?.earlyLogoutRequest, isHalfDayLeaveToday, isTodayHoliday]);
 
   // OLD LOGIC: Extra Time Leave Balance = Extra Time Worked (Final Time) - Extra Time Leave Taken
   const extraTimeLeaveHoursTaken = baseExtraTimeLeaveHours;
@@ -1397,7 +1401,7 @@ export const EmployeeDashboard: React.FC = () => {
                           }
                           onClick={() => {
                             if (isCheckInRestricted) return;
-                            if (user?.role !== 'Admin' && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone)) {
+                            if (user?.role !== 'Admin' && !isTodayHoliday && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone)) {
                               alert(`Check-in is only allowed from 8:30 AM (${systemSettings.timezone}).`);
                               return;
                             }
@@ -1406,7 +1410,7 @@ export const EmployeeDashboard: React.FC = () => {
                               title: 'Confirm Check In',
                               message: 'Are you sure you want to check in?',
                               onConfirm: async () => {
-                                if (user?.role !== 'Admin' && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone)) {
+                                if (user?.role !== 'Admin' && !isTodayHoliday && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone)) {
                                   alert(`Check-in is only allowed from 8:30 AM (${systemSettings.timezone}).`);
                                   setConfirmationPopup(null);
                                   return;
@@ -1430,7 +1434,7 @@ export const EmployeeDashboard: React.FC = () => {
                             });
                           }} className={`w-full md:w-48 h-14 text-lg shadow-lg ${isCheckInRestricted ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed shadow-none' : 'shadow-blue-200'}`}>
                           <Clock className="mr-2" /> 
-                          {isCheckInRestricted ? 'From 8:30 AM' : 'Check In'}
+                          {isCheckInRestricted ? 'From 8:30 AM' : isTodayHoliday ? 'Holiday Work' : 'Check In'}
                         </Button>
                         {isCheckInRestricted && (
                           <p className="text-xs text-slate-500 max-w-xs leading-relaxed">
@@ -1618,7 +1622,7 @@ export const EmployeeDashboard: React.FC = () => {
                               }}
                               className={`w-full font-bold py-4 rounded-xl shadow-lg transition-all active:scale-95 ${isCheckOutRestricted ? 'bg-gray-50 text-gray-600 border border-gray-200 cursor-not-allowed shadow-none' : 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-100'}`}
                             >
-                              {isCheckOutRestricted ? 'Available at 5:30 PM' : 'Check Out'}
+                              {isCheckOutRestricted ? 'Available at 5:30 PM' : isTodayHoliday ? 'Finish Holiday Work' : 'Check Out'}
                             </Button>
                           ) : (
                             <div className="w-full flex flex-col gap-2">

@@ -67,6 +67,7 @@ export const TodayAttendance: React.FC = () => {
                 })[0]?.date;
             const absenceStart = getAbsenceStartDate(emp, firstCheckInDate);
             if (selectedDate < absenceStart) status = 'Not Joined';
+            else if (isHoliday) status = 'Holiday';
             else status = isToday ? 'Not Yet Joined' : 'Absent';
         } else if (record.checkOut || record.totalWorkedSeconds > 0) {
             const approvedOT = (record?.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
@@ -383,12 +384,14 @@ export const TodayAttendance: React.FC = () => {
                                                           status === 'Manual Entry' ? 'bg-indigo-50 text-indigo-700 border border-indigo-100' :
                                                           status === 'Working' ? 'bg-blue-100 text-blue-800 animate-pulse border border-blue-200' :
                                                           status === 'Absent' ? 'bg-rose-50 text-rose-700 font-bold border border-rose-100' :
+                                                          status === 'Holiday' ? 'bg-amber-100 text-amber-700 border border-amber-200' :
                                                           'bg-gray-100 text-gray-500 italic'}`}>
                                                         {status === 'Working' && <Clock size={12} className="mr-1" />}
                                                         {status === 'Completed' && <UserCheck size={12} className="mr-1" />}
                                                         {status === 'Manual Entry' && <UserCheck size={12} className="mr-1" />}
                                                         {status === 'Low Time' && <UserCheck size={12} className="mr-1" />}
                                                         {status === 'Absent' && <UserMinus size={12} className="mr-1" />}
+                                                        {status === 'Holiday' && <Umbrella size={12} className="mr-1" />}
                                                         {status === 'Not Yet Joined' && <Clock size={12} className="mr-1" />}
                                                         {status}
                                                     </span>
