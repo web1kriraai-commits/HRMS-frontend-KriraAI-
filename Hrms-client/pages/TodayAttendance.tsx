@@ -72,11 +72,12 @@ export const TodayAttendance: React.FC = () => {
         } else if (record.checkOut || record.totalWorkedSeconds > 0) {
             const approvedOT = (record?.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
             const { lowTimeSeconds } = calculateDailyTimeStats(
-                record.totalWorkedSeconds, 
-                isHalfDay, 
+                record.totalWorkedSeconds,
+                isHalfDay,
                 isHoliday,
                 approvedOT,
-                selectedDate
+                selectedDate,
+                systemSettings
             );
             // Only show 'Low Time' status if the record is finalized (has checkOut)
             status = (record.checkOut && lowTimeSeconds > 0) ? 'Low Time' : (record.checkOut ? 'Completed' : 'Working');
@@ -357,7 +358,14 @@ export const TodayAttendance: React.FC = () => {
                                                 <span className="text-purple-400 font-bold italic tracking-widest text-[10px]">--:--</span>
                                             ) : record && record.totalWorkedSeconds > 0 ? (() => {
                                                 const approvedOT = (record.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
-                                                const { lowTimeSeconds } = calculateDailyTimeStats(record.totalWorkedSeconds, isHalfDay, isHoliday, approvedOT, selectedDate);
+                                                const { lowTimeSeconds } = calculateDailyTimeStats(
+                                                  record.totalWorkedSeconds,
+                                                  isHalfDay,
+                                                  isHoliday,
+                                                  approvedOT,
+                                                  selectedDate,
+                                                  systemSettings
+                                                );
                                                 const isLow = lowTimeSeconds > 0;
                                                 return (
                                                     <span className={`${isLow ? 'text-rose-600 font-black' : 'text-gray-900 font-bold'}`}>
@@ -450,11 +458,12 @@ export const TodayAttendance: React.FC = () => {
                                             ) : record && (record.checkOut || record.totalWorkedSeconds > 0) ? (() => {
                                                 const approvedOT = (record.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
                                                 const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(
-                                                    record.totalWorkedSeconds, 
-                                                    isHalfDay, 
+                                                    record.totalWorkedSeconds,
+                                                    isHalfDay,
                                                     isHoliday,
                                                     approvedOT,
-                                                    selectedDate
+                                                    selectedDate,
+                                                    systemSettings
                                                 );
 
                                                 const isLow = lowTimeSeconds > 0;

@@ -17,6 +17,8 @@ export const ABSENCE_PENALTY_EFFECTIVE_DATE = '2026-04-06';
 export const OVERTIME_POLICY_EFFECTIVE_DATE = '2026-04-06';
 /** Aligned with Hrms-server COMPULSORY_BREAK_EFFECTIVE_DATE */
 export const COMPULSORY_BREAK_EFFECTIVE_DATE = '2026-04-06';
+/** Minimum combined Break + Extra Break before checkout (20 minutes). */
+export const MIN_TOTAL_BREAK_SECONDS = 1200;
 
 const normYmd = (s: string) => {
   if (!s) return '';
@@ -123,11 +125,18 @@ export const calculateDurationSeconds = (start: string, end: string): number => 
 export const calculateTotalBreakSeconds = (breaks: Break[]): number => {
   return breaks.reduce((acc, b) => {
     if (b.start && b.end) {
+      const stored = (b as Break & { durationSeconds?: number }).durationSeconds;
+      if (typeof stored === 'number' && stored > 0) return acc + stored;
       return acc + calculateDurationSeconds(b.start, b.end);
     }
     return acc;
   }, 0);
 };
+
+export const hasMinimumTotalBreakTime = (
+  breaks: Break[],
+  minSeconds: number = MIN_TOTAL_BREAK_SECONDS
+): boolean => calculateTotalBreakSeconds(breaks) >= minSeconds;
 
 export const calculateWorkedSeconds = (attendance: Attendance, checkOutTime?: string): number => {
   if (!attendance.checkIn) return 0;
@@ -141,20 +150,19 @@ export const calculateWorkedSeconds = (attendance: Attendance, checkOutTime?: st
   return Math.max(0, totalSession - totalBreaks);
 };
 
-export const getFlags = (workedSeconds: number, isHalfDayApproved: boolean, approvedOvertimeMinutes: number = 0) => {
+export const getFlags = (
+  workedSeconds: number,
+  isHalfDayApproved: boolean,
+  _approvedOvertimeMinutes: number = 0,
+  isEarlyReleaseDay: boolean = false
+) => {
   const workedMinutes = workedSeconds / 60;
-
-  // If Half-Day, use adjusted threshold (Standard - 4h leave)
   const lowThreshold = isHalfDayApproved ? HALF_DAY_LOW_THRESHOLD_MINUTES : LOW_TIME_THRESHOLD_MINUTES;
   const extraThreshold = isHalfDayApproved ? HALF_DAY_EXTRA_THRESHOLD_MINUTES : EXTRA_TIME_THRESHOLD_MINUTES;
-  
-  // COMMITMENT RULE: Approved Overtime increases the target for extra work, 
-  // but Low Time is only triggered if work is below the standard minimum.
-  const targetMinutes = extraThreshold + approvedOvertimeMinutes;
 
   return {
-    lowTime: workedMinutes > 0 && workedMinutes < lowThreshold,
-    extraTime: approvedOvertimeMinutes > 0 && workedMinutes > extraThreshold
+    lowTime: isEarlyReleaseDay ? false : workedMinutes > 0 && workedMinutes < lowThreshold,
+    extraTime: workedMinutes > extraThreshold
   };
 };
 
@@ -163,12 +171,28 @@ export const getFlags = (workedSeconds: number, isHalfDayApproved: boolean, appr
  * 
  * Rules:
  * 1. Before OVERTIME_POLICY_EFFECTIVE_DATE: Extra time is granted for all work above threshold.
- * 2. On/After OVERTIME_POLICY_EFFECTIVE_DATE: Extra time requires approved overtime request.
+ * 2. On/After OVERTIME_POLICY_EFFECTIVE_DATE: Extra time is automatic above threshold (8h 15m + 7m buffer).
  */
-export const calculateDailyTimeStats = (effectiveWorkedSeconds: number, isHalfDayApproved: boolean, isHoliday: boolean, approvedOvertimeMinutes: number = 0, dateStr?: string) => {
+export const normalizeAttendanceDateStr = (dateStr?: string): string => {
+  if (!dateStr) return '';
+  return dateStr.includes('T') ? dateStr.split('T')[0] : dateStr.slice(0, 10);
+};
+
+export const calculateDailyTimeStats = (
+  effectiveWorkedSeconds: number,
+  isHalfDayApproved: boolean,
+  isHoliday: boolean,
+  _approvedOvertimeMinutes: number = 0,
+  dateStr?: string,
+  systemSettings?: { checkoutTimeOverrides?: Record<string, string> }
+) => {
   if (isHoliday) {
     return { lowTimeSeconds: 0, extraTimeSeconds: effectiveWorkedSeconds };
   }
+
+  const normDate = normalizeAttendanceDateStr(dateStr);
+  const isEarlyReleaseDay =
+    Boolean(normDate && systemSettings && hasCheckoutOverrideForDate(systemSettings, normDate));
 
   const lowThresholdSec = (isHalfDayApproved ? HALF_DAY_LOW_THRESHOLD_MINUTES : LOW_TIME_THRESHOLD_MINUTES) * 60;
   const extraThresholdSec = (isHalfDayApproved ? HALF_DAY_EXTRA_THRESHOLD_MINUTES : EXTRA_TIME_THRESHOLD_MINUTES) * 60;
@@ -177,7 +201,7 @@ export const calculateDailyTimeStats = (effectiveWorkedSeconds: number, isHalfDa
   let extraTimeSeconds = 0;
 
   // Deficit calculation: only against standard lower bound (not target)
-  if (effectiveWorkedSeconds < lowThresholdSec) {
+  if (!isEarlyReleaseDay && effectiveWorkedSeconds < lowThresholdSec) {
     // If they haven't started working, don't show full deficit
     if (effectiveWorkedSeconds > 0) {
       lowTimeSeconds = lowThresholdSec - effectiveWorkedSeconds;
@@ -187,19 +211,7 @@ export const calculateDailyTimeStats = (effectiveWorkedSeconds: number, isHalfDa
   } 
   
   if (effectiveWorkedSeconds > extraThresholdSec) {
-    const actualExtraSec = effectiveWorkedSeconds - extraThresholdSec;
-    
-    // Policy rule: Approved overtime request is required from April 6th onwards
-    const isPrePolicy = dateStr && dateStr < OVERTIME_POLICY_EFFECTIVE_DATE;
-    
-    if (isPrePolicy) {
-      // Before policy: give full extra time surplus
-      extraTimeSeconds = actualExtraSec;
-    } else if (approvedOvertimeMinutes > 0) {
-      // After policy: only if approved, capped by approved amount
-      const maxApprovedSec = approvedOvertimeMinutes * 60;
-      extraTimeSeconds = Math.min(actualExtraSec, maxApprovedSec);
-    }
+    extraTimeSeconds = effectiveWorkedSeconds - extraThresholdSec;
   }
 
   return { lowTimeSeconds, extraTimeSeconds };
@@ -231,6 +243,130 @@ export const formatDate = (dateStr: string | Date): string => {
   if (isNaN(date.getTime())) return 'Invalid Date';
 
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+export const DEFAULT_CHECK_IN_TIME = '08:30';
+export const DEFAULT_CHECKOUT_TIME = '17:30';
+
+export const getWallClockHM = (
+  date: Date,
+  timeZone: string = 'Asia/Kolkata'
+): { hour: number; minute: number } => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false
+    });
+    const parts = formatter.formatToParts(date);
+    const hour = parseInt(parts.find((p) => p.type === 'hour')!.value, 10);
+    const minute = parseInt(parts.find((p) => p.type === 'minute')!.value, 10);
+    return { hour, minute };
+  } catch {
+    return { hour: date.getHours(), minute: date.getMinutes() };
+  }
+};
+
+export const getDateStrInTimezone = (date: Date, timeZone: string = 'Asia/Kolkata'): string => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(date);
+  } catch {
+    return date.toISOString().split('T')[0];
+  }
+};
+
+export const parseCheckoutTime = (timeStr?: string): { hour: number; minute: number } => {
+  const s = String(timeStr || DEFAULT_CHECKOUT_TIME).trim();
+  const match = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return { hour: 17, minute: 30 };
+  const hour = parseInt(match[1], 10);
+  const minute = parseInt(match[2], 10);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return { hour: 17, minute: 30 };
+  return { hour, minute };
+};
+
+export const parseCheckInTime = (timeStr?: string): { hour: number; minute: number } => {
+  const s = String(timeStr || DEFAULT_CHECK_IN_TIME).trim();
+  const match = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return { hour: 8, minute: 30 };
+  const hour = parseInt(match[1], 10);
+  const minute = parseInt(match[2], 10);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return { hour: 8, minute: 30 };
+  return { hour, minute };
+};
+
+export const getCheckInOverrideForDate = (
+  settings: { checkInTimeOverrides?: Record<string, string> },
+  dateStr: string
+): string | null => settings?.checkInTimeOverrides?.[dateStr] ?? null;
+
+export const hasCheckInOverrideForDate = (
+  settings: { checkInTimeOverrides?: Record<string, string> },
+  dateStr: string
+): boolean => Boolean(getCheckInOverrideForDate(settings, dateStr));
+
+export const resolveCheckInTimeForDate = (
+  settings: { defaultCheckInTime?: string; checkInTimeOverrides?: Record<string, string> },
+  dateStr: string
+): { hour: number; minute: number } => {
+  const override = getCheckInOverrideForDate(settings, dateStr);
+  return parseCheckInTime(override || settings?.defaultCheckInTime || DEFAULT_CHECK_IN_TIME);
+};
+
+export const getCheckoutOverrideForDate = (
+  settings: { checkoutTimeOverrides?: Record<string, string> },
+  dateStr: string
+): string | null => settings?.checkoutTimeOverrides?.[dateStr] ?? null;
+
+export const hasCheckoutOverrideForDate = (
+  settings: { checkoutTimeOverrides?: Record<string, string> },
+  dateStr: string
+): boolean => Boolean(getCheckoutOverrideForDate(settings, dateStr));
+
+export const resolveCheckoutTimeForDate = (
+  settings: { defaultCheckoutTime?: string; checkoutTimeOverrides?: Record<string, string> },
+  dateStr: string
+): { hour: number; minute: number } => {
+  const override = getCheckoutOverrideForDate(settings, dateStr);
+  return parseCheckoutTime(override || settings?.defaultCheckoutTime || DEFAULT_CHECKOUT_TIME);
+};
+
+export const formatCheckoutTimeLabel = (hour: number, minute: number): string => {
+  const h12 = hour % 12 || 12;
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  return `${h12}:${String(minute).padStart(2, '0')} ${ampm}`;
+};
+
+export const isClockOutTimeAllowed = (
+  now: Date,
+  opts: {
+    hasHalfDayLeave?: boolean;
+    earlyLogoutApproved?: boolean;
+    roleIsAdmin?: boolean;
+    isHoliday?: boolean;
+    checkoutHour?: number;
+    checkoutMinute?: number;
+    timeZone?: string;
+  } = {}
+): boolean => {
+  const {
+    hasHalfDayLeave = false,
+    earlyLogoutApproved = false,
+    roleIsAdmin = false,
+    isHoliday = false,
+    checkoutHour = 17,
+    checkoutMinute = 30,
+    timeZone = 'Asia/Kolkata'
+  } = opts;
+  if (roleIsAdmin || earlyLogoutApproved || isHoliday || hasHalfDayLeave) return true;
+  const { hour, minute } = getWallClockHM(now, timeZone);
+  return hour > checkoutHour || (hour === checkoutHour && minute >= checkoutMinute);
 };
 
 /** True if local time in `timeZone` is still before 8:30 (employees cannot check in yet). */

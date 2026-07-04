@@ -50,7 +50,7 @@ const formatHoursMinutes = (totalMinutes: number) => {
 };
 
 export const MonthlySummary: React.FC = () => {
-  const { users, attendanceRecords, leaveRequests, companyHolidays, loading } = useApp();
+  const { users, attendanceRecords, leaveRequests, companyHolidays, systemSettings, loading } = useApp();
   
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
@@ -263,7 +263,7 @@ export const MonthlySummary: React.FC = () => {
   const totalEarlyCheckoutMinutes = useMemo(() => {
     return earlyCheckouts.reduce((sum, r) => {
       const isHoliday = holidayDateSet.has(r.date);
-      const stats = calculateDailyTimeStats(r.totalWorkedSeconds || 0, false, isHoliday, 0, r.date);
+      const stats = calculateDailyTimeStats(r.totalWorkedSeconds || 0, false, isHoliday, 0, r.date, systemSettings);
       return sum + Math.floor(stats.lowTimeSeconds / 60);
     }, 0);
   }, [earlyCheckouts, holidayDateSet]);
@@ -293,7 +293,7 @@ export const MonthlySummary: React.FC = () => {
       const requested = r.overtimeRequest?.durationMinutes || 0;
       const workedSec = r.totalWorkedSeconds || 0;
       const isHoliday = holidayDateSet.has(r.date);
-      const stats = calculateDailyTimeStats(workedSec, false, isHoliday, 0, r.date);
+      const stats = calculateDailyTimeStats(workedSec, false, isHoliday, 0, r.date, systemSettings);
       const completedMinutes = Math.floor(stats.extraTimeSeconds / 60);
 
       return {
@@ -364,7 +364,7 @@ export const MonthlySummary: React.FC = () => {
     >();
     for (const e of earlyCheckouts) {
       const isHoliday = holidayDateSet.has(e.date);
-      const stats = calculateDailyTimeStats(e.totalWorkedSeconds || 0, false, isHoliday, 0, e.date);
+      const stats = calculateDailyTimeStats(e.totalWorkedSeconds || 0, false, isHoliday, 0, e.date, systemSettings);
       const minutes = Math.floor(stats.lowTimeSeconds / 60);
       const row = map.get(e.userId) ?? {
         userId: e.userId,

@@ -485,10 +485,28 @@ export const reportAPI = {
 };
 
 // Audit API
+export interface AuditLogsQuery {
+  page?: number;
+  limit?: number;
+  search?: string;
+}
+
+export interface AuditLogsResponse {
+  logs: any[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 export const auditAPI = {
-  getAuditLogs: async (limit?: number) => {
-    const params = limit ? `?limit=${limit}` : '';
-    return apiRequest(`/audit${params}`);
+  getAuditLogs: async (query: AuditLogsQuery = {}): Promise<AuditLogsResponse> => {
+    const params = new URLSearchParams();
+    if (query.page) params.append('page', String(query.page));
+    if (query.limit) params.append('limit', String(query.limit));
+    if (query.search?.trim()) params.append('search', query.search.trim());
+    const qs = params.toString();
+    return apiRequest(`/audit${qs ? `?${qs}` : ''}`);
   },
 };
 

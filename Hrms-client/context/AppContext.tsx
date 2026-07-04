@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useMemo } from 'react';
-import { User, Attendance, LeaveRequest, Role, LeaveStatus, Break, BreakType, AuthState, AuditLog, CompanyHoliday, Notification, LeaveCategory, SystemSettings } from '../types';
+import { User, Attendance, LeaveRequest, Role, LeaveStatus, Break, BreakType, AuthState, CompanyHoliday, Notification, LeaveCategory, SystemSettings } from '../types';
 import { downloadCSV, formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isLateCheckIn, isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
 import * as api from '../services/api';
+import { FULL_REFRESH_SCOPE, RefreshScope, getRefreshScopeForPath } from './routeRefreshScopes';
 
 interface AppContextType {
   auth: AuthState;
@@ -14,7 +15,6 @@ interface AppContextType {
   users: User[];
   attendanceRecords: Attendance[];
   leaveRequests: LeaveRequest[];
-  auditLogs: AuditLog[];
   companyHolidays: CompanyHoliday[];
   notifications: Notification[];
   systemSettings: SystemSettings;
@@ -57,13 +57,17 @@ interface AppContextType {
   addCompanyHoliday: (date: string, description: string) => Promise<void>;
   autoAddSundays: () => Promise<void>;
   exportReports: (filters?: { start?: string; end?: string; department?: string }) => Promise<void>;
-  updateSystemSettings: (settings: Partial<SystemSettings>) => Promise<void>;
+  updateSystemSettings: (settings: Partial<SystemSettings> & {
+    setCheckInOverride?: { date: string; time: string };
+    removeCheckInOverrideDate?: string;
+    setCheckoutOverride?: { date: string; time: string };
+    removeCheckoutOverrideDate?: string;
+  }) => Promise<void>;
   reviewEarlyCheckout: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
-  pendingOvertimeRequests: Attendance[];
-  reviewOvertime: (recordId: string, status: 'Approved' | 'Rejected') => Promise<void>;
   
   // Refresh functions
-  refreshData: (silent?: boolean) => Promise<void>;
+  refreshData: (silent?: boolean, scope?: RefreshScope | 'full') => Promise<void>;
+  refreshForRoute: (pathname: string, silent?: boolean) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -180,20 +184,6 @@ const transformLeave = (apiLeave: any): LeaveRequest => ({
   createdAt: apiLeave.createdAt || apiLeave.created_at
 });
 
-// Helper to transform API audit log
-const transformAuditLog = (apiLog: any): AuditLog => ({
-  id: apiLog.id || apiLog._id,
-  actorId: apiLog.actorId?.id || apiLog.actorId?._id || apiLog.actorId,
-  actorName: apiLog.actorName,
-  action: apiLog.action,
-  targetType: apiLog.targetType,
-  targetId: apiLog.targetId,
-  beforeData: apiLog.beforeData,
-  afterData: apiLog.afterData,
-  details: apiLog.details,
-  timestamp: apiLog.timestamp || apiLog.createdAt || apiLog.created_at
-});
-
 // Helper to transform API holiday
 const transformHoliday = (apiHoliday: any): CompanyHoliday => {
   const today = new Date();
@@ -228,100 +218,169 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [users, setUsers] = useState<User[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<Attendance[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [companyHolidays, setCompanyHolidays] = useState<CompanyHoliday[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [pendingOvertimeRequests, setPendingOvertimeRequests] = useState<Attendance[]>([]);
-  const [systemSettings, setSystemSettings] = useState<SystemSettings>({ timezone: 'Asia/Kolkata' });
+  const [systemSettings, setSystemSettings] = useState<SystemSettings>({
+    timezone: 'Asia/Kolkata',
+    defaultCheckInTime: '08:30',
+    checkInTimeOverrides: {},
+    defaultCheckoutTime: '17:30',
+    checkoutTimeOverrides: {}
+  });
   const [loading, setLoading] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
 
-  // Refresh all data
-  const refreshData = React.useCallback(async (silent: boolean = false) => {
+  const refreshData = React.useCallback(async (silent: boolean = false, scopeInput?: RefreshScope | 'full') => {
     if (!auth.isAuthenticated) return;
+
+    const isHRorAdmin = auth.user?.role === Role.HR || auth.user?.role === Role.ADMIN;
+    const scope: RefreshScope =
+      scopeInput === undefined || scopeInput === 'full'
+        ? { ...FULL_REFRESH_SCOPE }
+        : { ...scopeInput };
+
+    if (!Object.values(scope).some(Boolean)) return;
 
     try {
       if (!silent) setLoading(true);
 
-      // PRIORITY: Fetch today's attendance FIRST for Employee Dashboard (faster load)
-      const todayAttendance = await api.attendanceAPI.getToday().catch(() => null);
-      if (todayAttendance) {
-        const todayTransformed = transformAttendance(todayAttendance);
-        setAttendanceRecords(prev => {
-          const filtered = prev.filter(a => !(a.date === todayTransformed.date && a.userId === todayTransformed.userId));
-          return [todayTransformed, ...filtered];
-        });
-      }
+      let todayAttendance: any = null;
 
-      // For HR/Admin, get all attendance records; for employees, get only their own
-      const isHRorAdmin = auth.user?.role === Role.HR || auth.user?.role === Role.ADMIN;
-      const attendancePromise = isHRorAdmin
-        ? api.attendanceAPI.getAll().catch(() => [])
-        : api.attendanceAPI.getHistory().catch(() => []);
-
-      // For employees, get leaves by userId; for HR/Admin, get all leaves
-      const leavesPromise = isHRorAdmin
-        ? api.leaveAPI.getAllLeaves().catch(() => [])
-        : (auth.user?.id ? api.leaveAPI.getLeavesByUserId(auth.user.id).catch(() => []) : Promise.resolve([]));
-
-      const [usersData, attendanceHistory, leavesData, holidaysData, notifsData, settingsData, overtimeData] = await Promise.all([
-        api.userAPI.getAllUsers().catch(() => []),
-        attendancePromise,
-        leavesPromise,
-        api.holidayAPI.getHolidays().catch(() => []),
-        api.notificationAPI.getMyNotifications().catch(() => []),
-        api.settingsAPI.getSettings().catch(() => ({ timezone: 'Asia/Kolkata' })),
-        isHRorAdmin ? api.attendanceAPI.getPendingOvertime().catch(() => []) : Promise.resolve([])
-      ]) as [any[], any[], any[], any[], any[], any, any[]];
-
-      const transformedUsers = (Array.isArray(usersData) ? usersData : []).map(transformUser);
-      setUsers(transformedUsers);
-
-      // Update current user from the refreshed users list
-      if (auth.user) {
-        const updatedCurrentUser = transformedUsers.find(u => u.id === auth.user?.id);
-        if (updatedCurrentUser) {
-          setAuth(prev => ({
-            ...prev,
-            user: updatedCurrentUser
-          }));
+      if (scope.today) {
+        todayAttendance = await api.attendanceAPI.getToday().catch(() => null);
+        if (todayAttendance) {
+          const todayTransformed = transformAttendance(todayAttendance);
+          setAttendanceRecords(prev => {
+            const filtered = prev.filter(
+              a => !(a.date === todayTransformed.date && a.userId === todayTransformed.userId)
+            );
+            return [todayTransformed, ...filtered];
+          });
         }
       }
 
-      // Merge today's attendance with history
-      const allAttendance = (Array.isArray(attendanceHistory) ? attendanceHistory : []).map(transformAttendance);
-      if (todayAttendance) {
-        const todayTransformed = transformAttendance(todayAttendance);
-        const todayExists = allAttendance.find(a => a.date === todayTransformed.date && a.userId === todayTransformed.userId);
-        if (todayExists) {
-          // Update existing today's record
-          const index = allAttendance.findIndex(a => a.id === todayExists.id);
-          allAttendance[index] = todayTransformed;
-        } else {
-          // Add today's record
-          allAttendance.unshift(todayTransformed);
-        }
-      }
-      setAttendanceRecords(allAttendance);
+      const parallelTasks: Promise<void>[] = [];
 
-      setLeaveRequests((Array.isArray(leavesData) ? leavesData : []).map(transformLeave));
-      setCompanyHolidays((Array.isArray(holidaysData) ? holidaysData : []).map(transformHoliday));
-      setNotifications((Array.isArray(notifsData) ? notifsData : []).map(transformNotification));
-      setSystemSettings({ timezone: (settingsData as any)?.timezone || 'Asia/Kolkata' });
-      setPendingOvertimeRequests((Array.isArray(overtimeData) ? overtimeData : []).map(transformAttendance));
-
-      // Load audit logs if admin
-      if (auth.user?.role === Role.ADMIN) {
-        api.auditAPI.getAuditLogs(100)
-          .then((logs: any) => setAuditLogs(Array.isArray(logs) ? logs.map(transformAuditLog) : []))
-          .catch(() => { });
+      if (scope.users) {
+        parallelTasks.push(
+          api.userAPI
+            .getAllUsers()
+            .catch(() => [])
+            .then((usersData: any) => {
+              const transformedUsers = (Array.isArray(usersData) ? usersData : []).map(transformUser);
+              setUsers(transformedUsers);
+              if (auth.user) {
+                const updatedCurrentUser = transformedUsers.find(u => u.id === auth.user?.id);
+                if (updatedCurrentUser) {
+                  setAuth(prev => ({ ...prev, user: updatedCurrentUser }));
+                }
+              }
+            })
+        );
       }
+
+      if (scope.attendance) {
+        parallelTasks.push(
+          (isHRorAdmin
+            ? api.attendanceAPI.getAll()
+            : auth.user?.id
+              ? api.attendanceAPI.getHistory()
+              : Promise.resolve([])
+          )
+            .catch(() => [])
+            .then((attendanceHistory: any) => {
+              const allAttendance = (Array.isArray(attendanceHistory) ? attendanceHistory : []).map(
+                transformAttendance
+              );
+
+              if (todayAttendance) {
+                const todayTransformed = transformAttendance(todayAttendance);
+                const todayExists = allAttendance.find(
+                  a => a.date === todayTransformed.date && a.userId === todayTransformed.userId
+                );
+                if (todayExists) {
+                  const index = allAttendance.findIndex(a => a.id === todayExists.id);
+                  allAttendance[index] = todayTransformed;
+                } else {
+                  allAttendance.unshift(todayTransformed);
+                }
+              }
+
+              setAttendanceRecords(allAttendance);
+            })
+        );
+      }
+
+      if (scope.leaves) {
+        parallelTasks.push(
+          (isHRorAdmin
+            ? api.leaveAPI.getAllLeaves()
+            : auth.user?.id
+              ? api.leaveAPI.getLeavesByUserId(auth.user.id)
+              : Promise.resolve([])
+          )
+            .catch(() => [])
+            .then((leavesData: any) => {
+              setLeaveRequests((Array.isArray(leavesData) ? leavesData : []).map(transformLeave));
+            })
+        );
+      }
+
+      if (scope.holidays) {
+        parallelTasks.push(
+          api.holidayAPI
+            .getHolidays()
+            .catch(() => [])
+            .then((holidaysData: any) => {
+              setCompanyHolidays((Array.isArray(holidaysData) ? holidaysData : []).map(transformHoliday));
+            })
+        );
+      }
+
+      if (scope.notifications) {
+        parallelTasks.push(
+          api.notificationAPI
+            .getMyNotifications()
+            .catch(() => [])
+            .then((notifsData: any) => {
+              setNotifications((Array.isArray(notifsData) ? notifsData : []).map(transformNotification));
+            })
+        );
+      }
+
+      if (scope.settings) {
+        parallelTasks.push(
+          api.settingsAPI
+            .getSettings()
+            .catch(() => ({ timezone: 'Asia/Kolkata' }))
+            .then((settingsData: any) => {
+              setSystemSettings({
+                timezone: settingsData?.timezone || 'Asia/Kolkata',
+                defaultCheckInTime: settingsData?.defaultCheckInTime || '08:30',
+                checkInTimeOverrides: settingsData?.checkInTimeOverrides || {},
+                defaultCheckoutTime: settingsData?.defaultCheckoutTime || '17:30',
+                checkoutTimeOverrides: settingsData?.checkoutTimeOverrides || {}
+              });
+            })
+        );
+      }
+
+      await Promise.all(parallelTasks);
     } catch (error) {
       console.error('Error refreshing data:', error);
     } finally {
       if (!silent) setLoading(false);
     }
   }, [auth.isAuthenticated, auth.user?.id, auth.user?.role]);
+
+  const refreshForRoute = React.useCallback(
+    async (pathname: string, silent: boolean = false) => {
+      if (!auth.user?.role) return;
+      const scope = getRefreshScopeForPath(pathname, auth.user.role);
+      return refreshData(silent, scope);
+    },
+    [auth.user?.role, refreshData]
+  );
 
   // Check for existing token on mount
   useEffect(() => {
@@ -371,16 +430,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   }, []);
 
-  // Auto-refresh when authenticated
-  useEffect(() => {
-    if (auth.isAuthenticated) {
-      refreshData();
-      // Set up periodic refresh every 30 seconds
-      const interval = setInterval(() => refreshData(true), 30000);
-      return () => clearInterval(interval);
-    }
-  }, [auth.isAuthenticated, refreshData]); // Added refreshData to dependencies
-
   const login = async (username: string, password?: string): Promise<'success' | 'fail' | 'change_password'> => {
     try {
       const data = await api.authAPI.login(username, password);
@@ -393,7 +442,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       // Don't refresh data if password change is required
       if (!requiresPasswordChange) {
-        await refreshData(); // Manual login should show loader
+        await refreshForRoute('/');
       }
 
       return requiresPasswordChange ? 'change_password' : 'success';
@@ -411,7 +460,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       requiresPasswordChange: false
     });
     // Trigger refresh to load all data
-    setTimeout(refreshData, 100);
+    setTimeout(() => refreshForRoute('/'), 100);
   };
 
   const logout = () => {
@@ -420,7 +469,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setUsers([]);
     setAttendanceRecords([]);
     setLeaveRequests([]);
-    setAuditLogs([]);
     setCompanyHolidays([]);
     setNotifications([]);
   };
@@ -656,7 +704,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const updateSystemSettings = async (settings: Partial<SystemSettings>): Promise<void> => {
     try {
       const data = await api.settingsAPI.updateSettings(settings) as any;
-      setSystemSettings({ timezone: data.timezone || 'Asia/Kolkata' });
+      setSystemSettings({
+        timezone: data.timezone || 'Asia/Kolkata',
+        defaultCheckInTime: data.defaultCheckInTime || '08:30',
+        checkInTimeOverrides: data.checkInTimeOverrides || {},
+        defaultCheckoutTime: data.defaultCheckoutTime || '17:30',
+        checkoutTimeOverrides: data.checkoutTimeOverrides || {}
+      });
       await refreshData(); // Refresh audit logs
     } catch (error) {
       console.error('Update settings error:', error);
@@ -673,20 +727,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       await refreshData(true); // Silent refresh to update UI consistency
     } catch (error) {
       console.error('Review early checkout error:', error);
-      throw error;
-    }
-  };
-
-  const reviewOvertime = async (recordId: string, status: 'Approved' | 'Rejected'): Promise<void> => {
-    try {
-      const data = await api.attendanceAPI.reviewOvertime(recordId, status) as any;
-      setAttendanceRecords(prev => prev.map(r =>
-        r.id === recordId ? transformAttendance(data) : r
-      ));
-      setPendingOvertimeRequests(prev => prev.filter(r => r.id !== recordId));
-      await refreshData(true);
-    } catch (error) {
-      console.error('Review overtime error:', error);
       throw error;
     }
   };
@@ -715,7 +755,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       users,
       attendanceRecords,
       leaveRequests,
-      auditLogs,
       companyHolidays,
       notifications,
       systemSettings,
@@ -749,9 +788,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       exportReports,
       updateSystemSettings,
       reviewEarlyCheckout,
-      pendingOvertimeRequests,
-      reviewOvertime,
-      refreshData
+      refreshData,
+      refreshForRoute
     }}>
       {children}
     </AppContext.Provider>

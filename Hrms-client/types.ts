@@ -174,6 +174,14 @@ export interface Notification {
 
 export interface SystemSettings {
   timezone: string;
+  /** Default check-in time HH:mm (24h), e.g. 08:30 */
+  defaultCheckInTime: string;
+  /** Per-day check-in override YYYY-MM-DD → HH:mm */
+  checkInTimeOverrides: Record<string, string>;
+  /** Default checkout time HH:mm (24h), e.g. 17:30 */
+  defaultCheckoutTime: string;
+  /** Per-day checkout override YYYY-MM-DD → HH:mm */
+  checkoutTimeOverrides: Record<string, string>;
 }
 
 export interface AuthState {

@@ -13,6 +13,7 @@ import { Analytics } from '@/pages/Analytics';
 import { MonthlySummary } from '@/pages/MonthlySummary';
 import { Sidebar } from './components/Sidebar';
 import { EarlyLogoutPopup } from './components/EarlyLogoutPopup';
+import { RouteDataLoader } from './components/RouteDataLoader';
 import { Role } from './types';
 
 const PrivateRoute: React.FC<{ children: React.ReactNode; roles?: Role[] }> = ({ children, roles }) => {
@@ -41,8 +42,8 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return (
     <div className="flex min-h-screen bg-slate-50">
       <Sidebar />
-      <main className="ml-64 flex-1 p-8 overflow-y-auto h-screen">
-        <div className="max-w-full mx-auto px-4 lg:px-8">
+      <main className="ml-64 flex-1 px-6 py-4 overflow-y-auto min-h-screen">
+        <div className="max-w-full mx-auto">
           {children}
         </div>
       </main>
@@ -62,7 +63,9 @@ const HomeDashboard = () => {
 
 const AppRoutes = () => {
   return (
-    <Routes>
+    <>
+      <RouteDataLoader />
+      <Routes>
       <Route path="/login" element={<Login />} />
 
       <Route path="/" element={
@@ -195,6 +198,7 @@ const AppRoutes = () => {
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   );
 };
 

@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
-import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn, HALF_DAY_EXTRA_THRESHOLD_SECONDS } from '../services/utils';
+import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn, HALF_DAY_EXTRA_THRESHOLD_SECONDS, calculateTotalBreakSeconds, hasMinimumTotalBreakTime, MIN_TOTAL_BREAK_SECONDS, getDateStrInTimezone, resolveCheckInTimeForDate, resolveCheckoutTimeForDate, formatCheckoutTimeLabel, isClockOutTimeAllowed, hasCheckoutOverrideForDate } from '../services/utils';
 import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -23,13 +23,6 @@ const formatDurationStyled = (seconds: number) => {
 /** Half-day minimum net worked time (matches server: Math.floor(495/2)*60). */
 const HALF_DAY_MIN_SHIFT_SECONDS = Math.floor(495 / 2) * 60;
 const FULL_DAY_MIN_SHIFT_SECONDS = (8 * 3600) + (15 * 60);
-/** Full day: upper bound of normal before extra time (8h 22m). */
-const FULL_DAY_MAX_NORMAL_SECONDS = (8 * 3600) + (22 * 60);
-/**
- * Half day: server `getFlags` uses 502/2 min — used for “Request Overtime” when still clocked in.
- * Fulfillment & attendance “+extra” use `HALF_DAY_EXTRA_THRESHOLD_SECONDS` (4h 22m) per `calculateDailyTimeStats`.
- */
-const HALF_DAY_MAX_NORMAL_SECONDS = (502 / 2) * 60;
 
 // Helper to format penalty duration (e.g. 900 -> 15m, 3720 -> 1h 2m)
 const formatPenaltyDisplay = (seconds: number) => {
@@ -101,14 +94,8 @@ export const EmployeeDashboard: React.FC = () => {
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const [showCheckoutRequestModal, setShowCheckoutRequestModal] = useState(false);
   const [checkoutRequestNote, setCheckoutRequestNote] = useState('');
+  const [checkoutRequestType, setCheckoutRequestType] = useState<'early' | 'break'>('early');
   const [isSubmittingCheckoutRequest, setIsSubmittingCheckoutRequest] = useState(false);
-
-  // Overtime Request States
-  const [showOvertimeModal, setShowOvertimeModal] = useState(false);
-  const [overtimeReason, setOvertimeReason] = useState('');
-  const [overtimeMinutes, setOvertimeMinutes] = useState<number>(0);
-  const [overtimeTargetDate, setOvertimeTargetDate] = useState<string | null>(null);
-  const [isSubmittingOvertime, setIsSubmittingOvertime] = useState(false);
 
   /** Updates every second so check-in/checkout time gates unlock without waiting for unrelated re-renders */
   const [wallClockNow, setWallClockNow] = useState(() => new Date());
@@ -282,26 +269,18 @@ export const EmployeeDashboard: React.FC = () => {
 
   // Check if standard break already taken today
   const hasStandardBreak = todayRecord?.breaks.some(b => b.type === 'Standard' && b.end) || false;
+  const totalBreakSecondsToday = useMemo(
+    () => calculateTotalBreakSeconds(todayRecord?.breaks || []),
+    [todayRecord?.breaks]
+  );
+  const hasMinimumTotalBreak = hasMinimumTotalBreakTime(todayRecord?.breaks || []);
+  const breakMinutesRemaining = Math.max(0, Math.ceil((MIN_TOTAL_BREAK_SECONDS - totalBreakSecondsToday) / 60));
   const activeBreakObj = todayRecord?.breaks.find(b => !b.end);
   const activeBreakType = activeBreakObj?.type;
   const activeBreakStartTime = localBreakStartTime ? localBreakStartTime : (activeBreakObj ? new Date(activeBreakObj.start) : null);
 
-  // Handler for ending break
+  // Handler for ending break (no minimum per session — 20 min total checked at checkout)
   const handleEndBreak = useCallback(async () => {
-    // ENFORCE 20 MINUTE BREAK (1200 seconds) when compulsory policy applies
-    if (breakElapsed < 1200 && compulsoryBreakEnforced) {
-      const remainingSecs = Math.ceil(1200 - breakElapsed);
-      const remainingMins = Math.ceil(remainingSecs / 60);
-      setConfirmationPopup({
-        show: true,
-        title: '⚠️ Break Progress',
-        message: `Mandatory Break Policy: You must take at least 20 minutes of break. Please wait ${remainingMins} more minute(s).`,
-        onConfirm: () => setConfirmationPopup(null),
-        onCancel: () => setConfirmationPopup(null),
-      });
-      return;
-    }
-
     setLocalBreakStartTime(null);
     try {
       await endBreak();
@@ -314,7 +293,7 @@ export const EmployeeDashboard: React.FC = () => {
       setConfirmationPopup(null); // Close the popup even on error
       throw error;
     }
-  }, [endBreak, activeBreakStartTime, breakElapsed, compulsoryBreakEnforced]);
+  }, [endBreak, activeBreakStartTime]);
 
   const handleAddManualHours = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -350,7 +329,11 @@ export const EmployeeDashboard: React.FC = () => {
       setShowCheckoutRequestModal(false);
       setCheckoutRequestNote('');
       await refreshData();
-      alert('Early checkout request sent successfully.');
+      alert(
+        checkoutRequestType === 'break'
+          ? 'Checkout approval request sent. An admin can approve checkout without the 20-minute break requirement.'
+          : 'Early checkout request sent successfully.'
+      );
     } catch (err: any) {
       alert(err.message || 'Failed to send early checkout request.');
     } finally {
@@ -408,10 +391,68 @@ export const EmployeeDashboard: React.FC = () => {
     () => (isHalfDayLeaveToday ? HALF_DAY_MIN_SHIFT_SECONDS : FULL_DAY_MIN_SHIFT_SECONDS),
     [isHalfDayLeaveToday]
   );
-  const overtimeRequestMinSeconds = useMemo(
-    () => (isHalfDayLeaveToday ? HALF_DAY_MAX_NORMAL_SECONDS : FULL_DAY_MAX_NORMAL_SECONDS),
-    [isHalfDayLeaveToday]
+
+  const todayDateStr = useMemo(
+    () => getDateStrInTimezone(wallClockNow, systemSettings.timezone),
+    [wallClockNow, systemSettings.timezone]
   );
+
+  const checkInTimeToday = useMemo(
+    () => resolveCheckInTimeForDate(systemSettings, todayDateStr),
+    [systemSettings, todayDateStr]
+  );
+
+  const checkInAvailableLabel = useMemo(
+    () => formatCheckoutTimeLabel(checkInTimeToday.hour, checkInTimeToday.minute),
+    [checkInTimeToday]
+  );
+
+  const checkoutTimeToday = useMemo(
+    () => resolveCheckoutTimeForDate(systemSettings, todayDateStr),
+    [systemSettings, todayDateStr]
+  );
+
+  const checkoutAvailableLabel = useMemo(
+    () => formatCheckoutTimeLabel(checkoutTimeToday.hour, checkoutTimeToday.minute),
+    [checkoutTimeToday]
+  );
+
+  const hasTodayCheckoutOverride = useMemo(
+    () => hasCheckoutOverrideForDate(systemSettings, todayDateStr),
+    [systemSettings, todayDateStr]
+  );
+
+  const checkoutTimeReached = useMemo(() => {
+    if (user?.role === 'Admin' || isTodayHoliday) return true;
+    if (todayRecord?.earlyLogoutRequest === 'Approved') return true;
+    if (isHalfDayLeaveToday) return true;
+    return isClockOutTimeAllowed(wallClockNow, {
+      checkoutHour: checkoutTimeToday.hour,
+      checkoutMinute: checkoutTimeToday.minute,
+      timeZone: systemSettings.timezone
+    });
+  }, [wallClockNow, user?.role, todayRecord?.earlyLogoutRequest, isHalfDayLeaveToday, isTodayHoliday, checkoutTimeToday, systemSettings.timezone]);
+
+  const isCheckOutRestricted = !checkoutTimeReached;
+
+  const shiftCompleteForCheckout = elapsed >= minShiftSecondsForTodayCheckout;
+  const earlyLogoutStatus = todayRecord?.earlyLogoutRequest ?? 'None';
+  const isEarlyReleaseCheckout =
+    hasTodayCheckoutOverride && checkoutTimeReached;
+  const canCheckoutDirectly =
+    (shiftCompleteForCheckout ||
+      earlyLogoutStatus === 'Approved' ||
+      isEarlyReleaseCheckout) &&
+    (!compulsoryBreakEnforced ||
+      hasMinimumTotalBreak ||
+      earlyLogoutStatus === 'Approved' ||
+      isEarlyReleaseCheckout);
+  const needsBreakExemptionRequest =
+    compulsoryBreakEnforced &&
+    shiftCompleteForCheckout &&
+    !hasMinimumTotalBreak &&
+    earlyLogoutStatus !== 'Approved' &&
+    earlyLogoutStatus !== 'Pending';
   // Filter out pending leaves from display - only show approved/rejected in history
   const myLeavesHistory = myLeaves.filter(l => {
     const status = String(l.status || '').trim();
@@ -560,9 +601,10 @@ export const EmployeeDashboard: React.FC = () => {
     return diffMinutes / 60; // Convert to hours
   };
 
-  // Compute overtime history (approved/pending/rejected requests)
+  // Auto-recorded overtime (work beyond 8h 15m + 7m buffer)
   const overtimeHistory = useMemo(() => {
-    return myAttendanceHistory.filter(r => r.overtimeRequest && r.overtimeRequest.status && r.overtimeRequest.status !== 'None')
+    return myAttendanceHistory
+      .filter(r => (r.overtimeRequest?.completedMinutes ?? 0) > 0 || r.extraTimeFlag)
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [myAttendanceHistory]);
 
@@ -817,7 +859,14 @@ export const EmployeeDashboard: React.FC = () => {
       });
 
       const approvedOT = (record.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
-      const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(effectiveWorkedSeconds, hasApprovedHalfDay, isHolidayDay, approvedOT, dateStr);
+      const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(
+        effectiveWorkedSeconds,
+        hasApprovedHalfDay,
+        isHolidayDay,
+        approvedOT,
+        dateStr,
+        systemSettings
+      );
       // Only count low time if the day is finalized (has checkOut).
       // This prevents "In Progress" sessions (today or past missed checkouts) 
       // from showing a full deficit in the monthly summary.
@@ -1039,46 +1088,19 @@ export const EmployeeDashboard: React.FC = () => {
     }
   };
 
-  const handleOvertimeSubmit = async () => {
-    if (!overtimeReason.trim() || overtimeMinutes <= 0) {
-      alert('Please provide a reason and valid duration for overtime.');
-      return;
-    }
-
-    setIsSubmittingOvertime(true);
-    try {
-      await attendanceAPI.requestOvertime(overtimeReason.trim(), overtimeMinutes, overtimeTargetDate || undefined);
-      alert(`Overtime request submitted successfully${overtimeTargetDate ? ` for ${formatDate(overtimeTargetDate)}` : ''}. It will be added to your extra time once approved by Admin.`);
-      setShowOvertimeModal(false);
-      setOvertimeReason('');
-      setOvertimeMinutes(0);
-      setOvertimeTargetDate(null);
-      await refreshData();
-    } catch (error: any) {
-      console.error('Error submitting overtime request:', error);
-      alert(error.message || 'Failed to submit overtime request.');
-    } finally {
-      setIsSubmittingOvertime(false);
-    }
-  };
-
   // Extra Time Worked = Final Time (convert from seconds to hours)
   const extraTimeWorkedHours = finalTimeDifference / 3600;
 
-  // Time Restrictions Logic (8:30 AM earliest check-in = company timezone; checkout gate uses device local time to match prior UI)
+  // Time Restrictions Logic (admin-configured check-in time in company timezone)
   const isCheckInRestricted = useMemo(() => {
     if (user?.role === 'Admin' || isTodayHoliday) return false;
-    return isBeforeEarliestCheckIn(wallClockNow, systemSettings.timezone);
-  }, [wallClockNow, user?.role, systemSettings.timezone, isTodayHoliday]);
-
-  const isCheckOutRestricted = useMemo(() => {
-    if (user?.role === 'Admin' || isTodayHoliday) return false;
-    if (todayRecord?.earlyLogoutRequest === 'Approved') return false;
-    if (isHalfDayLeaveToday) return false;
-    const h = wallClockNow.getHours();
-    const m = wallClockNow.getMinutes();
-    return h < 17 || (h === 17 && m < 30);
-  }, [wallClockNow, user?.role, todayRecord?.earlyLogoutRequest, isHalfDayLeaveToday, isTodayHoliday]);
+    return isBeforeEarliestCheckIn(
+      wallClockNow,
+      systemSettings.timezone,
+      checkInTimeToday.hour,
+      checkInTimeToday.minute
+    );
+  }, [wallClockNow, user?.role, systemSettings.timezone, isTodayHoliday, checkInTimeToday]);
 
   // OLD LOGIC: Extra Time Leave Balance = Extra Time Worked (Final Time) - Extra Time Leave Taken
   const extraTimeLeaveHoursTaken = baseExtraTimeLeaveHours;
@@ -1342,53 +1364,6 @@ export const EmployeeDashboard: React.FC = () => {
                 </div>
 
                 <div className="flex flex-col gap-3 w-full md:w-auto">
-                  {unresolvedAbsenceDates.length > 0 && !isCheckedIn && !isCheckedOut ? (
-                    <div className="bg-rose-50 border border-rose-200 rounded-2xl p-6 w-full md:w-[600px] shadow-sm">
-                      <div className="flex items-start gap-4">
-                        <div className="h-12 w-12 rounded-full bg-rose-100 flex items-center justify-center shrink-0">
-                          <AlertCircle className="h-6 w-6 text-rose-600" />
-                        </div>
-                        <div className="flex-1">
-                          <h4 className="text-lg font-bold text-rose-900">Pending Absences Detected</h4>
-                          <p className="text-sm text-rose-700 mt-1 mb-4">
-                            You have {unresolvedAbsenceDates.length} unresolved absence{unresolvedAbsenceDates.length > 1 ? 's' : ''}. 
-                            Please resolve each to enable Check In.
-                          </p>
-                          
-                          <div className="space-y-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                            {unresolvedAbsenceDates.map((date) => (
-                              <div key={date} className="bg-white/60 border border-rose-100 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                <span className="font-bold text-gray-800">{convertToDDMMYYYY(date)}</span>
-                                <div className="flex gap-2 flex-wrap">
-                                  {canRequestPaidLeave && (
-                                  <Button 
-                                    size="sm"
-                                    variant="danger" 
-                                    className="text-[10px] h-9 px-3 font-bold"
-                                    onClick={() => handleResolveAbsence(date, LeaveCategory.PAID)}
-                                    disabled={isResolvingAbsence}
-                                  >
-                                    Paid Leave
-                                  </Button>
-                                  )}
-                                  <Button 
-                                    size="sm"
-                                    variant="primary" 
-                                    className="text-[10px] h-9 px-3 font-bold bg-amber-600 hover:bg-amber-700"
-                                    onClick={() => handleResolveAbsence(date, LeaveCategory.UNPAID)}
-                                    disabled={isResolvingAbsence}
-                                  >
-                                    Unpaid Leave
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
                       {!isCheckedIn && !isCheckedOut && (
                         <div className="flex flex-col items-stretch md:items-start gap-2">
                         <Button 
@@ -1396,13 +1371,13 @@ export const EmployeeDashboard: React.FC = () => {
                           disabled={isCheckInRestricted}
                           title={
                             isCheckInRestricted
-                              ? `Check-in is available from 8:30 AM (${systemSettings.timezone})`
+                              ? `Check-in is available from ${checkInAvailableLabel} (${systemSettings.timezone})`
                               : undefined
                           }
                           onClick={() => {
                             if (isCheckInRestricted) return;
-                            if (user?.role !== 'Admin' && !isTodayHoliday && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone)) {
-                              alert(`Check-in is only allowed from 8:30 AM (${systemSettings.timezone}).`);
+                            if (user?.role !== 'Admin' && !isTodayHoliday && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone, checkInTimeToday.hour, checkInTimeToday.minute)) {
+                              alert(`Check-in is only allowed from ${checkInAvailableLabel} (${systemSettings.timezone}).`);
                               return;
                             }
                             setConfirmationPopup({
@@ -1410,8 +1385,8 @@ export const EmployeeDashboard: React.FC = () => {
                               title: 'Confirm Check In',
                               message: 'Are you sure you want to check in?',
                               onConfirm: async () => {
-                                if (user?.role !== 'Admin' && !isTodayHoliday && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone)) {
-                                  alert(`Check-in is only allowed from 8:30 AM (${systemSettings.timezone}).`);
+                                if (user?.role !== 'Admin' && !isTodayHoliday && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone, checkInTimeToday.hour, checkInTimeToday.minute)) {
+                                  alert(`Check-in is only allowed from ${checkInAvailableLabel} (${systemSettings.timezone}).`);
                                   setConfirmationPopup(null);
                                   return;
                                 }
@@ -1434,12 +1409,12 @@ export const EmployeeDashboard: React.FC = () => {
                             });
                           }} className={`w-full md:w-48 h-14 text-lg shadow-lg ${isCheckInRestricted ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed shadow-none' : 'shadow-blue-200'}`}>
                           <Clock className="mr-2" /> 
-                          {isCheckInRestricted ? 'From 8:30 AM' : isTodayHoliday ? 'Holiday Work' : 'Check In'}
+                          {isCheckInRestricted ? `From ${checkInAvailableLabel}` : isTodayHoliday ? 'Holiday Work' : 'Check In'}
                         </Button>
                         {isCheckInRestricted && (
                           <p className="text-xs text-slate-500 max-w-xs leading-relaxed">
                             Check-in opens at{' '}
-                            <span className="font-semibold text-slate-600">8:30 AM</span> in{' '}
+                            <span className="font-semibold text-slate-600">{checkInAvailableLabel}</span> in{' '}
                             <span className="font-mono">{systemSettings.timezone}</span>.
                             Now:{' '}
                             <span className="font-mono tabular-nums">
@@ -1454,8 +1429,6 @@ export const EmployeeDashboard: React.FC = () => {
                         )}
                         </div>
                       )}
-                    </>
-                  )}
 
                   {isCheckedIn && !isCheckedOut && (
                     <>
@@ -1519,64 +1492,41 @@ export const EmployeeDashboard: React.FC = () => {
                           <div className="flex flex-col w-full gap-2">
                             <Button
                               onClick={() => {
-                                if (breakElapsed < 1200 && compulsoryBreakEnforced) {
-                                  setConfirmationPopup({
-                                    show: true,
-                                    title: '⚠️ Break Progress',
-                                    message: `Mandatory Break Policy: You must take at least 20 minutes of break. ${Math.ceil((1200 - breakElapsed) / 60)} minutes remaining.`,
-                                    onConfirm: () => setConfirmationPopup(null),
-                                    onCancel: () => setConfirmationPopup(null),
-                                  });
-                                  return;
-                                }
                                 setConfirmationPopup({
                                   show: true,
                                   title: 'End Break',
                                   message: 'Are you sure you want to end your break?',
                                   onConfirm: handleEndBreak,
                                   onCancel: () => setConfirmationPopup(null),
-                                  customButtons: (
-                                    <div className="flex space-x-2">
-                                      <Button
-                                        onClick={handleEndBreak}
-                                        disabled={breakElapsed < 1200 && compulsoryBreakEnforced}
-                                        className={`${(breakElapsed < 1200 && compulsoryBreakEnforced) ? 'bg-slate-100 text-slate-400' : 'bg-orange-500 hover:bg-orange-600 text-white'}`}
-                                      >
-                                        End Break
-                                      </Button>
-                                    </div>
-                                  )
                                 });
                               }}
                               variant="secondary"
-                              className={`w-full font-extrabold flex flex-col items-center py-2.5 rounded-xl transition-all active:scale-95 border ${breakElapsed < 1200 && compulsoryBreakEnforced
-                                ? 'bg-slate-100 text-slate-500 border-slate-200 cursor-not-allowed shadow-none'
-                                : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-500 shadow-md shadow-indigo-100'
-                                }`}
+                              className="w-full font-extrabold flex flex-col items-center py-2.5 rounded-xl transition-all active:scale-95 border bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-500 shadow-md shadow-indigo-100"
                             >
                               <span className="text-sm uppercase tracking-wide">End Break</span>
-                              {breakElapsed < 1200 && compulsoryBreakEnforced && (
-                                <span className="text-[10px] font-bold mt-0.5 bg-slate-200 text-slate-600 px-2 py-0.5 rounded-md">
-                                  {Math.ceil((1200 - breakElapsed) / 60)}m remaining
-                                </span>
-                              )}
                             </Button>
                           </div>
                         )
                       ) : (
                         /* CHECKOUT: full day 8h15m; half-day leave = ~4h7.5m minimum (server-aligned) */
                         <div className="w-full flex flex-col gap-2">
-                          {/* Request Overtime — after full-day normal (8h 22m) or half-day normal (251m), matches server getFlags */}
-                          {isCheckedIn && !isCheckedOut && !isOnBreak && elapsed > overtimeRequestMinSeconds && (!todayRecord?.overtimeRequest || todayRecord.overtimeRequest.status === 'None') && (
+                          {earlyLogoutStatus === 'Pending' ? (
+                            <div className="flex flex-col items-center justify-center p-4 bg-amber-50 border border-amber-100 rounded-xl">
+                              <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Approval Pending</span>
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <RotateCcw size={10} className="animate-spin text-amber-500" />
+                                <span className="text-[10px] font-bold text-amber-500">Waiting for Admin</span>
+                              </div>
+                            </div>
+                          ) : !checkoutTimeReached ? (
                             <Button
-                              onClick={() => setShowOvertimeModal(true)}
-                              className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-xl shadow-lg shadow-indigo-100 transition-all active:scale-95 uppercase tracking-widest text-xs flex items-center justify-center gap-2 mb-1"
+                              variant="secondary"
+                              disabled
+                              className="w-full font-bold py-4 rounded-xl bg-gray-50 text-gray-500 border border-gray-200 cursor-not-allowed"
                             >
-                              <Clock size={16} /> Request Overtime
+                              Check out from {checkoutAvailableLabel}
                             </Button>
-                          )}
-
-                          {(elapsed >= minShiftSecondsForTodayCheckout) || todayRecord?.earlyLogoutRequest === 'Approved' ? (
+                          ) : canCheckoutDirectly ? (
                             <Button
                               variant="danger"
                               disabled={isCheckOutRestricted}
@@ -1586,24 +1536,16 @@ export const EmployeeDashboard: React.FC = () => {
                                   title: '📋 Task Sheet Reminder',
                                   message: 'Have you updated your task sheet for today? Please make sure all your tasks are recorded before checking out.',
                                   onConfirm: async () => {
-                                    // MANDATORY 20-MINUTE BREAK CHECK
-                                    const standardBreaks = todayRecord?.breaks?.filter(b => b.type === 'Standard' && b.end) || [];
-                                    const hasCompletedFullBreak = standardBreaks.some(b => {
-                                      const duration = Math.floor((new Date(b.end).getTime() - new Date(b.start).getTime()) / 1000);
-                                      return duration >= 1200; // 20 minutes
-                                    });
-
-                                    if (!hasCompletedFullBreak && compulsoryBreakEnforced && todayRecord?.earlyLogoutRequest !== 'Approved') {
+                                    if (compulsoryBreakEnforced && !hasMinimumTotalBreak && earlyLogoutStatus !== 'Approved') {
                                       setConfirmationPopup({
                                         show: true,
-                                        title: '⚠️ Break Policy Alert',
-                                        message: 'Mandatory Break Policy: You must take at least 20 minutes of standard break before checking out. Please take a break or contact an admin to exempt you.',
+                                        title: '⚠️ Break Policy',
+                                        message: `You need at least 20 minutes of break (Break + Extra Break). You have ${formatDuration(totalBreakSecondsToday)}. Take more break or request admin approval.`,
                                         onConfirm: () => setConfirmationPopup(null),
                                         onCancel: () => setConfirmationPopup(null),
                                       });
                                       return;
                                     }
-
                                     try {
                                       await clockOut();
                                       setConfirmationPopup(null);
@@ -1622,39 +1564,38 @@ export const EmployeeDashboard: React.FC = () => {
                               }}
                               className={`w-full font-bold py-4 rounded-xl shadow-lg transition-all active:scale-95 ${isCheckOutRestricted ? 'bg-gray-50 text-gray-600 border border-gray-200 cursor-not-allowed shadow-none' : 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-100'}`}
                             >
-                              {isCheckOutRestricted ? 'Available at 5:30 PM' : isTodayHoliday ? 'Finish Holiday Work' : 'Check Out'}
+                              {isCheckOutRestricted ? `Available at ${checkoutAvailableLabel}` : isTodayHoliday ? 'Finish Holiday Work' : 'Check Out'}
                             </Button>
                           ) : (
                             <div className="w-full flex flex-col gap-2">
-                              {/* If shift is complete but break is missing, notify user */}
-                              {elapsed >= minShiftSecondsForTodayCheckout && !hasStandardBreak && compulsoryBreakEnforced && (
+                              {needsBreakExemptionRequest && (
                                 <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl mb-1 text-center">
-                                  <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest block">Break Required</span>
-                                  <span className="text-[10px] font-bold text-amber-500">Take your mandatory 20-minute break before checkout.</span>
+                                  <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest block">Break Required at Checkout</span>
+                                  <span className="text-[10px] font-bold text-amber-500">
+                                    Break + Extra Break: {formatDuration(totalBreakSecondsToday)} / 20m — need {breakMinutesRemaining}m more, or request admin approval.
+                                  </span>
                                 </div>
                               )}
 
-                              {todayRecord?.earlyLogoutRequest === 'Pending' ? (
-                                <div className="flex flex-col items-center justify-center p-4 bg-amber-50 border border-amber-100 rounded-xl">
-                                  <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Logout Req Pending</span>
-                                  <div className="flex items-center gap-1.5 mt-1">
-                                    <RotateCcw size={10} className="animate-spin text-amber-500" />
-                                    <span className="text-[10px] font-bold text-amber-500">Waiting for Admin</span>
-                                  </div>
-                                </div>
-                              ) : todayRecord?.earlyLogoutRequest === 'Rejected' ? (
+                              {earlyLogoutStatus === 'Rejected' ? (
                                 <Button
-                                  onClick={() => setShowCheckoutRequestModal(true)}
+                                  onClick={() => {
+                                    setCheckoutRequestType(needsBreakExemptionRequest ? 'break' : 'early');
+                                    setShowCheckoutRequestModal(true);
+                                  }}
                                   className="w-full py-4 bg-rose-100/50 text-rose-600 border-2 border-rose-100 font-black rounded-xl hover:bg-rose-100/80 transition-all uppercase tracking-widest text-xs"
                                 >
                                   Request Rejected - Re-Apply
                                 </Button>
                               ) : (
                                 <Button
-                                  onClick={() => setShowCheckoutRequestModal(true)}
+                                  onClick={() => {
+                                    setCheckoutRequestType(needsBreakExemptionRequest ? 'break' : 'early');
+                                    setShowCheckoutRequestModal(true);
+                                  }}
                                   className="w-full py-4 bg-slate-900 border border-slate-800 text-white font-black rounded-xl hover:bg-black shadow-lg shadow-slate-200 transition-all active:scale-95 uppercase tracking-widest text-xs"
                                 >
-                                  Early Checkout Request
+                                  {needsBreakExemptionRequest ? 'Request Checkout Approval' : 'Early Checkout Request'}
                                 </Button>
                               )}
                             </div>
@@ -2250,70 +2191,33 @@ export const EmployeeDashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Overtime Request History */}
+        {/* Auto-recorded overtime history */}
         {overtimeHistory.length > 0 && (
-          <Card title="My Overtime Commitments" className="w-full border-indigo-100 bg-indigo-50/5">
+          <Card title="My Overtime (Automatic)" className="w-full border-indigo-100 bg-indigo-50/5">
+            <p className="text-xs text-indigo-600/80 font-medium mb-4 px-1">
+              Overtime is counted automatically when you work beyond 8h 15m plus a 7-minute buffer (8h 22m full day).
+            </p>
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-left text-gray-500">
                 <thead className="text-xs text-indigo-700 uppercase bg-indigo-50/50 border-b">
                   <tr>
                     <th className="px-4 py-3">Date</th>
-                    <th className="px-4 py-3">Requested</th>
-                    <th className="px-4 py-3">Fulfillment</th>
-                    <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3">Reason</th>
+                    <th className="px-4 py-3">Overtime</th>
+                    <th className="px-4 py-3">Worked</th>
                   </tr>
                 </thead>
                 <tbody>
                   {overtimeHistory.map(r => {
-                    const req = r.overtimeRequest!;
-                    const isApproved = req.status === 'Approved';
-                    const isRejected = req.status === 'Rejected';
-                    const isPending = req.status === 'Pending';
-                    // Use same “normal cap” as attendance history + calculateDailyTimeStats (262m for half day), not 502/2 (251m)
-                    const maxNormSec = user && hasApprovedHalfDayLeaveOnDate(myLeaves, user.id, r.date)
-                      ? HALF_DAY_EXTRA_THRESHOLD_SECONDS
-                      : FULL_DAY_MAX_NORMAL_SECONDS;
-                    
-                    // Calculate fulfillment for approved requests
-                    const actualOTMinutes = isApproved ? Math.max(0, Math.floor(((r.totalWorkedSeconds || 0) - maxNormSec) / 60)) : 0;
-                    
-                    let fulfillmentDisplay = '--';
-                    if (isApproved && r.checkOut) {
-                        const percent = Math.min(100, Math.round((actualOTMinutes / req.durationMinutes) * 100));
-                        fulfillmentDisplay = `${actualOTMinutes}m / ${req.durationMinutes}m (${percent}%)`;
-                    } else if (isApproved && !r.checkOut && isCheckedIn && r.date === getTodayStr()) {
-                        fulfillmentDisplay = 'In Progress';
-                    }
+                    const otMinutes = r.overtimeRequest?.completedMinutes ?? 0;
+                    const workedDisplay = r.checkOut
+                      ? formatDuration(r.totalWorkedSeconds || 0)
+                      : (r.date === getTodayStr() && isCheckedIn ? 'In progress' : '--');
 
                     return (
                       <tr key={r.id} className="bg-white border-b hover:bg-indigo-50/30 transition-colors">
                         <td className="px-4 py-3 font-bold text-gray-900">{formatDate(r.date)}</td>
-                        <td className="px-4 py-3 font-mono text-indigo-600 font-bold">{req.durationMinutes}m</td>
-                        <td className="px-4 py-3">
-                          <div className="flex flex-col gap-1">
-                            <span className="text-xs font-medium text-gray-700">{fulfillmentDisplay}</span>
-                            {isApproved && r.checkOut && (
-                               <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                                  <div 
-                                    className={`h-full ${actualOTMinutes >= req.durationMinutes ? 'bg-emerald-500' : 'bg-amber-500'}`}
-                                    style={{ width: `${Math.min(100, (Math.max(0, Math.floor(((r.totalWorkedSeconds || 0) - maxNormSec) / 60)) / req.durationMinutes) * 100)}%` }}
-                                  />
-                               </div>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`px-2.5 py-1 text-[10px] rounded-lg font-black uppercase tracking-tight border
-                            ${isPending ? 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse' :
-                              isApproved ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                              'bg-rose-50 text-rose-700 border-rose-200'}`}>
-                            {req.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-xs text-gray-500 italic max-w-xs truncate" title={req.reason}>
-                          "{req.reason}"
-                        </td>
+                        <td className="px-4 py-3 font-mono text-emerald-600 font-bold">{otMinutes}m</td>
+                        <td className="px-4 py-3 text-xs font-medium text-gray-700">{workedDisplay}</td>
                       </tr>
                     );
                   })}
@@ -2435,6 +2339,16 @@ export const EmployeeDashboard: React.FC = () => {
                               }
                             }
 
+                            const recordDateNorm = r.date?.includes('T') ? r.date.split('T')[0] : r.date;
+                            if (hasCheckoutOverrideForDate(systemSettings, recordDateNorm)) {
+                              return (
+                                <div className="flex flex-col gap-1 items-center">
+                                  <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-tight">Admin early release</span>
+                                  <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full font-semibold">No low time</span>
+                                </div>
+                              );
+                            }
+
                             // Use half-day threshold if applicable
                             const MIN_NORMAL = halfDayLeave ? (255 * 60) : ((8 * 3600) + (15 * 60)); // 4h15m or 8h15m
                             const MAX_NORMAL = halfDayLeave ? (262 * 60) : ((8 * 3600) + (22 * 60)); // 4h22m or 8h22m
@@ -2450,20 +2364,6 @@ export const EmployeeDashboard: React.FC = () => {
                                     <span className="text-[10px] font-bold text-blue-600 uppercase tracking-tight">Extra Time Leave Credit</span>
                                   )}
                                   <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-bold">+{formatDuration(diff)}</span>
-                                  
-                                  {/* Retrospective Overtime Request Button */}
-                                  {r.date >= '2026-04-06' && (!r.overtimeRequest || r.overtimeRequest.status === 'None') && (
-                                    <button
-                                      onClick={() => {
-                                        setOvertimeTargetDate(r.date);
-                                        setOvertimeMinutes(Math.max(0, Math.floor((effectiveWorked - MAX_NORMAL) / 60)));
-                                        setShowOvertimeModal(true);
-                                      }}
-                                      className="mt-1 text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-lg hover:bg-indigo-100 font-black uppercase tracking-tight transition-all active:scale-95"
-                                    >
-                                      Request OT
-                                    </button>
-                                  )}
                                 </div>
                               );
                             } else if (effectiveWorked < MIN_NORMAL) {
@@ -2489,20 +2389,6 @@ export const EmployeeDashboard: React.FC = () => {
                                     <span className="text-[10px] font-bold text-blue-600 uppercase tracking-tight">Extra Time Leave Applied</span>
                                   )}
                                   <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full font-semibold">Normal</span>
-                                  
-                                  {/* Retrospective Overtime Request Button (for edge cases where precisely at threshold) */}
-                                  {r.date >= '2026-04-06' && effectiveWorked >= MAX_NORMAL && (!r.overtimeRequest || r.overtimeRequest.status === 'None') && (
-                                    <button
-                                      onClick={() => {
-                                        setOvertimeTargetDate(r.date);
-                                        setOvertimeMinutes(1); // Default to 1 min if precisely at 8:22
-                                        setShowOvertimeModal(true);
-                                      }}
-                                      className="mt-1 text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-lg hover:bg-indigo-100 font-black uppercase tracking-tight transition-all active:scale-95"
-                                    >
-                                      Request OT
-                                    </button>
-                                  )}
                                 </div>
                               );
                             }
@@ -2677,10 +2563,22 @@ export const EmployeeDashboard: React.FC = () => {
                 <div className="w-14 h-14 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mb-4 shadow-sm border border-rose-100">
                   <AlertCircle size={28} />
                 </div>
-                <h3 className="text-xl font-bold text-slate-900 tracking-tight">Early Checkout Request</h3>
+                <h3 className="text-xl font-bold text-slate-900 tracking-tight">
+                  {checkoutRequestType === 'break' ? 'Checkout Approval Request' : 'Early Checkout Request'}
+                </h3>
                 <div className="mt-2 text-sm text-slate-500 leading-relaxed px-2">
-                  Standard shift completion requires <span className="font-bold text-slate-900">8 hours and 15 minutes</span>. 
-                  Please specify your reason for an early checkout.
+                  {checkoutRequestType === 'break' ? (
+                    <>
+                      You need <span className="font-bold text-slate-900">20 minutes</span> of break (Break + Extra Break combined) before checkout.
+                      You currently have <span className="font-bold text-slate-900">{formatDuration(totalBreakSecondsToday)}</span>.
+                      Ask admin to approve checkout without the break requirement.
+                    </>
+                  ) : (
+                    <>
+                      Standard shift completion requires <span className="font-bold text-slate-900">8 hours and 15 minutes</span>.
+                      Please specify your reason for an early checkout.
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -2732,93 +2630,6 @@ export const EmployeeDashboard: React.FC = () => {
         </>
       )}
 
-      {/* Overtime Request Modal */}
-      {showOvertimeModal && (
-        <>
-          <div
-            className="fixed inset-0 bg-black/50 z-[110] animate-fade-in"
-            onClick={() => {
-              if (!isSubmittingOvertime) {
-                setShowOvertimeModal(false);
-                setOvertimeTargetDate(null);
-              }
-            }}
-          />
-          <div className="fixed inset-0 z-[111] flex items-center justify-center px-4 animate-scale-in">
-            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8 border border-indigo-100">
-              <div className="flex items-center gap-4 mb-6">
-                <div className="h-12 w-12 rounded-xl bg-indigo-100 flex items-center justify-center relative">
-                  <Clock className="text-indigo-600" size={24} />
-                  {overtimeTargetDate && (
-                    <div className="absolute -top-1 -right-1 bg-indigo-600 text-white rounded-full p-0.5 border-2 border-white">
-                      <Calendar size={10} />
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <h3 className="text-xl font-black text-gray-900 leading-tight">
-                    {overtimeTargetDate ? `Request for ${formatDate(overtimeTargetDate)}` : 'Request Overtime'}
-                  </h3>
-                  <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mt-0.5">Formal Approval Workflow</p>
-                </div>
-              </div>
-
-              <div className="space-y-5">
-                <div>
-                  <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1.5 ml-1">
-                    Overtime Duration (Minutes)
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      value={overtimeMinutes || ''}
-                      onChange={(e) => setOvertimeMinutes(parseInt(e.target.value) || 0)}
-                      placeholder="e.g. 60"
-                      className="w-full h-12 bg-gray-50 border-2 border-gray-100 rounded-xl px-4 text-sm font-bold focus:bg-white focus:border-indigo-500 transition-all outline-none"
-                    />
-                    <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] font-black text-gray-400 uppercase">
-                      min
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1.5 ml-1">
-                    Reason for Overtime
-                  </label>
-                  <textarea
-                    value={overtimeReason}
-                    onChange={(e) => setOvertimeReason(e.target.value)}
-                    placeholder="Describe why overtime was needed..."
-                    className="w-full p-4 bg-gray-50 border-2 border-gray-100 rounded-xl text-sm font-medium focus:bg-white focus:border-indigo-500 transition-all outline-none resize-none"
-                    rows={4}
-                  />
-                </div>
-
-                <div className="flex gap-3 pt-2">
-                  <button
-                    className="flex-1 h-12 rounded-xl font-bold text-gray-600 border-2 border-gray-100 hover:bg-gray-50 transition-colors"
-                    onClick={() => {
-                      setShowOvertimeModal(false);
-                      setOvertimeTargetDate(null);
-                    }}
-                    disabled={isSubmittingOvertime}
-                  >
-                    Discard
-                  </button>
-                  <button
-                    className="flex-1 h-12 rounded-xl font-black bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-100 disabled:opacity-50 transition-all"
-                    onClick={handleOvertimeSubmit}
-                    disabled={isSubmittingOvertime || !overtimeReason.trim() || overtimeMinutes <= 0}
-                  >
-                    {isSubmittingOvertime ? 'Sending...' : 'Submit Request'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
     </div>
   );
 };
