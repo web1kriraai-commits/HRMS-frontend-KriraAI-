@@ -8,6 +8,7 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 3003,
       host: '0.0.0.0',
+      allowedHosts: ['hrms.kriraai.com'], // Allows Nginx proxy routing for your domain
     },
     plugins: [react()],
     define: {
