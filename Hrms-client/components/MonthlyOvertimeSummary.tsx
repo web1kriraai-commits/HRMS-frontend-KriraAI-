@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
-import { Clock, TrendingUp, Briefcase, LogOut, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Clock, TrendingUp, Briefcase, LogOut } from 'lucide-react';
 import { Card } from './ui/Card';
 import { Attendance, LeaveRequest } from '../types';
 import {
@@ -156,27 +156,16 @@ export const MonthlyOvertimeSummary: React.FC<MonthlyOvertimeSummaryProps> = ({
           />
         </div>
 
-        {/* Remaining + actual worked */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <StatTile
-            label="Actual Worked"
-            sublabel="Includes leave days (paid/unpaid) at 8h 15m"
-            value={formatHoursMinutesShort(summary.actualWorkedSeconds)}
-            icon={<Clock size={12} />}
-            accent="text-blue-700"
-            bg="bg-blue-50/60"
-            border="border-blue-100"
-          />
-          <StatTile
-            label="Remaining Time"
-            sublabel={isCurrentMonth && liveTodayWorkedSeconds != null ? 'Updates every minute while clocked in' : 'Balance vs required working days'}
-            value={formatHoursMinutesShort(summary.remainingSeconds)}
-            icon={summary.remainingSeconds > 0 ? <AlertCircle size={12} /> : <CheckCircle2 size={12} />}
-            accent={summary.remainingSeconds > 0 ? 'text-rose-700' : 'text-emerald-700'}
-            bg={summary.remainingSeconds > 0 ? 'bg-rose-50/60' : 'bg-emerald-50/60'}
-            border={summary.remainingSeconds > 0 ? 'border-rose-100' : 'border-emerald-100'}
-          />
-        </div>
+        {/* Actual worked */}
+        <StatTile
+          label="Actual Worked"
+          sublabel="Includes leave days (paid/unpaid) at 8h 15m"
+          value={formatHoursMinutesShort(summary.actualWorkedSeconds)}
+          icon={<Clock size={12} />}
+          accent="text-blue-700"
+          bg="bg-blue-50/60"
+          border="border-blue-100"
+        />
 
         {summary.earlyOvertimeCoveredSeconds > 0 && (
           <div className="p-3 bg-teal-50 border border-teal-100 rounded-xl">
@@ -186,21 +175,6 @@ export const MonthlyOvertimeSummary: React.FC<MonthlyOvertimeSummaryProps> = ({
           </div>
         )}
 
-        {summary.remainingSeconds > 0 && (
-          <div className="p-3 bg-rose-50 border border-rose-100 rounded-xl">
-            <p className="text-[10px] font-bold text-rose-700 leading-relaxed">
-              You still need {formatHoursMinutesShort(summary.remainingSeconds)} of working time this month.
-            </p>
-          </div>
-        )}
-
-        {summary.remainingSeconds <= 0 && summary.actualWorkedSeconds > 0 && (
-          <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl">
-            <p className="text-[10px] font-bold text-emerald-700">
-              Monthly hours met or exceeded — surplus of {formatHoursMinutesShort(Math.abs(summary.remainingSeconds))}.
-            </p>
-          </div>
-        )}
       </div>
     </Card>
   );

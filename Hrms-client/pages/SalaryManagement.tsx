@@ -8,6 +8,7 @@ import { Button } from '../components/ui/Button';
 import { SalarySlipPreview } from '../components/SalarySlipPreview';
 import { Role } from '../types';
 import { formatDate } from '../services/utils';
+import { appAlert } from '../services/appAlert';
 import {
   SalarySlipFormData,
   MONTH_NAMES,
@@ -125,7 +126,7 @@ export const SalaryManagement: React.FC = () => {
     if (!previewRef.current) return;
 
     if (!form.empName.trim()) {
-      alert('Please select an employee before downloading the salary slip.');
+      appAlert('Please select an employee before downloading the salary slip.');
       return;
     }
 
@@ -153,7 +154,7 @@ export const SalaryManagement: React.FC = () => {
       pdf.save(`SALARYSLIP KriraAI ${safeName} ${monthLabel} ${form.year}.pdf`);
     } catch (error) {
       console.error('Failed to generate salary slip PDF:', error);
-      alert('Failed to generate PDF. Please try again.');
+      appAlert('Failed to generate PDF. Please try again.');
     } finally {
       setIsDownloading(false);
     }

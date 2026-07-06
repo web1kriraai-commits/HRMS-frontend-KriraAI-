@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { getTodayStr } from '../services/utils';
 import { Check, X, Clock, AlertCircle, ChevronRight, MessageSquare } from 'lucide-react';
 import { Card } from './ui/Card';
+import { appAlert } from '../services/appAlert';
 
 export const EarlyLogoutPopup: React.FC = () => {
     const { attendanceRecords, users, reviewEarlyCheckout } = useApp();
@@ -30,7 +31,7 @@ export const EarlyLogoutPopup: React.FC = () => {
         try {
             await reviewEarlyCheckout(recordId, status, adminNote || undefined);
         } catch (error: any) {
-            alert(error.message || 'Failed to process request');
+            appAlert(error.message || 'Failed to process request');
         } finally {
             setIsSubmitting(false);
         }

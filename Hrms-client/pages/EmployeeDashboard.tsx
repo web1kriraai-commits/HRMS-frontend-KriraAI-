@@ -9,6 +9,7 @@ import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY,
 import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare, Briefcase, ChevronDown } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { appAlert } from '../services/appAlert';
 
 /** Half-day minimum net worked time (matches server: Math.floor(495/2)*60). */
 const HALF_DAY_MIN_SHIFT_SECONDS = Math.floor(495 / 2) * 60;
@@ -58,7 +59,7 @@ const formatDisplayDays = (val: number) => {
 };
 
 export const EmployeeDashboard: React.FC = () => {
-  const { auth, attendanceRecords, clockIn, clockOut, startBreak, endBreak, requestLeave, leaveRequests, notifications, companyHolidays, systemSettings, refreshData, updateLeaveStatus, requestManagementOvertime, requestEarlyOvertime } = useApp();
+  const { auth, attendanceRecords, clockIn, clockOut, startBreak, endBreak, requestLeave, leaveRequests, notifications, companyHolidays, systemSettings, refreshData, updateLeaveStatus, requestManagementOvertime, requestEarlyOtRepayment } = useApp();
   const user = auth.user;
   const canRequestPaidLeave = user ? user.paidLeaveAccess !== false : true;
 
@@ -281,13 +282,10 @@ export const EmployeeDashboard: React.FC = () => {
     setLocalBreakStartTime(null);
     try {
       await endBreak();
-      setConfirmationPopup(null); // Close the popup
     } catch (error) {
-      // Restore break state on error
       if (activeBreakStartTime) {
         setLocalBreakStartTime(activeBreakStartTime);
       }
-      setConfirmationPopup(null); // Close the popup even on error
       throw error;
     }
   }, [endBreak, activeBreakStartTime]);
@@ -297,7 +295,7 @@ export const EmployeeDashboard: React.FC = () => {
     const totalHours = Number(manualHoursInput || 0) + (Number(manualMinutesInput || 0) / 60);
     
     if (totalHours <= 0 || totalHours > 24) {
-      alert('Please enter a valid work duration between 1 minute and 24 hours');
+      appAlert('Please enter a valid work duration between 1 minute and 24 hours');
       return;
     }
 
@@ -311,7 +309,7 @@ export const EmployeeDashboard: React.FC = () => {
       await refreshData();
     } catch (error) {
       console.error('Error adding manual hours:', error);
-      alert('Failed to add manual hours. Please try again.');
+      appAlert('Failed to add manual hours. Please try again.');
     } finally {
       setIsSubmittingManual(false);
     }
@@ -326,13 +324,13 @@ export const EmployeeDashboard: React.FC = () => {
       setShowCheckoutRequestModal(false);
       setCheckoutRequestNote('');
       await refreshData();
-      alert(
+      appAlert(
         checkoutRequestType === 'break'
           ? 'Checkout approval request sent. An admin can approve checkout without the 20-minute break requirement.'
           : 'Early OT request sent successfully. Admin/HR will review it.'
       );
     } catch (err: any) {
-      alert(err.message || 'Failed to send early checkout request.');
+      appAlert(err.message || 'Failed to send early checkout request.');
     } finally {
       setIsSubmittingCheckoutRequest(false);
     }
@@ -368,6 +366,17 @@ export const EmployeeDashboard: React.FC = () => {
   const myLeaves = leaveRequests.filter(l => l.userId === user?.id);
   const myNotifications = notifications.filter(n => n.userId === user?.id);
   const myAttendanceHistory = attendanceRecords.filter(r => r.userId === user?.id).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  // Early-checkout deficit outstanding THIS calendar month only — repayment (Early OT) can only
+  // ever apply against deficits incurred in the current month.
+  const currentMonthKey = getTodayStr().slice(0, 7);
+  const outstandingEarlyOtDeficitMinutes = myAttendanceHistory.reduce((sum, r) => {
+    if (!r.date.startsWith(currentMonthKey)) return sum;
+    const eo = r.earlyOvertime;
+    if (!eo) return sum;
+    return sum + Math.max(0, (eo.deficitMinutes || 0) - (eo.coveredMinutes || 0));
+  }, 0);
+  const hasOutstandingEarlyOtDeficit = outstandingEarlyOtDeficitMinutes > 0;
 
   // Check if user is on approved leave today
   const today = getTodayStr();
@@ -433,16 +442,14 @@ export const EmployeeDashboard: React.FC = () => {
 
   const shiftCompleteForCheckout = elapsed >= minShiftSecondsForTodayCheckout;
   const earlyLogoutStatus = todayRecord?.earlyLogoutRequest ?? 'None';
-  const hasEarlyOtRequestActivity =
-    earlyLogoutStatus === 'Pending' ||
-    earlyLogoutStatus === 'Approved' ||
-    todayRecord?.earlyOvertime?.requestStatus === 'Pending' ||
-    todayRecord?.earlyOvertime?.requestStatus === 'Approved';
+  const earlyOtRepaymentStatus = todayRecord?.earlyOvertimeRepayment?.status ?? 'None';
+  const hasEarlyOtRepaymentActivity =
+    earlyOtRepaymentStatus === 'Pending' || earlyOtRepaymentStatus === 'Approved';
   const hasMgmtOtRequestActivity =
     todayRecord?.managementOvertime?.status === 'Pending' ||
     todayRecord?.managementOvertime?.status === 'Approved';
   const canShowOvertimeRequests =
-    shiftCompleteForCheckout || hasEarlyOtRequestActivity || hasMgmtOtRequestActivity;
+    shiftCompleteForCheckout || hasEarlyOtRepaymentActivity || hasMgmtOtRequestActivity;
   const canSubmitOvertimeRequests = shiftCompleteForCheckout;
   const isEarlyReleaseCheckout =
     hasTodayCheckoutOverride && checkoutTimeReached;
@@ -1096,13 +1103,13 @@ export const EmployeeDashboard: React.FC = () => {
     if (!date || !user || isResolvingAbsence) return;
 
     if (category === LeaveCategory.PAID && !canRequestPaidLeave) {
-      alert('Paid leave is not enabled for your account. Please resolve using Unpaid Leave or contact your administrator.');
+      appAlert('Paid leave is not enabled for your account. Please resolve using Unpaid Leave or contact your administrator.');
       return;
     }
 
     // Check if enough paid leaves available
     if (category === LeaveCategory.PAID && availablePaidLeaves < 1) {
-      alert(`You do not have enough Paid Leave balance (Available: ${availablePaidLeaves}). Please use Extra Time or contact HR.`);
+      appAlert(`You do not have enough Paid Leave balance (Available: ${availablePaidLeaves}). Please use Extra Time or contact HR.`);
       return;
     }
     
@@ -1125,11 +1132,11 @@ export const EmployeeDashboard: React.FC = () => {
         }
         
         await leaveAPI.requestLeave(leaveData);
-        alert(`Successfully resolved absence for ${date} using ${category}.`);
+        appAlert(`Successfully resolved absence for ${date} using ${category}.`);
         await refreshData();
     } catch (error: any) {
         console.error('Error resolving absence:', error);
-        alert(error.message || 'Failed to resolve absence. Please contact HR.');
+        appAlert(error.message || 'Failed to resolve absence. Please contact HR.');
     } finally {
         setIsResolvingAbsence(false);
     }
@@ -1409,39 +1416,24 @@ export const EmployeeDashboard: React.FC = () => {
                               ? `Check-in is available from ${checkInAvailableLabel} (${systemSettings.timezone})`
                               : undefined
                           }
-                          onClick={() => {
+                          onClick={async () => {
                             if (isCheckInRestricted) return;
                             if (user?.role !== 'Admin' && !isTodayHoliday && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone, checkInTimeToday.hour, checkInTimeToday.minute)) {
-                              alert(`Check-in is only allowed from ${checkInAvailableLabel} (${systemSettings.timezone}).`);
+                              appAlert(`Check-in is only allowed from ${checkInAvailableLabel} (${systemSettings.timezone}).`);
                               return;
                             }
-                            setConfirmationPopup({
-                              show: true,
-                              title: 'Confirm Check In',
-                              message: 'Are you sure you want to check in?',
-                              onConfirm: async () => {
-                                if (user?.role !== 'Admin' && !isTodayHoliday && isBeforeEarliestCheckIn(new Date(), systemSettings.timezone, checkInTimeToday.hour, checkInTimeToday.minute)) {
-                                  alert(`Check-in is only allowed from ${checkInAvailableLabel} (${systemSettings.timezone}).`);
-                                  setConfirmationPopup(null);
-                                  return;
-                                }
-                                const checkInTime = new Date();
-                                setLocalCheckInTime(checkInTime);
-                                try {
-                                  await clockIn();
-                                  setConfirmationPopup(null);
-                                } catch (error: unknown) {
-                                  setLocalCheckInTime(null);
-                                  setConfirmationPopup(null);
-                                  const msg =
-                                    error instanceof Error
-                                      ? error.message
-                                      : 'Check-in failed. Please try again.';
-                                  alert(msg);
-                                }
-                              },
-                              onCancel: () => setConfirmationPopup(null)
-                            });
+                            const checkInTime = new Date();
+                            setLocalCheckInTime(checkInTime);
+                            try {
+                              await clockIn();
+                            } catch (error: unknown) {
+                              setLocalCheckInTime(null);
+                              const msg =
+                                error instanceof Error
+                                  ? error.message
+                                  : 'Check-in failed. Please try again.';
+                              appAlert(msg);
+                            }
                           }} className={`w-full md:w-48 h-14 text-lg shadow-lg ${isCheckInRestricted ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed shadow-none' : 'shadow-blue-200'}`}>
                           <Clock className="mr-2" /> 
                           {isCheckInRestricted ? `From ${checkInAvailableLabel}` : isTodayHoliday ? 'Holiday Work' : 'Check In'}
@@ -1470,25 +1462,15 @@ export const EmployeeDashboard: React.FC = () => {
                       <Button
                         variant="secondary"
                         disabled={isOnBreak}
-                        onClick={() => {
-                          setConfirmationPopup({
-                            show: true,
-                            title: 'Confirm Break',
-                            message: 'Are you sure you want to start your break?',
-                            onConfirm: async () => {
-                              const breakStartTime = new Date();
-                              setLocalBreakStartTime(breakStartTime);
-                              try {
-                                await startBreak(BreakType.STANDARD);
-                                setConfirmationPopup(null);
-                              } catch (error) {
-                                setLocalBreakStartTime(null);
-                                setConfirmationPopup(null);
-                                throw error;
-                              }
-                            },
-                            onCancel: () => setConfirmationPopup(null)
-                          });
+                        onClick={async () => {
+                          const breakStartTime = new Date();
+                          setLocalBreakStartTime(breakStartTime);
+                          try {
+                            await startBreak(BreakType.STANDARD);
+                          } catch (error) {
+                            setLocalBreakStartTime(null);
+                            throw error;
+                          }
                         }}
                         className="w-full py-4 font-bold rounded-xl"
                       >
@@ -1511,15 +1493,7 @@ export const EmployeeDashboard: React.FC = () => {
                         ) : (
                           <div className="flex flex-col w-full gap-2">
                             <Button
-                              onClick={() => {
-                                setConfirmationPopup({
-                                  show: true,
-                                  title: 'End Break',
-                                  message: 'Are you sure you want to end your break?',
-                                  onConfirm: handleEndBreak,
-                                  onCancel: () => setConfirmationPopup(null),
-                                });
-                              }}
+                              onClick={handleEndBreak}
                               variant="secondary"
                               className="w-full font-extrabold flex flex-col items-center py-2.5 rounded-xl transition-all active:scale-95 border bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-500 shadow-md shadow-indigo-100"
                             >
@@ -1705,22 +1679,24 @@ export const EmployeeDashboard: React.FC = () => {
                     </p>
                   )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* Early OT */}
+                    {/* Early OT (repay a previous early-checkout deficit, current month only) */}
                     <div>
-                      {(todayRecord?.earlyLogoutRequest === 'Pending' || todayRecord?.earlyOvertime?.requestStatus === 'Pending') ? (
+                      {earlyOtRepaymentStatus === 'Pending' ? (
                         <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-center h-full">
                           <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Early OT Pending</p>
                           <p className="text-[10px] text-amber-500 font-bold mt-1">
                             Waiting for approval
-                            {(todayRecord?.earlyOvertime?.durationMinutes ?? 0) > 0 && ` (${todayRecord.earlyOvertime.durationMinutes}m)`}
+                            {(todayRecord?.earlyOvertimeRepayment?.requestedMinutes ?? 0) > 0 && ` (${todayRecord.earlyOvertimeRepayment.requestedMinutes}m)`}
                           </p>
                         </div>
-                      ) : (todayRecord?.earlyLogoutRequest === 'Approved' || todayRecord?.earlyOvertime?.requestStatus === 'Approved') ? (
+                      ) : earlyOtRepaymentStatus === 'Approved' ? (
                         <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl text-center h-full">
                           <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Early OT Approved</p>
-                          <p className="text-[10px] text-emerald-500 font-bold mt-1">You may checkout early</p>
+                          <p className="text-[10px] text-emerald-500 font-bold mt-1">
+                            Repaying deficit — not counted as General OT
+                          </p>
                         </div>
-                      ) : canSubmitOvertimeRequests ? (
+                      ) : canSubmitOvertimeRequests && hasOutstandingEarlyOtDeficit ? (
                         <Button
                           variant="secondary"
                           onClick={() => setShowEarlyOtModal(true)}
@@ -1729,6 +1705,10 @@ export const EmployeeDashboard: React.FC = () => {
                           <Clock size={16} />
                           Request Early OT
                         </Button>
+                      ) : canSubmitOvertimeRequests ? (
+                        <div className="p-3 bg-slate-50 border border-slate-100 rounded-xl text-center h-full flex items-center justify-center">
+                          <p className="text-[10px] text-slate-400 font-bold">No early-checkout deficit to repay this month</p>
+                        </div>
                       ) : null}
                     </div>
 
@@ -1928,17 +1908,17 @@ export const EmployeeDashboard: React.FC = () => {
                 if (leaveForm.type !== LeaveCategory.HALF_DAY && leaveForm.type !== LeaveCategory.EXTRA_TIME && !leaveForm.end) return;
 
                 if (leaveForm.type === LeaveCategory.PAID && !canRequestPaidLeave) {
-                  alert('Paid leave is not enabled for your account. Please choose Unpaid Leave or contact your administrator.');
+                  appAlert('Paid leave is not enabled for your account. Please choose Unpaid Leave or contact your administrator.');
                   return;
                 }
 
                 if (leaveForm.type === LeaveCategory.HALF_DAY && leaveForm.halfDayLeaveType === 'paid' && !canRequestPaidLeave) {
-                  alert('Paid leave is not enabled for your account. Use half-day as Unpaid or contact your administrator.');
+                  appAlert('Paid leave is not enabled for your account. Use half-day as Unpaid or contact your administrator.');
                   return;
                 }
 
                 if (leaveForm.type === LeaveCategory.PAID && isPaidLeaveExhausted) {
-                  alert(`All ${TOTAL_PAID_LEAVES} paid leaves have been used. Please select another leave type.`);
+                  appAlert(`All ${TOTAL_PAID_LEAVES} paid leaves have been used. Please select another leave type.`);
                   return;
                 }
 
@@ -1946,7 +1926,7 @@ export const EmployeeDashboard: React.FC = () => {
                   const requestedDays = calculateLeaveDays(leaveForm.start, leaveForm.end, holidayDateSet);
                   const requestedHours = requestedDays * 8.25;
                   if (requestedHours > remainingExtraTimeBalanceHours) {
-                    alert(`Requested Extra Time Leave exceeds your remaining balance (${formatHoursToHoursMinutes(remainingExtraTimeBalanceHours)}).`);
+                    appAlert(`Requested Extra Time Leave exceeds your remaining balance (${formatHoursToHoursMinutes(remainingExtraTimeBalanceHours)}).`);
                     return;
                   }
                 }
@@ -1954,7 +1934,7 @@ export const EmployeeDashboard: React.FC = () => {
                 if (leaveForm.type === LeaveCategory.PAID) {
                   const requestedDays = calculateLeaveDays(leaveForm.start, leaveForm.end, holidayDateSet);
                   if (requestedDays > availablePaidLeaves) {
-                    alert(`You only have ${availablePaidLeaves} paid leave(s) remaining.`);
+                    appAlert(`You only have ${availablePaidLeaves} paid leave(s) remaining.`);
                     return;
                   }
                 }
@@ -1969,7 +1949,7 @@ export const EmployeeDashboard: React.FC = () => {
 
                 if (leaveForm.type === LeaveCategory.HALF_DAY) {
                   leaveData.reason = `[Unpaid Leave] ${leaveForm.reason}`;
-                  if (!leaveForm.startTime) return alert('Please provide start time');
+                  if (!leaveForm.startTime) return appAlert('Please provide start time');
                   leaveData.startTime = leaveForm.startTime;
                 }
 
@@ -2451,10 +2431,10 @@ export const EmployeeDashboard: React.FC = () => {
                                       if (!confirm(`Are you sure you want to revert this ${leave.status.toLowerCase()} leave?`)) return;
                                       try {
                                         await updateLeaveStatus(leave.id, LeaveStatus.PENDING, `Reverted from ${leave.status} by ${user?.role}`);
-                                        alert('Leave reverted to Pending status successfully');
+                                        appAlert('Leave reverted to Pending status successfully');
                                         await refreshData();
                                       } catch (error: any) {
-                                        alert(error.message || 'Failed to revert leave');
+                                        appAlert(error.message || 'Failed to revert leave');
                                       }
                                     }}
                                     className="p-1 text-blue-600 hover:bg-blue-50 rounded transition-colors"
@@ -2583,7 +2563,7 @@ export const EmployeeDashboard: React.FC = () => {
                   onSubmit={async (e) => {
                     e.preventDefault();
                     if (!mgmtOtForm.reason.trim()) {
-                      alert('Please provide a reason');
+                      appAlert('Please provide a reason');
                       return;
                     }
                     setIsSubmittingMgmtOt(true);
@@ -2593,7 +2573,7 @@ export const EmployeeDashboard: React.FC = () => {
                       setMgmtOtForm({ reason: '', durationMinutes: 60 });
                       await refreshData(true);
                     } catch (err: any) {
-                      alert(err.message || 'Failed to submit request');
+                      appAlert(err.message || 'Failed to submit request');
                     } finally {
                       setIsSubmittingMgmtOt(false);
                     }
@@ -2655,25 +2635,29 @@ export const EmployeeDashboard: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="font-bold text-gray-900">Request Early OT</h3>
-                    <p className="text-xs text-gray-500">Requires Admin/HR approval to leave early</p>
+                    <p className="text-xs text-gray-500">Repay an earlier early-checkout deficit — requires Admin/HR approval</p>
                   </div>
+                </div>
+
+                <div className="mb-4 p-2.5 bg-amber-50 border border-amber-100 rounded-xl text-[11px] text-amber-700 font-semibold text-center">
+                  Outstanding deficit this month: {formatHoursMinutesShort(outstandingEarlyOtDeficitMinutes * 60)}
                 </div>
 
                 <form
                   onSubmit={async (e) => {
                     e.preventDefault();
                     if (!earlyOtForm.reason.trim()) {
-                      alert('Please provide a reason');
+                      appAlert('Please provide a reason');
                       return;
                     }
                     setIsSubmittingEarlyOt(true);
                     try {
-                      await requestEarlyOvertime(earlyOtForm.reason.trim(), earlyOtForm.durationMinutes);
+                      await requestEarlyOtRepayment(earlyOtForm.reason.trim(), earlyOtForm.durationMinutes);
                       setShowEarlyOtModal(false);
                       setEarlyOtForm({ reason: '', durationMinutes: 60 });
                       await refreshData(true);
                     } catch (err: any) {
-                      alert(err.message || 'Failed to submit request');
+                      appAlert(err.message || 'Failed to submit request');
                     } finally {
                       setIsSubmittingEarlyOt(false);
                     }
@@ -2682,18 +2666,19 @@ export const EmployeeDashboard: React.FC = () => {
                 >
                   <div>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                      Expected early leave (minutes)
+                      Minutes to repay
                     </label>
                     <input
                       type="number"
                       min={15}
                       step={15}
+                      max={outstandingEarlyOtDeficitMinutes || undefined}
                       required
                       value={earlyOtForm.durationMinutes}
                       onChange={(e) => setEarlyOtForm({ ...earlyOtForm, durationMinutes: parseInt(e.target.value, 10) || 0 })}
                       className="w-full p-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-amber-500 outline-none"
                     />
-                    <p className="text-[10px] text-slate-400 mt-1">{formatHoursMinutesShort(earlyOtForm.durationMinutes * 60)} early</p>
+                    <p className="text-[10px] text-slate-400 mt-1">{formatHoursMinutesShort(earlyOtForm.durationMinutes * 60)} — this time will not count as General OT once approved</p>
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
@@ -2703,7 +2688,7 @@ export const EmployeeDashboard: React.FC = () => {
                       required
                       value={earlyOtForm.reason}
                       onChange={(e) => setEarlyOtForm({ ...earlyOtForm, reason: e.target.value })}
-                      placeholder="e.g. Medical appointment, family emergency..."
+                      placeholder="e.g. Repaying early checkout from [date]..."
                       className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-amber-500 outline-none resize-none min-h-[100px]"
                     />
                   </div>

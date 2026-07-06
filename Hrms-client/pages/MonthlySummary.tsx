@@ -36,6 +36,7 @@ import {
   hasApprovedHalfDayLeaveOnDate
 } from '../services/utils';
 import { Role, LeaveCategory, LeaveStatus, Attendance, LeaveRequest } from '../types';
+import { appAlert } from '../services/appAlert';
 
 /** Select value for organization-wide summary (all non-admin employees). */
 const ALL_EMPLOYEES_VALUE = 'all';
@@ -252,11 +253,31 @@ export const MonthlySummary: React.FC = () => {
       }
 
       return true;
-    }).map(r => ({
-      ...r,
-      userName: users.find(u => u.id === r.userId)?.name || 'Unknown',
-      department: users.find(u => u.id === r.userId)?.department || 'N/A'
-    })).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }).map(r => {
+      const deficitMinutes = r.earlyOvertime?.deficitMinutes ?? 0;
+      const coveredMinutes = r.earlyOvertime?.coveredMinutes ?? 0;
+      const outstandingMinutes = Math.max(0, deficitMinutes - coveredMinutes);
+      const recordMonthKey = r.date.slice(0, 7);
+      const currentMonthKey = getTodayStr().slice(0, 7);
+      // Repayment (Early OT) only ever applies within the same calendar month the deficit
+      // was incurred — once that month has passed, an unpaid deficit is "Unresolved" and
+      // needs manual HR handling (e.g. payroll deduction) rather than automatic repayment.
+      let repaymentStatus: 'None' | 'Outstanding' | 'Repaid' | 'Unresolved' = 'None';
+      if (deficitMinutes > 0) {
+        if (outstandingMinutes <= 0) repaymentStatus = 'Repaid';
+        else if (recordMonthKey < currentMonthKey) repaymentStatus = 'Unresolved';
+        else repaymentStatus = 'Outstanding';
+      }
+      return {
+        ...r,
+        userName: users.find(u => u.id === r.userId)?.name || 'Unknown',
+        department: users.find(u => u.id === r.userId)?.department || 'N/A',
+        deficitMinutes,
+        coveredMinutes,
+        outstandingMinutes,
+        repaymentStatus
+      };
+    }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [attendanceRecords, users, selectedMonth, searchQuery, selectedEmployeeId, isAllEmployees]);
 
   const totalEarlyCheckoutMinutes = useMemo(() => {
@@ -447,7 +468,9 @@ export const MonthlySummary: React.FC = () => {
         Employee: e.userName,
         Date: e.date,
         Reason: e.earlyLogoutRequestNote,
-        Status: e.earlyLogoutRequest
+        Status: e.earlyLogoutRequest,
+        RepaymentStatus: e.repaymentStatus,
+        OutstandingMinutes: e.outstandingMinutes
       }));
       filename = `Early_Checkout_History_${selectedMonth}${empSuffix}.csv`;
     } else if (activeTableTab === 'overtime') {
@@ -476,7 +499,7 @@ export const MonthlySummary: React.FC = () => {
       });
       await refreshData(true);
     } catch (error: any) {
-      alert(error.message || 'Failed to process management overtime request');
+      appAlert(error.message || 'Failed to process management overtime request');
     } finally {
       setSubmittingOtId(null);
     }
@@ -763,12 +786,13 @@ export const MonthlySummary: React.FC = () => {
                   <th className="px-6 py-4">Employee</th>
                   <th className="px-6 py-4">Date</th>
                   <th className="px-6 py-4">Status</th>
+                  <th className="px-6 py-4">Repayment Status</th>
                   <th className="px-6 py-4">Reason/Note</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {earlyCheckouts.length === 0 ? (
-                  <tr><td colSpan={4} className="px-6 py-20 text-center text-slate-400 font-medium italic">No early checkout requests found.</td></tr>
+                  <tr><td colSpan={5} className="px-6 py-20 text-center text-slate-400 font-medium italic">No early checkout requests found.</td></tr>
                 ) : earlyCheckouts.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage).map((e, idx) => (
                   <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
                     <td className="px-6 py-4 font-bold text-slate-800">{e.userName}</td>
@@ -780,6 +804,24 @@ export const MonthlySummary: React.FC = () => {
                       }`}>
                         {e.earlyLogoutRequest}
                       </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      {e.repaymentStatus === 'None' ? (
+                        <span className="text-[10px] text-slate-400 italic">—</span>
+                      ) : (
+                        <div className="flex flex-col gap-0.5">
+                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase w-fit ${
+                            e.repaymentStatus === 'Repaid' ? 'bg-emerald-100 text-emerald-600' :
+                            e.repaymentStatus === 'Unresolved' ? 'bg-rose-100 text-rose-600' :
+                            'bg-teal-100 text-teal-600'
+                          }`}>
+                            {e.repaymentStatus}
+                          </span>
+                          {e.outstandingMinutes > 0 && (
+                            <span className="text-[10px] text-slate-400">{e.outstandingMinutes}m owed</span>
+                          )}
+                        </div>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-xs text-slate-500 italic max-w-lg">
                       {e.earlyLogoutRequestNote || "No note provided"}

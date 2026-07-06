@@ -3,8 +3,9 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { getTodayStr, formatTime, ABSENCE_PENALTY_EFFECTIVE_DATE, calculateDailyTimeStats, formatDuration as utilsFormatDuration, getAbsenceStartDate, getLocalISOString, calculateTotalBreakSeconds } from '../services/utils';
 import { Attendance, Role } from '../types';
-import { Clock, UserCheck, UserMinus, ShieldAlert, Calendar, AlertCircle, UserPlus, TrendingUp, TrendingDown, Umbrella, ChevronLeft, ChevronRight, Search, X, Check, XCircle, Coffee } from 'lucide-react';
+import { Clock, UserCheck, UserMinus, Calendar, AlertCircle, TrendingUp, TrendingDown, Umbrella, ChevronLeft, ChevronRight, Search, X, Coffee } from 'lucide-react';
 import { attendanceAPI } from '../services/api';
+import { appAlert } from '../services/appAlert';
 
 export const TodayAttendance: React.FC = () => {
     const { users, attendanceRecords, leaveRequests, companyHolidays, systemSettings, adminUpdateAttendance, refreshData } = useApp();
@@ -107,6 +108,10 @@ export const TodayAttendance: React.FC = () => {
             status = (record.checkOut && lowTimeSeconds > 0) ? 'Low Time' : (record.checkOut ? 'Completed' : 'Working');
         }
 
+        if (record?.checkIn && !record.checkOut && isOnBreak(record)) {
+            status = 'On Break';
+        }
+
         return {
             user: emp,
             record,
@@ -144,27 +149,7 @@ export const TodayAttendance: React.FC = () => {
                 await refreshData();
             }
         } catch (error: any) {
-            alert(error.message || 'Failed to toggle penalty');
-        } finally {
-            setTogglingId(null);
-        }
-    };
-
-    const handleToggleCompulsoryBreak = async (userId: string, record?: any) => {
-        setTogglingId(userId + '_break');
-        try {
-            if (record) {
-                await adminUpdateAttendance(record.id, { isCompulsoryBreakDisabled: !record.isCompulsoryBreakDisabled });
-            } else {
-                await attendanceAPI.adminCreateOrUpdate({
-                    userId,
-                    date: selectedDate,
-                    isCompulsoryBreakDisabled: true
-                });
-                await refreshData();
-            }
-        } catch (error: any) {
-            alert(error.message || 'Failed to toggle compulsory break');
+            appAlert(error.message || 'Failed to toggle penalty');
         } finally {
             setTogglingId(null);
         }
@@ -185,7 +170,7 @@ export const TodayAttendance: React.FC = () => {
             setSelectedUser(null);
             await refreshData();
         } catch (error: any) {
-            alert(error.message || 'Failed to add manual hours');
+            appAlert(error.message || 'Failed to add manual hours');
         } finally {
             setIsSubmitting(false);
         }
@@ -206,20 +191,7 @@ export const TodayAttendance: React.FC = () => {
             setBulkDept('');
             await refreshData();
         } catch (error: any) {
-            alert(error.message || 'Failed to bulk add manual hours');
-        } finally {
-            setIsSubmitting(false);
-        }
-    };
-
-    const handleReviewEarlyCheckout = async (recordId: string, status: 'Approved' | 'Rejected') => {
-        const adminNote = prompt(`Optional note for ${status}:`);
-        setIsSubmitting(true);
-        try {
-            await attendanceAPI.reviewEarlyCheckout(recordId, status, adminNote || undefined);
-            await refreshData();
-        } catch (error: any) {
-            alert(error.message || 'Failed to review request');
+            appAlert(error.message || 'Failed to bulk add manual hours');
         } finally {
             setIsSubmitting(false);
         }
@@ -343,12 +315,10 @@ export const TodayAttendance: React.FC = () => {
                                 </th>
                                 <th className="px-6 py-3 text-center">Worked</th>
                                 <th className="px-6 py-3 text-center">Status</th>
-                                <th className="px-6 py-3 text-center">Early Logout Request</th>
                                 <th className="px-6 py-3 text-center text-blue-600">Accrued</th>
                                 <th className="px-6 py-3 text-center">Manual Hrs</th>
                                  <th className="px-6 py-3 text-center text-rose-600">Penalty Amt</th>
                                 <th className="px-6 py-3 text-center">Penalty</th>
-                                <th className="px-6 py-3 text-center">Compulsory Break</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -442,11 +412,13 @@ export const TodayAttendance: React.FC = () => {
                                                         ${status === 'Low Time' ? 'bg-rose-100 text-rose-700 font-bold border-2 border-rose-200' : 
                                                           status === 'Completed' ? 'bg-green-100 text-green-800 border border-green-200' : 
                                                           status === 'Manual Entry' ? 'bg-indigo-50 text-indigo-700 border border-indigo-100' :
+                                                          status === 'On Break' ? 'bg-amber-100 text-amber-700 animate-pulse border border-amber-200' :
                                                           status === 'Working' ? 'bg-blue-100 text-blue-800 animate-pulse border border-blue-200' :
                                                           status === 'Absent' ? 'bg-rose-50 text-rose-700 font-bold border border-rose-100' :
                                                           status === 'Holiday' ? 'bg-amber-100 text-amber-700 border border-amber-200' :
                                                           'bg-gray-100 text-gray-500 italic'}`}>
                                                         {status === 'Working' && <Clock size={12} className="mr-1" />}
+                                                        {status === 'On Break' && <Coffee size={12} className="mr-1" />}
                                                         {status === 'Completed' && <UserCheck size={12} className="mr-1" />}
                                                         {status === 'Manual Entry' && <UserCheck size={12} className="mr-1" />}
                                                         {status === 'Low Time' && <UserCheck size={12} className="mr-1" />}
@@ -461,49 +433,6 @@ export const TodayAttendance: React.FC = () => {
                                                 </div>
                                             )}
                                         </td>
-                                        {/* Early Logout Request Column [NEW] */}
-                                        <td className="px-6 py-4 text-center">
-                                            {record?.earlyLogoutRequest && record.earlyLogoutRequest !== 'None' ? (
-                                                <div className="flex flex-col items-center gap-2">
-                                                    <span className={`inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-black uppercase tracking-tight border
-                                                        ${record.earlyLogoutRequest === 'Pending' ? 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse' :
-                                                          record.earlyLogoutRequest === 'Approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                                                          'bg-rose-50 text-rose-700 border-rose-200'}`}>
-                                                        {record.earlyLogoutRequest}
-                                                    </span>
-                                                    
-                                                    {record.earlyLogoutRequest === 'Pending' && (
-                                                        <div className="flex gap-1">
-                                                            <button 
-                                                                onClick={() => handleReviewEarlyCheckout(record.id, 'Approved')}
-                                                                disabled={isSubmitting}
-                                                                className="p-1 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200 transition-colors shadow-sm"
-                                                                title="Approve Early Logout"
-                                                            >
-                                                                <Check size={14} />
-                                                            </button>
-                                                            <button 
-                                                                onClick={() => handleReviewEarlyCheckout(record.id, 'Rejected')}
-                                                                disabled={isSubmitting}
-                                                                className="p-1 bg-rose-100 text-rose-700 rounded hover:bg-rose-200 transition-colors shadow-sm"
-                                                                title="Reject Early Logout"
-                                                            >
-                                                                <XCircle size={14} />
-                                                            </button>
-                                                        </div>
-                                                    )}
-
-                                                    {record.earlyLogoutRequestNote && (
-                                                        <span className="text-[10px] text-slate-400 font-medium italic max-w-[100px] truncate" title={record.earlyLogoutRequestNote}>
-                                                            "{record.earlyLogoutRequestNote}"
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            ) : (
-                                                <span className="text-gray-300">--</span>
-                                            )}
-                                        </td>
-                                        {/* Accrued Column [NEW] */}
                                         <td className="px-6 py-4 text-center">
                                             {isFullDayLeave ? (
                                                 <span className="text-gray-300">--</span>
@@ -595,28 +524,11 @@ export const TodayAttendance: React.FC = () => {
                                             )}
                                         </div>
                                     </td>
-                                    <td className="px-6 py-4 text-center">
-                                        <div className="flex items-center justify-center">
-                                            {togglingId === user.id + '_break' ? (
-                                                <div className="h-4 w-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                                            ) : (
-                                                <label className="relative inline-flex items-center cursor-pointer">
-                                                    <input
-                                                        type="checkbox"
-                                                        className="sr-only peer"
-                                                        checked={record?.isCompulsoryBreakDisabled || false}
-                                                        onChange={() => handleToggleCompulsoryBreak(user.id, record)}
-                                                    />
-                                                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-                                                </label>
-                                            )}
-                                        </div>
-                                    </td>
                                 </tr>
                             )})}
                              {filteredStats.length === 0 && (
                                 <tr>
-                                    <td colSpan={13} className="text-center py-12">
+                                    <td colSpan={11} className="text-center py-12">
                                         <div className="flex flex-col items-center justify-center text-gray-500">
                                             <div className="p-4 bg-gray-50 rounded-full mb-3">
                                                 <Search size={32} className="text-gray-300" />

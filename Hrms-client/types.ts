@@ -141,6 +141,16 @@ export interface Attendance {
     coveredMinutes: number;
     status: 'None' | 'Pending' | 'Partial' | 'Covered';
   };
+  /** Explicit request to repay a previous early-checkout deficit with extra minutes worked this day (current month only) */
+  earlyOvertimeRepayment?: {
+    requestedMinutes: number;
+    reason?: string;
+    status: 'None' | 'Pending' | 'Approved' | 'Rejected';
+    requestedAt?: string;
+    approvedBy?: string;
+    approvedAt?: string;
+    appliedMinutes: number;
+  };
   /** @deprecated Legacy — mirrors general OT */
   overtimeRequest?: {
     reason: string;
@@ -211,6 +221,8 @@ export interface SystemSettings {
   defaultCheckoutTime: string;
   /** Per-day checkout override YYYY-MM-DD → HH:mm */
   checkoutTimeOverrides: Record<string, string>;
+  /** Late check-in penalty applies after this time HH:mm (24h), e.g. 09:00 */
+  latePenaltyStartTime: string;
 }
 
 export interface AuthState {

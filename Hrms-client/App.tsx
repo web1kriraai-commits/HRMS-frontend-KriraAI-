@@ -1,6 +1,7 @@
 import React from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider, useApp } from './context/AppContext';
+import { AlertProvider } from './context/AlertContext';
 import { Login } from '@/pages/Login';
 import { EmployeeDashboard } from '@/pages/EmployeeDashboard';
 import { HRDashboard } from '@/pages/HRDashboard';
@@ -15,6 +16,7 @@ import { SalaryManagement } from '@/pages/SalaryManagement';
 import { Sidebar } from './components/Sidebar';
 import { EarlyOvertimePopup } from './components/EarlyOvertimePopup';
 import { ManagementOvertimePopup } from './components/ManagementOvertimePopup';
+import { EarlyOvertimeRepaymentPopup } from './components/EarlyOvertimeRepaymentPopup';
 import { RouteDataLoader } from './components/RouteDataLoader';
 import { Role } from './types';
 
@@ -53,6 +55,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         <>
           <EarlyOvertimePopup />
           <ManagementOvertimePopup />
+          <EarlyOvertimeRepaymentPopup />
         </>
       )}
     </div>
@@ -220,9 +223,11 @@ const AppRoutes = () => {
 const App: React.FC = () => {
   return (
     <AppProvider>
-      <Router>
-        <AppRoutes />
-      </Router>
+      <AlertProvider>
+        <Router>
+          <AppRoutes />
+        </Router>
+      </AlertProvider>
     </AppProvider>
   );
 };

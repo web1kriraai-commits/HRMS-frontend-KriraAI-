@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { formatDate, getTodayStr, getEffectiveLeaveCategory, calculateAbsentDaysForMonth } from '../services/utils';
 import { userAPI } from '../services/api';
+import { appAlert } from '../services/appAlert';
 
 const formatDisplayDays = (val: number) => {
     if (typeof val !== 'number') return val;
@@ -379,13 +380,13 @@ export const LeaveManagement: React.FC = () => {
                 manualHalfDayLeaveAdjustment: 0
             });
 
-            alert(`Leave balances updated for employee.`);
+            appAlert(`Leave balances updated for employee.`);
             resetAllocationFields();
             setIsAllocationModalOpen(false);
             // No need for refreshData() here as context's updateUser already calls it
         } catch (error: any) {
             console.error('Allocation failed:', error);
-            alert(error.message || 'Failed to allocate leave');
+            appAlert(error.message || 'Failed to allocate leave');
         } finally {
             setIsSubmitting(false);
         }
@@ -762,10 +763,10 @@ export const LeaveManagement: React.FC = () => {
                                                         if (!confirm(`Revert this ${leave.status.toLowerCase()} leave?`)) return;
                                                         try {
                                                             await updateLeaveStatus(leave.id, LeaveStatus.PENDING, `Reverted from ${leave.status} at global history`);
-                                                            alert('Leave reverted successfully');
+                                                            appAlert('Leave reverted successfully');
                                                             await refreshData();
                                                         } catch (error: any) {
-                                                            alert(error.message || 'Failed to revert leave');
+                                                            appAlert(error.message || 'Failed to revert leave');
                                                         }
                                                     }}
                                                     className="p-2 text-indigo-400 hover:bg-indigo-500 hover:text-white rounded-xl transition-all shadow-sm active:scale-90"

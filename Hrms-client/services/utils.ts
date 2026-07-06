@@ -13,6 +13,7 @@ const HALF_DAY_EXTRA_THRESHOLD_MINUTES = 262; // (8h 22m - 4h) = 4h 22m
 export const HALF_DAY_EXTRA_THRESHOLD_SECONDS = HALF_DAY_EXTRA_THRESHOLD_MINUTES * 60;
 export const PENALTY_EFFECTIVE_DATE = '2026-03-01';
 export const LATE_PENALTY_SECONDS = 900; // 15 minutes
+export const DEFAULT_LATE_PENALTY_START_TIME = '09:00';
 export const ABSENCE_PENALTY_EFFECTIVE_DATE = '2026-04-06';
 export const OVERTIME_POLICY_EFFECTIVE_DATE = '2026-04-06';
 /** Aligned with Hrms-server COMPULSORY_BREAK_EFFECTIVE_DATE */
@@ -45,14 +46,16 @@ export const hasApprovedHalfDayLeaveOnDate = (
   });
 };
 
-export const isLateCheckIn = (isoStr?: string): boolean => {
+export const resolveLatePenaltyStartTime = (settings?: { latePenaltyStartTime?: string } | null): string =>
+  settings?.latePenaltyStartTime || DEFAULT_LATE_PENALTY_START_TIME;
+
+export const isLateCheckIn = (isoStr?: string, latePenaltyStartTime = DEFAULT_LATE_PENALTY_START_TIME): boolean => {
   if (!isoStr) return false;
   const d = new Date(isoStr);
-  const hours = d.getHours();
-  const minutes = d.getMinutes();
-  const seconds = d.getSeconds();
-  // Late if after exactly 09:00:00
-  return (hours > 9) || (hours === 9 && (minutes > 0 || seconds > 0));
+  const { hour: cutoffH, minute: cutoffM } = parseCheckInTime(latePenaltyStartTime);
+  const checkInSecs = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+  const cutoffSecs = cutoffH * 3600 + cutoffM * 60;
+  return checkInSecs > cutoffSecs;
 };
 
 export const isPenaltyEffective = (dateStr: string): boolean => {
@@ -95,21 +98,24 @@ export const getAbsenceStartDate = (user?: User | null, firstCheckInDate?: strin
 };
 
 /**
- * Calculates how many seconds late the check-in was relative to 09:00 AM.
+ * Seconds late relative to the configured penalty start time (default 09:00).
  * Minimum penalty is 15 minutes (900s).
  */
-export const calculateLatenessPenaltySeconds = (checkInIso?: string): number => {
+export const calculateLatenessPenaltySeconds = (
+  checkInIso?: string,
+  latePenaltyStartTime = DEFAULT_LATE_PENALTY_START_TIME
+): number => {
   if (!checkInIso) return 0;
 
   const d = new Date(checkInIso);
+  const { hour: cutoffH, minute: cutoffM } = parseCheckInTime(latePenaltyStartTime);
   const cutoff = new Date(checkInIso);
-  cutoff.setHours(9, 0, 0, 0);
+  cutoff.setHours(cutoffH, cutoffM, 0, 0);
 
   const diff = d.getTime() - cutoff.getTime();
   const latenessSeconds = Math.max(0, Math.floor(diff / 1000));
 
   if (latenessSeconds > 0) {
-    // Penalty is 15 minutes OR actual lateness, whichever is greater
     return Math.max(LATE_PENALTY_SECONDS, latenessSeconds);
   }
 
@@ -278,6 +284,15 @@ export const leaveOverlapsDateRange = (
   endYmd: string
 ): boolean => leave.startDate <= endYmd && leave.endDate >= startYmd;
 
+/** Present for absent-day counting: both check-in & check-out, or admin manual hours without punch. */
+const isPresentForAbsentCount = (record?: Attendance): boolean => {
+  if (!record) return false;
+  if (record.checkIn && record.checkOut) return true;
+  if (record.manualHours && record.manualHours.length > 0) return true;
+  if (!record.checkIn && !record.checkOut && (record.totalWorkedSeconds || 0) > 0) return true;
+  return false;
+};
+
 /** Count working-day absences for a user within a calendar month (YYYY-MM). */
 export const calculateAbsentDaysForMonth = (
   userId: string,
@@ -294,11 +309,15 @@ export const calculateAbsentDaysForMonth = (
   const monthEnd = new Date(y, m, 0);
   const todayStr = getTodayStr();
 
-  const attendedDates = new Set(
-    attendanceRecords
-      .filter(r => r.userId === userId && r.checkIn)
-      .map(r => normalizeAttendanceDateStr(typeof r.date === 'string' ? r.date : getLocalISOString(new Date(r.date))))
-  );
+  const userRecordsByDate = new Map<string, Attendance>();
+  attendanceRecords
+    .filter(r => r.userId === userId)
+    .forEach(r => {
+      const dateKey = normalizeAttendanceDateStr(
+        typeof r.date === 'string' ? r.date : getLocalISOString(new Date(r.date))
+      );
+      userRecordsByDate.set(dateKey, r);
+    });
 
   const leaveDates = new Set<string>();
   leaveRequests
@@ -338,7 +357,7 @@ export const calculateAbsentDaysForMonth = (
     const dayOfWeek = iter.getDay();
     if (
       dateStr.startsWith(monthStr) &&
-      !attendedDates.has(dateStr) &&
+      !isPresentForAbsentCount(userRecordsByDate.get(dateStr)) &&
       !leaveDates.has(dateStr) &&
       dayOfWeek !== 0 &&
       !holidayDateSet.has(dateStr) &&
