@@ -5,6 +5,7 @@ import { EarlyOvertimePanel } from './EarlyOvertimePanel';
 import * as api from '../services/api';
 import { useApp } from '../context/AppContext';
 import { Role } from '../types';
+import { getTodayStr } from '../services/utils';
 
 export const EarlyOvertimePopup: React.FC = () => {
   const { auth } = useApp();
@@ -18,7 +19,11 @@ export const EarlyOvertimePopup: React.FC = () => {
     if (!canReview) return;
     try {
       const data = await api.attendanceAPI.getPendingEarlyOvertime();
-      setCount(Array.isArray(data) ? data.length : 0);
+      const monthKey = getTodayStr().slice(0, 7);
+      const currentMonth = (Array.isArray(data) ? data : []).filter(
+        (r: { date?: string }) => (r.date?.split('T')[0] || r.date || '').slice(0, 7) === monthKey
+      );
+      setCount(currentMonth.length);
     } catch {
       setCount(0);
     }
@@ -62,7 +67,7 @@ export const EarlyOvertimePopup: React.FC = () => {
           </button>
         </div>
         <div className="p-3 overflow-y-auto">
-          <EarlyOvertimePanel variant="compact" showTitle={false} />
+          <EarlyOvertimePanel variant="compact" showTitle={false} currentMonthOnly />
         </div>
       </Card>
     </div>

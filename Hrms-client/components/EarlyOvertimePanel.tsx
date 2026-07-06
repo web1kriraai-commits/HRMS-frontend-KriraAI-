@@ -6,6 +6,7 @@ import { Button } from './ui/Button';
 import * as api from '../services/api';
 import { Role } from '../types';
 import { appAlert } from '../services/appAlert';
+import { getTodayStr } from '../services/utils';
 
 export interface PendingEarlyOT {
   id: string;
@@ -22,13 +23,16 @@ interface EarlyOvertimePanelProps {
   maxItems?: number;
   showTitle?: boolean;
   className?: string;
+  /** When true, hide pending requests from previous months (popup uses this). */
+  currentMonthOnly?: boolean;
 }
 
 export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
   variant = 'full',
   maxItems,
   showTitle = true,
-  className = ''
+  className = '',
+  currentMonthOnly = false
 }) => {
   const { users, reviewEarlyCheckout, auth, refreshData } = useApp();
   const [pending, setPending] = useState<PendingEarlyOT[]>([]);
@@ -74,9 +78,13 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
   }, [loadPending]);
 
   const visible = useMemo(() => {
-    if (maxItems != null) return pending.slice(0, maxItems);
-    return pending;
-  }, [pending, maxItems]);
+    const monthKey = getTodayStr().slice(0, 7);
+    let list = currentMonthOnly
+      ? pending.filter((req) => (req.date?.split('T')[0] || req.date || '').slice(0, 7) === monthKey)
+      : pending;
+    if (maxItems != null) return list.slice(0, maxItems);
+    return list;
+  }, [pending, maxItems, currentMonthOnly]);
 
   const handleAction = async (
     recordId: string,

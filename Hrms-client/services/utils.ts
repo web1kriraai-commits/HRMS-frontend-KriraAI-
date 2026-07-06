@@ -49,11 +49,15 @@ export const hasApprovedHalfDayLeaveOnDate = (
 export const resolveLatePenaltyStartTime = (settings?: { latePenaltyStartTime?: string } | null): string =>
   settings?.latePenaltyStartTime || DEFAULT_LATE_PENALTY_START_TIME;
 
-export const isLateCheckIn = (isoStr?: string, latePenaltyStartTime = DEFAULT_LATE_PENALTY_START_TIME): boolean => {
+export const isLateCheckIn = (
+  isoStr?: string,
+  latePenaltyStartTime = DEFAULT_LATE_PENALTY_START_TIME,
+  timeZone = 'Asia/Kolkata'
+): boolean => {
   if (!isoStr) return false;
-  const d = new Date(isoStr);
+  const { hour, minute } = getWallClockHM(new Date(isoStr), timeZone);
   const { hour: cutoffH, minute: cutoffM } = parseCheckInTime(latePenaltyStartTime);
-  const checkInSecs = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+  const checkInSecs = hour * 3600 + minute * 60;
   const cutoffSecs = cutoffH * 3600 + cutoffM * 60;
   return checkInSecs > cutoffSecs;
 };
@@ -103,23 +107,43 @@ export const getAbsenceStartDate = (user?: User | null, firstCheckInDate?: strin
  */
 export const calculateLatenessPenaltySeconds = (
   checkInIso?: string,
-  latePenaltyStartTime = DEFAULT_LATE_PENALTY_START_TIME
+  latePenaltyStartTime = DEFAULT_LATE_PENALTY_START_TIME,
+  timeZone = 'Asia/Kolkata'
 ): number => {
   if (!checkInIso) return 0;
 
-  const d = new Date(checkInIso);
+  const { hour, minute } = getWallClockHM(new Date(checkInIso), timeZone);
   const { hour: cutoffH, minute: cutoffM } = parseCheckInTime(latePenaltyStartTime);
-  const cutoff = new Date(checkInIso);
-  cutoff.setHours(cutoffH, cutoffM, 0, 0);
-
-  const diff = d.getTime() - cutoff.getTime();
-  const latenessSeconds = Math.max(0, Math.floor(diff / 1000));
+  const checkInSecs = hour * 3600 + minute * 60;
+  const cutoffSecs = cutoffH * 3600 + cutoffM * 60;
+  const latenessSeconds = Math.max(0, checkInSecs - cutoffSecs);
 
   if (latenessSeconds > 0) {
     return Math.max(LATE_PENALTY_SECONDS, latenessSeconds);
   }
 
   return 0;
+};
+
+/** Late check-in penalty for display — only when check-in is after the configured cutoff (company timezone). */
+export const getLateCheckInPenaltyInfo = (
+  record: { checkIn?: string; penaltySeconds?: number; isPenaltyDisabled?: boolean; date: string },
+  settings?: { latePenaltyStartTime?: string; timezone?: string } | null,
+  hasHalfDayLeave = false
+): { isLate: boolean; penaltySeconds: number } => {
+  const timeZone = settings?.timezone || 'Asia/Kolkata';
+  const cutoff = resolveLatePenaltyStartTime(settings);
+  const isLate =
+    !record.isPenaltyDisabled &&
+    !hasHalfDayLeave &&
+    isPenaltyEffective(record.date) &&
+    isLateCheckIn(record.checkIn, cutoff, timeZone);
+  const penaltySeconds = isLate
+    ? (record.penaltySeconds && record.penaltySeconds > 0
+        ? record.penaltySeconds
+        : calculateLatenessPenaltySeconds(record.checkIn, cutoff, timeZone))
+    : 0;
+  return { isLate, penaltySeconds };
 };
 
 export const calculateDurationSeconds = (start: string, end: string): number => {

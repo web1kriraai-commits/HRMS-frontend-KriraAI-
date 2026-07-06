@@ -131,19 +131,23 @@ const transformUser = (apiUser: any): User => ({
 });
 
 // Helper to transform API attendance to frontend Attendance type
-const transformAttendance = (apiAttendance: any, latePenaltyStartTime?: string): Attendance => {
-  const penaltyCutoff = latePenaltyStartTime || DEFAULT_LATE_PENALTY_START_TIME;
-  const late = isLateCheckIn(apiAttendance.checkIn, penaltyCutoff);
-  const penaltyEffective = isPenaltyEffective(apiAttendance.date);
+const transformAttendance = (
+  apiAttendance: any,
+  options?: { latePenaltyStartTime?: string; timeZone?: string }
+): Attendance => {
+  const penaltyCutoff = options?.latePenaltyStartTime || DEFAULT_LATE_PENALTY_START_TIME;
+  const timeZone = options?.timeZone || 'Asia/Kolkata';
   const penaltyDisabled = !!apiAttendance.isPenaltyDisabled;
+  const penaltyEffective = isPenaltyEffective(apiAttendance.date);
+  const late = isLateCheckIn(apiAttendance.checkIn, penaltyCutoff, timeZone);
 
-  // If penalty is disabled by admin, penaltySeconds must be 0
-  // Otherwise use penalty from API if available and > 0, or calculate dynamically
-  const penaltySeconds = penaltyDisabled
-    ? 0
-    : (apiAttendance.penaltySeconds && apiAttendance.penaltySeconds > 0)
-      ? apiAttendance.penaltySeconds
-      : (late && penaltyEffective ? calculateLatenessPenaltySeconds(apiAttendance.checkIn, penaltyCutoff) : 0);
+  // Penalty applies only for late check-in (after configured cutoff in company timezone).
+  const penaltySeconds =
+    penaltyDisabled || !late || !penaltyEffective
+      ? 0
+      : apiAttendance.penaltySeconds && apiAttendance.penaltySeconds > 0
+        ? apiAttendance.penaltySeconds
+        : calculateLatenessPenaltySeconds(apiAttendance.checkIn, penaltyCutoff, timeZone);
 
   return {
     id: apiAttendance.id || apiAttendance._id,

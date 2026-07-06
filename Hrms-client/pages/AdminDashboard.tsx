@@ -1049,7 +1049,7 @@ export const AdminDashboard: React.FC = () => {
 
         // Late check-in penalty: use centralized utility (skip if admin disabled penalty or half-day leave)
         const penaltySeconds = !isHolidayDay && !record.isPenaltyDisabled && !hasHalfDay && isPenaltyEffective(recordDateISO as string)
-          ? calculateLatenessPenaltySeconds(record.checkIn)
+          ? calculateLatenessPenaltySeconds(record.checkIn, systemSettings.latePenaltyStartTime, systemSettings.timezone)
           : 0;
         const netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
 

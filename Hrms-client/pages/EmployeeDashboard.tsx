@@ -5,7 +5,7 @@ import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
 import { MonthlyOvertimeSummary } from '../components/MonthlyOvertimeSummary';
 import { resolveGeneralOvertimeMinutes } from '../services/utils';
-import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn, HALF_DAY_EXTRA_THRESHOLD_SECONDS, calculateTotalBreakSeconds, hasMinimumTotalBreakTime, MIN_TOTAL_BREAK_SECONDS, getDateStrInTimezone, resolveCheckInTimeForDate, resolveCheckoutTimeForDate, formatCheckoutTimeLabel, isClockOutTimeAllowed, hasCheckoutOverrideForDate, formatHoursMinutesShort, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, getEffectiveLeaveCategory, getEmployeeBondPeriod, leaveOverlapsDateRange } from '../services/utils';
+import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn, HALF_DAY_EXTRA_THRESHOLD_SECONDS, calculateTotalBreakSeconds, hasMinimumTotalBreakTime, MIN_TOTAL_BREAK_SECONDS, getDateStrInTimezone, resolveCheckInTimeForDate, resolveCheckoutTimeForDate, formatCheckoutTimeLabel, isClockOutTimeAllowed, hasCheckoutOverrideForDate, formatHoursMinutesShort, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, getEffectiveLeaveCategory, getEmployeeBondPeriod, leaveOverlapsDateRange, getLateCheckInPenaltyInfo } from '../services/utils';
 import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare, Briefcase, ChevronDown } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -1355,7 +1355,11 @@ export const EmployeeDashboard: React.FC = () => {
                         let livePenaltySeconds = 0;
                         if (!isOnBreak && checkInTime && !todayRecord?.checkOut && !todayRecord?.isPenaltyDisabled && !approvedHalfDayToday) {
                           if (isPenaltyEffective(getTodayStr())) {
-                            livePenaltySeconds = calculateLatenessPenaltySeconds(checkInTime.toISOString());
+                            livePenaltySeconds = calculateLatenessPenaltySeconds(
+                              checkInTime.toISOString(),
+                              systemSettings.latePenaltyStartTime,
+                              systemSettings.timezone
+                            );
                           }
                         }
 
@@ -2175,20 +2179,20 @@ export const EmployeeDashboard: React.FC = () => {
                             </div>
                           )}
                         </td>
-                        <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkIn, systemSettings.timezone)}</td>
-                        <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkOut, systemSettings.timezone)}</td>
-                        <td className="px-4 py-3 text-xs">
-                          <div>{r.breaks.length} breaks</div>
+                        <td className="px-4 py-3 font-mono text-xs">
+                          <div>{formatTime(r.checkIn, systemSettings.timezone)}</div>
                           {(() => {
-                            const isLate = !!r.lateCheckIn;
-                            const hasPenalty = (r.penaltySeconds || 0) > 0;
-                            const shouldShowPenalty = isPenaltyEffective(r.date);
-                            return (isLate && hasPenalty && shouldShowPenalty && !halfDayThisDate) ? (
+                            const { isLate, penaltySeconds } = getLateCheckInPenaltyInfo(r, systemSettings, !!halfDayThisDate);
+                            return isLate && penaltySeconds > 0 ? (
                               <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
-                                <AlertCircle size={10} /> Late Penalty: {formatPenaltyDisplay(r.penaltySeconds || 0)}
+                                <AlertCircle size={10} /> Late check-in penalty: {formatPenaltyDisplay(penaltySeconds)}
                               </div>
                             ) : null;
                           })()}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs">{formatTime(r.checkOut, systemSettings.timezone)}</td>
+                        <td className="px-4 py-3 text-xs">
+                          <div>{r.breaks.length} breaks</div>
                         </td>
                         <td className="px-4 py-3 font-mono font-bold">
                           {formatDuration(
@@ -2197,12 +2201,10 @@ export const EmployeeDashboard: React.FC = () => {
                               : r.totalWorkedSeconds || 0
                           )}
                           {(() => {
-                            const isLate = !!r.lateCheckIn;
-                            const hasPenalty = (r.penaltySeconds || 0) > 0;
-                            const shouldShowPenalty = isPenaltyEffective(r.date);
-                            return (isLate && hasPenalty && shouldShowPenalty && !halfDayThisDate) ? (
+                            const { isLate, penaltySeconds } = getLateCheckInPenaltyInfo(r, systemSettings, !!halfDayThisDate);
+                            return isLate && penaltySeconds > 0 ? (
                               <div className="text-[10px] text-gray-400 font-normal">
-                                (-{formatPenaltyDisplay(r.penaltySeconds || 0)} penalty applied)
+                                (-{formatPenaltyDisplay(penaltySeconds)} late check-in penalty)
                               </div>
                             ) : null;
                           })()}
