@@ -1413,6 +1413,10 @@ export interface MonthlyOvertimeSummary {
   actualWorkedSeconds: number;
   generalOvertimeSeconds: number;
   managementOvertimeSeconds: number;
+  /** Total early leave taken this month (sum of daily deficits). */
+  earlyLeaveTimeTotalSeconds: number;
+  /** Early leave remaining after approved Early OT deductions. */
+  earlyLeaveTimeNetSeconds: number;
   earlyOvertimeOutstandingSeconds: number;
   earlyOvertimeCoveredSeconds: number;
   remainingSeconds: number;
@@ -1462,7 +1466,7 @@ export const calculateMonthlyOvertimeSummary = (
   let actualWorkedSeconds = 0;
   let generalOvertimeSeconds = 0;
   let managementOvertimeSeconds = 0;
-  let earlyOvertimeOutstandingSeconds = 0;
+  let earlyLeaveTimeTotalSeconds = 0;
   let earlyOvertimeCoveredSeconds = 0;
 
   const todayStr = getTodayStr();
@@ -1533,12 +1537,12 @@ export const calculateMonthlyOvertimeSummary = (
 
     const eo = record.earlyOvertime;
     if (eo && eo.deficitMinutes > 0) {
+      earlyLeaveTimeTotalSeconds += eo.deficitMinutes * 60;
       earlyOvertimeCoveredSeconds += (eo.coveredMinutes || 0) * 60;
-      earlyOvertimeOutstandingSeconds +=
-        Math.max(0, eo.deficitMinutes - (eo.coveredMinutes || 0)) * 60;
     }
   }
 
+  const earlyLeaveTimeNetSeconds = Math.max(0, earlyLeaveTimeTotalSeconds - earlyOvertimeCoveredSeconds);
   const expectedSeconds = Math.round(workingDays * FULL_DAY_SECONDS);
   const remainingSeconds = expectedSeconds - actualWorkedSeconds;
 
@@ -1548,7 +1552,9 @@ export const calculateMonthlyOvertimeSummary = (
     actualWorkedSeconds,
     generalOvertimeSeconds,
     managementOvertimeSeconds,
-    earlyOvertimeOutstandingSeconds,
+    earlyLeaveTimeTotalSeconds,
+    earlyLeaveTimeNetSeconds,
+    earlyOvertimeOutstandingSeconds: earlyLeaveTimeNetSeconds,
     earlyOvertimeCoveredSeconds,
     remainingSeconds
   };

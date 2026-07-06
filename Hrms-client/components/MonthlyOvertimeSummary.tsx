@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
-import { Clock, TrendingUp, Briefcase, LogOut } from 'lucide-react';
+import { Clock, TrendingUp, Briefcase, LogOut, Timer } from 'lucide-react';
 import { Card } from './ui/Card';
 import { Attendance, LeaveRequest } from '../types';
 import {
@@ -125,8 +125,7 @@ export const MonthlyOvertimeSummary: React.FC<MonthlyOvertimeSummaryProps> = ({
       }
     >
       <div className="space-y-3">
-        {/* Three OT types */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <StatTile
             label="General OT"
             sublabel="Auto above 8h 15m"
@@ -146,17 +145,25 @@ export const MonthlyOvertimeSummary: React.FC<MonthlyOvertimeSummaryProps> = ({
             border="border-violet-100"
           />
           <StatTile
-            label="Early OT"
-            sublabel="Early checkout deficit"
-            value={formatHoursMinutesShort(summary.earlyOvertimeOutstandingSeconds)}
+            label="Early Leave Time"
+            sublabel="Approved early checkout"
+            value={formatHoursMinutesShort(summary.earlyLeaveTimeTotalSeconds)}
             icon={<LogOut size={12} />}
-            accent={summary.earlyOvertimeOutstandingSeconds > 0 ? 'text-amber-700' : 'text-slate-600'}
-            bg={summary.earlyOvertimeOutstandingSeconds > 0 ? 'bg-amber-50/60' : 'bg-slate-50/60'}
-            border={summary.earlyOvertimeOutstandingSeconds > 0 ? 'border-amber-100' : 'border-slate-100'}
+            accent={summary.earlyLeaveTimeTotalSeconds > 0 ? 'text-amber-700' : 'text-slate-600'}
+            bg={summary.earlyLeaveTimeTotalSeconds > 0 ? 'bg-amber-50/60' : 'bg-slate-50/60'}
+            border={summary.earlyLeaveTimeTotalSeconds > 0 ? 'border-amber-100' : 'border-slate-100'}
+          />
+          <StatTile
+            label="Early Leave OT"
+            sublabel="Deducted from early leave"
+            value={formatHoursMinutesShort(summary.earlyOvertimeCoveredSeconds)}
+            icon={<Timer size={12} />}
+            accent={summary.earlyOvertimeCoveredSeconds > 0 ? 'text-teal-700' : 'text-slate-600'}
+            bg={summary.earlyOvertimeCoveredSeconds > 0 ? 'bg-teal-50/60' : 'bg-slate-50/60'}
+            border={summary.earlyOvertimeCoveredSeconds > 0 ? 'border-teal-100' : 'border-slate-100'}
           />
         </div>
 
-        {/* Actual worked */}
         <StatTile
           label="Actual Worked"
           sublabel="Includes leave days (paid/unpaid) at 8h 15m"
@@ -167,10 +174,16 @@ export const MonthlyOvertimeSummary: React.FC<MonthlyOvertimeSummaryProps> = ({
           border="border-blue-100"
         />
 
-        {summary.earlyOvertimeCoveredSeconds > 0 && (
-          <div className="p-3 bg-teal-50 border border-teal-100 rounded-xl">
-            <p className="text-[10px] font-bold text-teal-700">
-              ✓ {formatHoursMinutesShort(summary.earlyOvertimeCoveredSeconds)} of early checkout time covered this month
+        {summary.earlyLeaveTimeNetSeconds > 0 && (
+          <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl">
+            <p className="text-[10px] font-bold text-amber-800">
+              {formatHoursMinutesShort(summary.earlyLeaveTimeNetSeconds)} early leave still to cover
+              {summary.earlyOvertimeCoveredSeconds > 0 && (
+                <span className="font-medium text-amber-600">
+                  {' '}
+                  ({formatHoursMinutesShort(summary.earlyLeaveTimeTotalSeconds)} − {formatHoursMinutesShort(summary.earlyOvertimeCoveredSeconds)})
+                </span>
+              )}
             </p>
           </div>
         )}
