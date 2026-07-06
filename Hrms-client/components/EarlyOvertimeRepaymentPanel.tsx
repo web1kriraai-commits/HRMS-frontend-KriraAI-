@@ -1,37 +1,37 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { Briefcase, Check, X, MessageSquare, RefreshCw } from 'lucide-react';
+import { Clock, Check, X, MessageSquare, RefreshCw } from 'lucide-react';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
 import * as api from '../services/api';
 import { Role } from '../types';
 import { appAlert } from '../services/appAlert';
 
-export interface PendingManagementOT {
+export interface PendingEarlyOtRepayment {
   id: string;
   userId: string;
   userName: string;
   department?: string;
   date: string;
-  durationMinutes: number;
+  requestedMinutes: number;
   reason: string;
 }
 
-interface ManagementOvertimePanelProps {
+interface EarlyOvertimeRepaymentPanelProps {
   variant?: 'full' | 'compact' | 'table';
   maxItems?: number;
   showTitle?: boolean;
   className?: string;
 }
 
-export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = ({
+export const EarlyOvertimeRepaymentPanel: React.FC<EarlyOvertimeRepaymentPanelProps> = ({
   variant = 'full',
   maxItems,
   showTitle = true,
   className = ''
 }) => {
-  const { users, reviewManagementOvertime, auth, refreshData } = useApp();
-  const [pending, setPending] = useState<PendingManagementOT[]>([]);
+  const { users, reviewEarlyOtRepayment, auth, refreshData } = useApp();
+  const [pending, setPending] = useState<PendingEarlyOtRepayment[]>([]);
   const [loading, setLoading] = useState(false);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [comments, setComments] = useState<Record<string, string>>({});
@@ -43,8 +43,8 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
     if (!canReview) return;
     setLoading(true);
     try {
-      const data = await api.attendanceAPI.getPendingOvertime();
-      const mapped: PendingManagementOT[] = (Array.isArray(data) ? data : []).map(
+      const data = await api.attendanceAPI.getPendingEarlyOtRepayment();
+      const mapped: PendingEarlyOtRepayment[] = (Array.isArray(data) ? data : []).map(
         (r: any) => {
           const uid = r.userId?._id || r.userId?.id || r.userId;
           const user = users.find((u) => u.id === uid);
@@ -54,8 +54,8 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
             userName: r.userId?.name || user?.name || 'Unknown',
             department: r.userId?.department || user?.department,
             date: r.date,
-            durationMinutes: r.managementOvertime?.durationMinutes || 0,
-            reason: r.managementOvertime?.reason || ''
+            requestedMinutes: r.earlyOvertimeRepayment?.requestedMinutes || 0,
+            reason: r.earlyOvertimeRepayment?.reason || ''
           };
         }
       );
@@ -84,7 +84,7 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
   ) => {
     setSubmittingId(recordId);
     try {
-      await reviewManagementOvertime(recordId, status, comments[recordId]?.trim() || undefined);
+      await reviewEarlyOtRepayment(recordId, status, comments[recordId]?.trim() || undefined);
       setComments((prev) => {
         const next = { ...prev };
         delete next[recordId];
@@ -93,7 +93,7 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
       await loadPending();
       await refreshData(true);
     } catch (error: any) {
-      appAlert(error.message || 'Failed to process management overtime request');
+      appAlert(error.message || 'Failed to process early OT repayment request');
     } finally {
       setSubmittingId(null);
     }
@@ -107,9 +107,9 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
         {showTitle && (
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <Briefcase size={18} className="text-violet-600" />
-              <h3 className="text-lg font-bold text-gray-800">Pending Management OT</h3>
-              <span className="bg-violet-100 text-violet-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
+              <Clock size={18} className="text-teal-600" />
+              <h3 className="text-lg font-bold text-gray-800">Pending Early OT Repayment</h3>
+              <span className="bg-teal-100 text-teal-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
                 {pending.length}
               </span>
             </div>
@@ -127,10 +127,10 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-violet-50/50 text-violet-700 uppercase text-xs font-bold">
+              <tr className="bg-teal-50/50 text-teal-700 uppercase text-xs font-bold">
                 <th className="px-4 py-3 text-left">Employee</th>
                 <th className="px-4 py-3 text-left">Date</th>
-                <th className="px-4 py-3 text-center">Duration</th>
+                <th className="px-4 py-3 text-center">Minutes</th>
                 <th className="px-4 py-3 text-left">Reason</th>
                 <th className="px-4 py-3 text-left">Note</th>
                 <th className="px-4 py-3 text-center">Action</th>
@@ -140,12 +140,12 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
               {visible.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-8 text-center text-gray-400 italic">
-                    No pending management overtime requests
+                    No pending early OT repayment requests
                   </td>
                 </tr>
               ) : (
                 visible.map((req) => (
-                  <tr key={req.id} className="hover:bg-violet-50/30">
+                  <tr key={req.id} className="hover:bg-teal-50/30">
                     <td className="px-4 py-3">
                       <p className="font-semibold text-gray-800">{req.userName}</p>
                       {req.department && (
@@ -153,8 +153,8 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
                       )}
                     </td>
                     <td className="px-4 py-3 text-gray-700">{req.date}</td>
-                    <td className="px-4 py-3 text-center font-bold text-violet-700">
-                      {req.durationMinutes}m
+                    <td className="px-4 py-3 text-center font-bold text-teal-700">
+                      {req.requestedMinutes}m
                     </td>
                     <td className="px-4 py-3 text-gray-600 max-w-xs truncate" title={req.reason}>
                       {req.reason || '—'}
@@ -212,9 +212,9 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
       {showTitle && (
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <Briefcase size={18} className="text-violet-600" />
-            <h3 className="text-lg font-bold text-gray-800">Management Overtime Requests</h3>
-            <span className="bg-violet-100 text-violet-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
+            <Clock size={18} className="text-teal-600" />
+            <h3 className="text-lg font-bold text-gray-800">Early OT Repayment Requests</h3>
+            <span className="bg-teal-100 text-teal-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
               {pending.length}
             </span>
           </div>
@@ -231,7 +231,7 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
       )}
 
       {visible.length === 0 ? (
-        <p className="text-gray-400 text-sm italic py-4">No pending management overtime requests.</p>
+        <p className="text-gray-400 text-sm italic py-4">No pending early OT repayment requests.</p>
       ) : (
         <div
           className={
@@ -241,7 +241,7 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
           }
         >
           {visible.map((req) => (
-            <Card key={req.id} className="border-l-4 border-l-violet-400">
+            <Card key={req.id} className="border-l-4 border-l-teal-400">
               <div className="flex flex-col gap-3">
                 <div>
                   <h4 className="font-bold text-gray-900">{req.userName}</h4>
@@ -249,12 +249,12 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
                     <p className="text-xs text-gray-500">{req.department}</p>
                   )}
                   <p className="text-sm text-gray-600 mt-1">
-                    {req.date} · <span className="font-bold text-violet-700">{req.durationMinutes}m</span>
+                    {req.date} · <span className="font-bold text-teal-700">{req.requestedMinutes}m</span>
                   </p>
                   {req.reason && (
-                    <div className="flex items-start gap-1.5 mt-2 bg-violet-50/50 p-2 rounded border border-violet-100/50">
-                      <MessageSquare size={12} className="text-violet-500 mt-0.5 shrink-0" />
-                      <p className="text-xs text-violet-800 italic">"{req.reason}"</p>
+                    <div className="flex items-start gap-1.5 mt-2 bg-teal-50/50 p-2 rounded border border-teal-100/50">
+                      <MessageSquare size={12} className="text-teal-500 mt-0.5 shrink-0" />
+                      <p className="text-xs text-teal-800 italic">"{req.reason}"</p>
                     </div>
                   )}
                 </div>

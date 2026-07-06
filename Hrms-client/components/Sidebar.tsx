@@ -2,7 +2,7 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Role } from '../types';
-import { LayoutDashboard, Users, Settings, LogOut, CheckSquare, Calendar, CalendarDays, UserCircle, TrendingUp, Clock, FileText, Activity, Globe, BookOpen } from 'lucide-react';
+import { LayoutDashboard, Users, Settings, LogOut, CheckSquare, Calendar, CalendarDays, UserCircle, TrendingUp, Clock, FileText, Activity, Globe, BookOpen, IndianRupee } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
   const { auth, logout } = useApp();
@@ -50,6 +50,10 @@ export const Sidebar: React.FC = () => {
               <FileText size={18} />
               Bond Status
             </NavLink>
+            <NavLink to="/salary-management" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+              <IndianRupee size={18} />
+              Salary Management
+            </NavLink>
             <p className="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mt-4 mb-2">Settings</p>
             <NavLink to="/admin-settings" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
               <Settings size={18} />
@@ -65,6 +69,12 @@ export const Sidebar: React.FC = () => {
 
         {user.role !== Role.EMPLOYEE && (
           <>
+            {user.role === Role.HR && (
+              <NavLink to="/salary-management" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+                <IndianRupee size={18} />
+                Salary Management
+              </NavLink>
+            )}
             <NavLink to="/hr-today" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
               <Calendar size={18} />
               Today

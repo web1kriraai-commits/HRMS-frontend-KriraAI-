@@ -270,6 +270,21 @@ export const attendanceAPI = {
       body: JSON.stringify({ status, adminNote }),
     });
   },
+  requestEarlyOtRepayment: async (reason: string, durationMinutes: number, date?: string) => {
+    return apiRequest('/attendance/request-early-ot-repayment', {
+      method: 'POST',
+      body: JSON.stringify({ reason, durationMinutes, date }),
+    });
+  },
+  getPendingEarlyOtRepayment: async () => {
+    return apiRequest('/attendance/admin/pending-early-ot-repayment');
+  },
+  reviewEarlyOtRepayment: async (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => {
+    return apiRequest(`/attendance/admin/review-early-ot-repayment/${recordId}`, {
+      method: 'POST',
+      body: JSON.stringify({ status, adminNote }),
+    });
+  },
   recalculateHolidayFlags: async () => {
     return apiRequest<{ message: string; total: number; updated: number }>('/attendance/admin/recalculate-holiday-flags', {
       method: 'POST',

@@ -5,6 +5,7 @@ import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { CheckoutTimeSettings } from '../components/CheckoutTimeSettings';
 import { CheckInTimeSettings } from '../components/CheckInTimeSettings';
+import { LatePenaltySettings } from '../components/LatePenaltySettings';
 import { Role, LeaveCategory, LeaveStatus, User, Attendance, AuditLog } from '../types';
 import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft, Search, ArrowUp, ArrowDown, Landmark } from 'lucide-react';
 import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds } from '../services/utils';
@@ -12,6 +13,8 @@ import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salary
 import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI, auditAPI } from '../services/api';
 import { ManagementOvertimePanel } from '../components/ManagementOvertimePanel';
 import { EarlyOvertimePanel } from '../components/EarlyOvertimePanel';
+import { EarlyOvertimeRepaymentPanel } from '../components/EarlyOvertimeRepaymentPanel';
+import { appAlert } from '../services/appAlert';
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
 const formatHoursToHoursMinutes = (hours: number) => {
@@ -151,7 +154,7 @@ export const AdminDashboard: React.FC = () => {
     if (!selectedUserForReset || !newEmployeePassword) return;
 
     if (newEmployeePassword.length < 4) {
-      alert('Password must be at least 4 characters');
+      appAlert('Password must be at least 4 characters');
       return;
     }
 
@@ -163,11 +166,11 @@ export const AdminDashboard: React.FC = () => {
       setResetPasswordModalOpen(false);
       setNewEmployeePassword('');
       setSelectedUserForReset(null);
-      alert('Password reset successfully');
+      appAlert('Password reset successfully');
       refreshData();
     } catch (error: any) {
       console.error('Failed to reset password:', error);
-      alert(error.message || 'Failed to reset password');
+      appAlert(error.message || 'Failed to reset password');
     }
   };
 
@@ -180,10 +183,10 @@ export const AdminDashboard: React.FC = () => {
     setIsRecalculating(true);
     try {
       const result = await attendanceAPI.recalculateHolidayFlags();
-      alert(`Recalculation complete! ${result.updated} records updated out of ${result.total} processed.`);
+      appAlert(`Recalculation complete! ${result.updated} records updated out of ${result.total} processed.`);
       await refreshData();
     } catch (error: any) {
-      alert(error.message || 'Recalculation failed');
+      appAlert(error.message || 'Recalculation failed');
     } finally {
       setIsRecalculating(false);
     }
@@ -196,10 +199,10 @@ export const AdminDashboard: React.FC = () => {
     setIsRecalculating(true);
     try {
       const result = await attendanceAPI.recalculateHalfDayFlags();
-      alert(`Recalculation complete! ${result.updated} records updated out of ${result.total} processed.`);
+      appAlert(`Recalculation complete! ${result.updated} records updated out of ${result.total} processed.`);
       await refreshData();
     } catch (error: any) {
-      alert(error.message || 'Recalculation failed');
+      appAlert(error.message || 'Recalculation failed');
     } finally {
       setIsRecalculating(false);
     }
@@ -985,12 +988,12 @@ export const AdminDashboard: React.FC = () => {
       });
       const dispH = Math.floor(Math.abs(totalSeconds) / 3600);
       const dispM = Math.floor((Math.abs(totalSeconds) % 3600) / 60);
-      alert(`Successfully processed balance forwarding for ${forwardingUser.name}.\nForwarded ${totalSeconds < 0 ? '-' : ''}${dispH}h ${dispM}m from ${forwardingMonthStr} → ${nextMonthStr}.`);
+      appAlert(`Successfully processed balance forwarding for ${forwardingUser.name}.\nForwarded ${totalSeconds < 0 ? '-' : ''}${dispH}h ${dispM}m from ${forwardingMonthStr} → ${nextMonthStr}.`);
       setIsForwardModalOpen(false);
       await refreshData();
     } catch (error: any) {
       console.error("Failed to forward overtime:", error);
-      alert(error.message || "Failed to forward overtime.");
+      appAlert(error.message || "Failed to forward overtime.");
     } finally {
       setIsForwarding(false);
     }
@@ -1238,7 +1241,7 @@ export const AdminDashboard: React.FC = () => {
     if (!correction.userId || !correction.date) return;
 
     if (!correction.checkIn && !correction.checkOut && !correction.isPenaltyDisabled) {
-      alert("Please provide at least Check In time, Check Out time, or Disable Late Penalty");
+      appAlert("Please provide at least Check In time, Check Out time, or Disable Late Penalty");
       return;
     }
 
@@ -1252,12 +1255,12 @@ export const AdminDashboard: React.FC = () => {
         notes: correction.notes || undefined,
         isPenaltyDisabled: correction.isPenaltyDisabled
       });
-      alert("Attendance saved successfully.");
+      appAlert("Attendance saved successfully.");
       setCorrection({ userId: '', date: getTodayStr(), checkIn: '', checkOut: '', breakDuration: '', notes: '', isPenaltyDisabled: false });
       // Refresh data to show updated records
       await refreshData();
     } catch (error: any) {
-      alert(error.message || "Failed to save attendance");
+      appAlert(error.message || "Failed to save attendance");
     }
   };
 
@@ -1301,7 +1304,7 @@ export const AdminDashboard: React.FC = () => {
       });
       await refreshData();
     } catch (err: any) {
-      alert(err.message || 'Failed to toggle status');
+      appAlert(err.message || 'Failed to toggle status');
     }
   };
 
@@ -1665,10 +1668,21 @@ export const AdminDashboard: React.FC = () => {
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
             <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
               <h3 className="text-lg font-bold text-gray-800">Pending Early OT</h3>
-              <p className="text-gray-500 text-sm">Approve or reject employee early checkout / early OT requests</p>
+              <p className="text-gray-500 text-sm">Approve or reject employee early checkout requests</p>
             </div>
             <div className="p-6">
               <EarlyOvertimePanel variant="table" showTitle={false} />
+            </div>
+          </div>
+
+          {/* Pending Early OT Repayment — Admin can approve / reject */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
+            <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
+              <h3 className="text-lg font-bold text-gray-800">Pending Early OT Repayment</h3>
+              <p className="text-gray-500 text-sm">Approve or reject employee requests to repay a previous early-checkout deficit (current month only)</p>
+            </div>
+            <div className="p-6">
+              <EarlyOvertimeRepaymentPanel variant="table" showTitle={false} />
             </div>
           </div>
 
@@ -2035,9 +2049,9 @@ export const AdminDashboard: React.FC = () => {
                                         const isPaid = e.target.checked;
                                         await userAPI.markSalaryAsPaid(selectedUser.id, item.month, item.year, isPaid);
                                         await refreshData();
-                                        alert(`Salary ${isPaid ? 'marked as paid' : 'unmarked'} successfully for ${selectedUser.name}`);
+                                        appAlert(`Salary ${isPaid ? 'marked as paid' : 'unmarked'} successfully for ${selectedUser.name}`);
                                       } catch (error: any) {
-                                        alert(error.message || 'Failed to update payment status');
+                                        appAlert(error.message || 'Failed to update payment status');
                                       }
                                     }}
                                     className="w-4 h-4 text-green-600 bg-gray-100 border-gray-300 rounded focus:ring-green-500 focus:ring-2 cursor-pointer"
@@ -2390,10 +2404,10 @@ export const AdminDashboard: React.FC = () => {
                                           if (!confirm(`Are you sure you want to revert this ${leave.status.toLowerCase()} leave?`)) return;
                                           try {
                                             await updateLeaveStatus(leave.id, 'Pending', `Reverted from ${leave.status} by Admin`);
-                                            alert('Leave reverted to Pending status successfully');
+                                            appAlert('Leave reverted to Pending status successfully');
                                             await refreshData();
                                           } catch (error: any) {
-                                            alert(error.message || 'Failed to revert leave');
+                                            appAlert(error.message || 'Failed to revert leave');
                                           }
                                         }}
                                         className="p-1 text-blue-600 hover:bg-blue-50 rounded transition-colors"
@@ -2407,10 +2421,10 @@ export const AdminDashboard: React.FC = () => {
                                         if (!confirm('Are you sure you want to delete this leave request?')) return;
                                         try {
                                           await deleteLeaveRequest(leave.id);
-                                          alert('Leave request deleted successfully');
+                                          appAlert('Leave request deleted successfully');
                                           await refreshData();
                                         } catch (error: any) {
-                                          alert(error.message || 'Failed to delete leave request');
+                                          appAlert(error.message || 'Failed to delete leave request');
                                         }
                                       }}
                                       className="p-1 text-rose-600 hover:bg-rose-50 rounded transition-colors"
@@ -2659,10 +2673,10 @@ export const AdminDashboard: React.FC = () => {
                                       if (!confirm(`Are you sure you want to delete the attendance record for ${formatDate(record.date)}?`)) return;
                                       try {
                                         await deleteAttendance(record.id);
-                                        alert('Attendance record deleted successfully');
+                                        appAlert('Attendance record deleted successfully');
                                         await refreshData();
                                       } catch (error: any) {
-                                        alert(error.message || 'Failed to delete record');
+                                        appAlert(error.message || 'Failed to delete record');
                                       }
                                     }}
                                     className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
@@ -2833,11 +2847,11 @@ export const AdminDashboard: React.FC = () => {
 
                   try {
                     await adminUpdateAttendance(editingAttendance.id, updates as Partial<Attendance>, isNaN(breakMinutes) ? undefined : breakMinutes);
-                    alert('Attendance record updated successfully');
+                    appAlert('Attendance record updated successfully');
                     setEditingAttendance(null);
                     await refreshData();
                   } catch (error: any) {
-                    alert(error.message || 'Failed to update attendance');
+                    appAlert(error.message || 'Failed to update attendance');
                   }
                 }} className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
@@ -3112,10 +3126,10 @@ export const AdminDashboard: React.FC = () => {
                                     if (confirm(`Are you sure you want to delete ${user.name}?`)) {
                                       try {
                                         await userAPI.deleteUser(user.id);
-                                        alert(`User ${user.name} deleted successfully`);
+                                        appAlert(`User ${user.name} deleted successfully`);
                                         await refreshData();
                                       } catch (error: any) {
-                                        alert(error.message || 'Failed to delete user');
+                                        appAlert(error.message || 'Failed to delete user');
                                       }
                                     }
                                   }}
@@ -3327,10 +3341,10 @@ export const AdminDashboard: React.FC = () => {
                     }
                     try {
                       const result: any = await holidayAPI.autoAddSundays();
-                      alert(result.message || `Successfully added ${result.added || 0} Sunday(s) as holidays`);
+                      appAlert(result.message || `Successfully added ${result.added || 0} Sunday(s) as holidays`);
                       await refreshData();
                     } catch (error: any) {
-                      alert(error.message || 'Failed to add Sundays');
+                      appAlert(error.message || 'Failed to add Sundays');
                     }
                   }}
                   className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700"
@@ -3372,10 +3386,10 @@ export const AdminDashboard: React.FC = () => {
                             if (newDesc && newDate) {
                               updateHoliday(holiday.id, { description: newDesc, date: newDate })
                                 .then(() => {
-                                  alert('Holiday updated');
+                                  appAlert('Holiday updated');
                                   refreshData();
                                 })
-                                .catch((err: any) => alert(err.message || 'Update failed'));
+                                .catch((err: any) => appAlert(err.message || 'Update failed'));
                             }
                           }}
                           className="p-1 text-indigo-600 hover:bg-indigo-50 rounded"
@@ -3388,10 +3402,10 @@ export const AdminDashboard: React.FC = () => {
                             if (!confirm(`Delete holiday "${holiday.description}"?`)) return;
                             try {
                               await deleteHoliday(holiday.id);
-                              alert('Holiday deleted');
+                              appAlert('Holiday deleted');
                               await refreshData();
                             } catch (err: any) {
-                              alert(err.message || 'Delete failed');
+                              appAlert(err.message || 'Delete failed');
                             }
                           }}
                           className="p-1 text-rose-600 hover:bg-rose-50 rounded"
@@ -3636,6 +3650,13 @@ export const AdminDashboard: React.FC = () => {
 
           <Card title="Check-in Time (All Employees)">
             <CheckInTimeSettings
+              systemSettings={systemSettings}
+              updateSystemSettings={updateSystemSettings}
+            />
+          </Card>
+
+          <Card title="Late Check-in Penalty (All Employees)">
+            <LatePenaltySettings
               systemSettings={systemSettings}
               updateSystemSettings={updateSystemSettings}
             />
@@ -4193,20 +4214,20 @@ export const AdminDashboard: React.FC = () => {
                 <form id="createUserForm" onSubmit={async (e) => {
                   e.preventDefault();
                   if (!newUser.name || !newUser.username || !newUser.email || !newUser.department || !newUser.mobileNumber || !newUser.aadhaarNumber || !newUser.bankName || !newUser.bankAccountHolderName || !newUser.bankAccountNumber || !newUser.bankIfscCode) {
-                    alert('Please fill all required fields');
+                    appAlert('Please fill all required fields');
                     return;
                   }
                   const accountDigits = newUser.bankAccountNumber.replace(/\D/g, '');
                   if (!/^\d{9,18}$/.test(accountDigits)) {
-                    alert('Account number must be 9 to 18 digits');
+                    appAlert('Account number must be 9 to 18 digits');
                     return;
                   }
                   if (newUser.bankIfscCode.trim().length !== 11) {
-                    alert('IFSC code must be exactly 11 characters');
+                    appAlert('IFSC code must be exactly 11 characters');
                     return;
                   }
                   if (!/^\d{12}$/.test(newUser.aadhaarNumber.replace(/\D/g, ''))) {
-                    alert('Aadhaar number must be exactly 12 digits');
+                    appAlert('Aadhaar number must be exactly 12 digits');
                     return;
                   }
                   try {
@@ -4267,7 +4288,7 @@ export const AdminDashboard: React.FC = () => {
                         isPartialMonth: row.isPartialMonth
                       }))
                     });
-                    alert('User created successfully! Temporary password: tempPassword123');
+                    appAlert('User created successfully! Temporary password: tempPassword123');
                     setNewUser({
                       name: '',
                       username: '',
@@ -4290,7 +4311,7 @@ export const AdminDashboard: React.FC = () => {
                     setIsCreateUserModalOpen(false); // Close modal on success
                     await refreshData();
                   } catch (error: any) {
-                    alert(error.message || 'Failed to create user');
+                    appAlert(error.message || 'Failed to create user');
                   }
                 }} className="space-y-8">
 
@@ -4840,12 +4861,12 @@ export const AdminDashboard: React.FC = () => {
                   }
 
                   await userAPI.updateUser(editingUser.id, updates);
-                  alert('User updated successfully!');
+                  appAlert('User updated successfully!');
                   setEditingUser(null);
                   setEditUserForm({ name: '', email: '', department: '', joiningDate: '', bonds: [], aadhaarNumber: '', guardianName: '', mobileNumber: '', guardianMobileNumber: '' });
                   await refreshData();
                 } catch (error: any) {
-                  alert(error.message || 'Failed to update user');
+                  appAlert(error.message || 'Failed to update user');
                 }
               }} className="space-y-4">
                 <div>
@@ -5302,7 +5323,7 @@ export const AdminDashboard: React.FC = () => {
                     <button
                       onClick={async () => {
                         if (!deductionAmount || parseFloat(deductionAmount) <= 0) {
-                          alert('Please enter a valid deduction amount');
+                          appAlert('Please enter a valid deduction amount');
                           return;
                         }
 
@@ -5325,14 +5346,14 @@ export const AdminDashboard: React.FC = () => {
                               salaryBreakdown: updatedBreakdown
                             });
 
-                            alert(`Successfully deducted ₹${deductionAmount}. New salary: ₹${newSalary}`);
+                            appAlert(`Successfully deducted ₹${deductionAmount}. New salary: ₹${newSalary}`);
                             setDeductSalaryUser(null);
                             await refreshData();
                           } else {
-                            alert(`No salary record found for ${new Date(2000, deductSalaryMonth - 1, 1).toLocaleString('default', { month: 'long' })} ${deductSalaryYear}. Please ensure salary breakdown exists before deducting.`);
+                            appAlert(`No salary record found for ${new Date(2000, deductSalaryMonth - 1, 1).toLocaleString('default', { month: 'long' })} ${deductSalaryYear}. Please ensure salary breakdown exists before deducting.`);
                           }
                         } catch (error: any) {
-                          alert(error.message || 'Failed to deduct salary');
+                          appAlert(error.message || 'Failed to deduct salary');
                         }
                       }}
                       className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 text-white hover:bg-red-700 shadow-md"

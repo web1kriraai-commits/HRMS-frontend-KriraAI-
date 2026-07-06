@@ -3,6 +3,7 @@ import { SystemSettings } from '../types';
 import { Button } from './ui/Button';
 import { formatCheckoutTimeLabel, parseCheckoutTime, getDateStrInTimezone } from '../services/utils';
 import { Trash2 } from 'lucide-react';
+import { appAlert } from '../services/appAlert';
 
 type Props = {
   systemSettings: SystemSettings;
@@ -32,9 +33,9 @@ export const CheckoutTimeSettings: React.FC<Props> = ({ systemSettings, updateSy
     setSaving(true);
     try {
       await updateSystemSettings({ defaultCheckoutTime: defaultTime });
-      alert('Default checkout time saved.');
+      appAlert('Default checkout time saved.');
     } catch (e: any) {
-      alert(e.message || 'Failed to save');
+      appAlert(e.message || 'Failed to save');
     } finally {
       setSaving(false);
     }
@@ -42,7 +43,7 @@ export const CheckoutTimeSettings: React.FC<Props> = ({ systemSettings, updateSy
 
   const handleSetOverride = async () => {
     if (!overrideDate) {
-      alert('Please select a date.');
+      appAlert('Please select a date.');
       return;
     }
     setSaving(true);
@@ -50,12 +51,12 @@ export const CheckoutTimeSettings: React.FC<Props> = ({ systemSettings, updateSy
       await updateSystemSettings({
         setCheckoutOverride: { date: overrideDate, time: overrideTime }
       });
-      alert(
+      appAlert(
         `Checkout for ${overrideDate} set to ${overrideTime}. All employees can check out after that time. Low time will not be counted for that day.`
       );
       setOverrideDate('');
     } catch (e: any) {
-      alert(e.message || 'Failed to save override');
+      appAlert(e.message || 'Failed to save override');
     } finally {
       setSaving(false);
     }
@@ -67,7 +68,7 @@ export const CheckoutTimeSettings: React.FC<Props> = ({ systemSettings, updateSy
     try {
       await updateSystemSettings({ removeCheckoutOverrideDate: date });
     } catch (e: any) {
-      alert(e.message || 'Failed to remove');
+      appAlert(e.message || 'Failed to remove');
     } finally {
       setSaving(false);
     }

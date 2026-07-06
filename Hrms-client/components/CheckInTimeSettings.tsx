@@ -3,6 +3,7 @@ import { SystemSettings } from '../types';
 import { Button } from './ui/Button';
 import { formatCheckoutTimeLabel, parseCheckInTime, getDateStrInTimezone } from '../services/utils';
 import { Trash2 } from 'lucide-react';
+import { appAlert } from '../services/appAlert';
 
 type Props = {
   systemSettings: SystemSettings;
@@ -32,9 +33,9 @@ export const CheckInTimeSettings: React.FC<Props> = ({ systemSettings, updateSys
     setSaving(true);
     try {
       await updateSystemSettings({ defaultCheckInTime: defaultTime });
-      alert('Default check-in time saved.');
+      appAlert('Default check-in time saved.');
     } catch (e: any) {
-      alert(e.message || 'Failed to save');
+      appAlert(e.message || 'Failed to save');
     } finally {
       setSaving(false);
     }
@@ -42,7 +43,7 @@ export const CheckInTimeSettings: React.FC<Props> = ({ systemSettings, updateSys
 
   const handleSetOverride = async () => {
     if (!overrideDate) {
-      alert('Please select a date.');
+      appAlert('Please select a date.');
       return;
     }
     setSaving(true);
@@ -50,12 +51,12 @@ export const CheckInTimeSettings: React.FC<Props> = ({ systemSettings, updateSys
       await updateSystemSettings({
         setCheckInOverride: { date: overrideDate, time: overrideTime }
       });
-      alert(
+      appAlert(
         `Check-in for ${overrideDate} set to ${overrideTime}. All employees can check in from that time on that day.`
       );
       setOverrideDate(companyToday);
     } catch (e: any) {
-      alert(e.message || 'Failed to save override');
+      appAlert(e.message || 'Failed to save override');
     } finally {
       setSaving(false);
     }
@@ -67,7 +68,7 @@ export const CheckInTimeSettings: React.FC<Props> = ({ systemSettings, updateSys
     try {
       await updateSystemSettings({ removeCheckInOverrideDate: date });
     } catch (e: any) {
-      alert(e.message || 'Failed to remove');
+      appAlert(e.message || 'Failed to remove');
     } finally {
       setSaving(false);
     }

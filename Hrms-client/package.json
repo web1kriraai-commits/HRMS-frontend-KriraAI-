@@ -10,6 +10,8 @@
     "test:checkin-window": "node scripts/test-earliest-checkin.mjs"
   },
   "dependencies": {
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
     "lucide-react": "^0.554.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

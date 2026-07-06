@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useMemo } from 'react';
 import { User, Attendance, LeaveRequest, Role, LeaveStatus, Break, BreakType, AuthState, CompanyHoliday, Notification, LeaveCategory, SystemSettings } from '../types';
-import { downloadCSV, formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isLateCheckIn, isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
+import { downloadCSV, formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isLateCheckIn, isPenaltyEffective, calculateLatenessPenaltySeconds, resolveLatePenaltyStartTime, DEFAULT_LATE_PENALTY_START_TIME } from '../services/utils';
 import * as api from '../services/api';
 import { FULL_REFRESH_SCOPE, RefreshScope, getRefreshScopeForPath } from './routeRefreshScopes';
 
@@ -67,6 +67,8 @@ interface AppContextType {
   requestEarlyOvertime: (reason: string, durationMinutes: number, date?: string) => Promise<void>;
   requestManagementOvertime: (reason: string, durationMinutes: number, date?: string) => Promise<void>;
   reviewManagementOvertime: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
+  requestEarlyOtRepayment: (reason: string, durationMinutes: number, date?: string) => Promise<void>;
+  reviewEarlyOtRepayment: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
   
   // Refresh functions
   refreshData: (silent?: boolean, scope?: RefreshScope | 'full') => Promise<void>;
@@ -129,8 +131,9 @@ const transformUser = (apiUser: any): User => ({
 });
 
 // Helper to transform API attendance to frontend Attendance type
-const transformAttendance = (apiAttendance: any): Attendance => {
-  const late = isLateCheckIn(apiAttendance.checkIn);
+const transformAttendance = (apiAttendance: any, latePenaltyStartTime?: string): Attendance => {
+  const penaltyCutoff = latePenaltyStartTime || DEFAULT_LATE_PENALTY_START_TIME;
+  const late = isLateCheckIn(apiAttendance.checkIn, penaltyCutoff);
   const penaltyEffective = isPenaltyEffective(apiAttendance.date);
   const penaltyDisabled = !!apiAttendance.isPenaltyDisabled;
 
@@ -140,7 +143,7 @@ const transformAttendance = (apiAttendance: any): Attendance => {
     ? 0
     : (apiAttendance.penaltySeconds && apiAttendance.penaltySeconds > 0)
       ? apiAttendance.penaltySeconds
-      : (late && penaltyEffective ? calculateLatenessPenaltySeconds(apiAttendance.checkIn) : 0);
+      : (late && penaltyEffective ? calculateLatenessPenaltySeconds(apiAttendance.checkIn, penaltyCutoff) : 0);
 
   return {
     id: apiAttendance.id || apiAttendance._id,
@@ -203,7 +206,13 @@ const transformAttendance = (apiAttendance: any): Attendance => {
         status: eo.status || 'None'
       };
     })(),
-    overtimeRequest: apiAttendance.overtimeRequest
+    overtimeRequest: apiAttendance.overtimeRequest,
+    earlyOvertimeRepayment: apiAttendance.earlyOvertimeRepayment ?? {
+      requestedMinutes: 0,
+      reason: '',
+      status: 'None',
+      appliedMinutes: 0
+    }
   };
 };
 
@@ -265,7 +274,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     defaultCheckInTime: '08:30',
     checkInTimeOverrides: {},
     defaultCheckoutTime: '17:30',
-    checkoutTimeOverrides: {}
+    checkoutTimeOverrides: {},
+    latePenaltyStartTime: '09:00'
   });
   const [loading, setLoading] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -399,7 +409,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 defaultCheckInTime: settingsData?.defaultCheckInTime || '08:30',
                 checkInTimeOverrides: settingsData?.checkInTimeOverrides || {},
                 defaultCheckoutTime: settingsData?.defaultCheckoutTime || '17:30',
-                checkoutTimeOverrides: settingsData?.checkoutTimeOverrides || {}
+                checkoutTimeOverrides: settingsData?.checkoutTimeOverrides || {},
+                latePenaltyStartTime: settingsData?.latePenaltyStartTime || '09:00'
               });
             })
         );
@@ -749,7 +760,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         defaultCheckInTime: data.defaultCheckInTime || '08:30',
         checkInTimeOverrides: data.checkInTimeOverrides || {},
         defaultCheckoutTime: data.defaultCheckoutTime || '17:30',
-        checkoutTimeOverrides: data.checkoutTimeOverrides || {}
+        checkoutTimeOverrides: data.checkoutTimeOverrides || {},
+        latePenaltyStartTime: data.latePenaltyStartTime || '09:00'
       });
       await refreshData(); // Refresh audit logs
     } catch (error) {
@@ -822,6 +834,38 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const requestEarlyOtRepayment = async (reason: string, durationMinutes: number, date?: string): Promise<void> => {
+    try {
+      const data = await api.attendanceAPI.requestEarlyOtRepayment(reason, durationMinutes, date);
+      const transformed = transformAttendance(data);
+      setAttendanceRecords(prev => {
+        const idx = prev.findIndex(r => r.id === transformed.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = transformed;
+          return next;
+        }
+        return [transformed, ...prev];
+      });
+    } catch (error) {
+      console.error('Request early OT repayment error:', error);
+      throw error;
+    }
+  };
+
+  const reviewEarlyOtRepayment = async (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string): Promise<void> => {
+    try {
+      const data = await api.attendanceAPI.reviewEarlyOtRepayment(recordId, status, adminNote);
+      setAttendanceRecords(prev => prev.map(r =>
+        r.id === recordId ? transformAttendance(data) : r
+      ));
+      await refreshData(true);
+    } catch (error) {
+      console.error('Review early OT repayment error:', error);
+      throw error;
+    }
+  };
+
   const exportReports = async (filters?: { start?: string; end?: string; department?: string }): Promise<void> => {
     try {
       const data = await api.reportAPI.exportAttendanceReport({
@@ -882,6 +926,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       requestEarlyOvertime,
       requestManagementOvertime,
       reviewManagementOvertime,
+      requestEarlyOtRepayment,
+      reviewEarlyOtRepayment,
       refreshData,
       refreshForRoute
     }}>

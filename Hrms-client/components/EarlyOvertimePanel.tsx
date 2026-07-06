@@ -5,6 +5,7 @@ import { Card } from './ui/Card';
 import { Button } from './ui/Button';
 import * as api from '../services/api';
 import { Role } from '../types';
+import { appAlert } from '../services/appAlert';
 
 export interface PendingEarlyOT {
   id: string;
@@ -92,7 +93,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
       await loadPending();
       await refreshData(true);
     } catch (error: any) {
-      alert(error.message || 'Failed to process early OT request');
+      appAlert(error.message || 'Failed to process early OT request');
     } finally {
       setSubmittingId(null);
     }
