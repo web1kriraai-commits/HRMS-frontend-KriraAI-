@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
-import { User, Mail, Building2, Calendar, CreditCard, UserCircle, Phone, FileText, Eye, EyeOff, DollarSign } from 'lucide-react';
+import { User, Mail, Building2, Calendar, CreditCard, UserCircle, Phone, FileText, Landmark, AtSign, BadgeCheck } from 'lucide-react';
 import { formatDate, calculateBondRemaining } from '../services/utils';
 
 export const Profile: React.FC = () => {
@@ -37,6 +37,9 @@ export const Profile: React.FC = () => {
         ? user.salaryBreakdown[user.salaryBreakdown.length - 1].endDate
         : null;
 
+    const displayValue = (value?: string | null) => value?.trim() || 'Not Provided';
+    const hasValue = (value?: string | null) => Boolean(value?.trim());
+
     return (
         <div className="space-y-6 animate-fade-in">
             <div className="flex items-center justify-between">
@@ -53,6 +56,26 @@ export const Profile: React.FC = () => {
                         <div>
                             <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Full Name</p>
                             <p className="text-base font-medium text-gray-900 mt-1">{user.name}</p>
+                        </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                        <div className="h-10 w-10 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
+                            <AtSign className="text-slate-600" size={20} />
+                        </div>
+                        <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Username</p>
+                            <p className="text-base font-medium text-gray-900 mt-1">{user.username}</p>
+                        </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                        <div className="h-10 w-10 rounded-lg bg-violet-100 flex items-center justify-center flex-shrink-0">
+                            <BadgeCheck className="text-violet-600" size={20} />
+                        </div>
+                        <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Role</p>
+                            <p className="text-base font-medium text-gray-900 mt-1">{user.role}</p>
                         </div>
                     </div>
 
@@ -89,13 +112,25 @@ export const Profile: React.FC = () => {
                     </div>
 
                     <div className="flex items-start gap-3">
+                        <div className="h-10 w-10 rounded-lg bg-teal-100 flex items-center justify-center flex-shrink-0">
+                            <Phone className="text-teal-600" size={20} />
+                        </div>
+                        <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Mobile Number</p>
+                            <p className={`text-base font-medium mt-1 ${hasValue(user.mobileNumber) ? 'text-gray-900' : 'text-gray-400 italic'}`}>
+                                {displayValue(user.mobileNumber)}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
                         <div className="h-10 w-10 rounded-lg bg-red-100 flex items-center justify-center flex-shrink-0">
                             <CreditCard className="text-red-600" size={20} />
                         </div>
                         <div>
                             <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Aadhaar Number</p>
-                            <p className={`text-base font-medium mt-1 ${user.aadhaarNumber ? 'text-gray-900' : 'text-gray-400 italic'}`}>
-                                {user.aadhaarNumber || 'Not Provided'}
+                            <p className={`text-base font-medium mt-1 ${hasValue(user.aadhaarNumber) ? 'text-gray-900' : 'text-gray-400 italic'}`}>
+                                {displayValue(user.aadhaarNumber)}
                             </p>
                         </div>
                     </div>
@@ -106,20 +141,8 @@ export const Profile: React.FC = () => {
                         </div>
                         <div>
                             <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Guardian Name</p>
-                            <p className={`text-base font-medium mt-1 ${user.guardianName ? 'text-gray-900' : 'text-gray-400 italic'}`}>
-                                {user.guardianName || 'Not Provided'}
-                            </p>
-                        </div>
-                    </div>
-
-                    <div className="flex items-start gap-3">
-                        <div className="h-10 w-10 rounded-lg bg-teal-100 flex items-center justify-center flex-shrink-0">
-                            <Phone className="text-teal-600" size={20} />
-                        </div>
-                        <div>
-                            <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Mobile Number</p>
-                            <p className={`text-base font-medium mt-1 ${user.mobileNumber ? 'text-gray-900' : 'text-gray-400 italic'}`}>
-                                {user.mobileNumber || 'Not Provided'}
+                            <p className={`text-base font-medium mt-1 ${hasValue(user.guardianName) ? 'text-gray-900' : 'text-gray-400 italic'}`}>
+                                {displayValue(user.guardianName)}
                             </p>
                         </div>
                     </div>
@@ -130,8 +153,61 @@ export const Profile: React.FC = () => {
                         </div>
                         <div>
                             <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Guardian Mobile Number</p>
-                            <p className={`text-base font-medium mt-1 ${user.guardianMobileNumber ? 'text-gray-900' : 'text-gray-400 italic'}`}>
-                                {user.guardianMobileNumber || 'Not Provided'}
+                            <p className={`text-base font-medium mt-1 ${hasValue(user.guardianMobileNumber) ? 'text-gray-900' : 'text-gray-400 italic'}`}>
+                                {displayValue(user.guardianMobileNumber)}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </Card>
+
+            {/* Bank Details Card */}
+            <Card title="Bank Details">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="flex items-start gap-3">
+                        <div className="h-10 w-10 rounded-lg bg-blue-100 flex items-center justify-center flex-shrink-0">
+                            <User className="text-blue-600" size={20} />
+                        </div>
+                        <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Employee Full Name (as per checkbook)</p>
+                            <p className={`text-base font-medium mt-1 ${hasValue(user.bankAccountHolderName) ? 'text-gray-900' : 'text-gray-400 italic'}`}>
+                                {displayValue(user.bankAccountHolderName)}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                        <div className="h-10 w-10 rounded-lg bg-emerald-100 flex items-center justify-center flex-shrink-0">
+                            <Landmark className="text-emerald-600" size={20} />
+                        </div>
+                        <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Bank Name</p>
+                            <p className={`text-base font-medium mt-1 ${hasValue(user.bankName) ? 'text-gray-900' : 'text-gray-400 italic'}`}>
+                                {displayValue(user.bankName)}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                        <div className="h-10 w-10 rounded-lg bg-amber-100 flex items-center justify-center flex-shrink-0">
+                            <CreditCard className="text-amber-600" size={20} />
+                        </div>
+                        <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Account Number</p>
+                            <p className={`text-base font-medium mt-1 ${hasValue(user.bankAccountNumber) ? 'text-gray-900 font-mono' : 'text-gray-400 italic'}`}>
+                                {displayValue(user.bankAccountNumber)}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                        <div className="h-10 w-10 rounded-lg bg-cyan-100 flex items-center justify-center flex-shrink-0">
+                            <FileText className="text-cyan-600" size={20} />
+                        </div>
+                        <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">IFSC Code</p>
+                            <p className={`text-base font-medium mt-1 ${hasValue(user.bankIfscCode) ? 'text-gray-900 font-mono uppercase' : 'text-gray-400 italic'}`}>
+                                {displayValue(user.bankIfscCode)}
                             </p>
                         </div>
                     </div>

@@ -3,11 +3,15 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { Role, LeaveCategory, LeaveStatus, User, Attendance } from '../types';
-import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft } from 'lucide-react';
-import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate } from '../services/utils';
+import { CheckoutTimeSettings } from '../components/CheckoutTimeSettings';
+import { CheckInTimeSettings } from '../components/CheckInTimeSettings';
+import { Role, LeaveCategory, LeaveStatus, User, Attendance, AuditLog } from '../types';
+import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft, Search, ArrowUp, ArrowDown, Landmark } from 'lucide-react';
+import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
-import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI } from '../services/api';
+import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI, auditAPI } from '../services/api';
+import { ManagementOvertimePanel } from '../components/ManagementOvertimePanel';
+import { EarlyOvertimePanel } from '../components/EarlyOvertimePanel';
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
 const formatHoursToHoursMinutes = (hours: number) => {
@@ -26,7 +30,7 @@ const formatHoursToHoursMinutes = (hours: number) => {
 };
 
 export const AdminDashboard: React.FC = () => {
-  const { auth, users, auditLogs, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, notifications, leaveRequests, updateUser, updateLeaveStatus, deleteAttendance, updateLeaveRequest, deleteLeaveRequest, updateHoliday, deleteHoliday, adminUpdateAttendance, pendingOvertimeRequests, reviewOvertime } = useApp();
+  const { auth, users, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, refreshForRoute, loading, notifications, leaveRequests, updateUser, updateLeaveStatus, deleteAttendance, updateLeaveRequest, deleteLeaveRequest, updateHoliday, deleteHoliday, adminUpdateAttendance } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'consolidated' | 'summary' | 'users' | 'audit' | 'reports' | 'settings' | 'guidance' | 'bonds' | 'overtime'>(
@@ -53,8 +57,60 @@ export const AdminDashboard: React.FC = () => {
   }, [location.pathname, location.state, navigate]);
 
   // Pagination for Users table
-  const USERS_PER_PAGE = 10;
+  const USERS_PER_PAGE = 15;
   const [userPage, setUserPage] = useState(1);
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [userSortField, setUserSortField] = useState<'name' | 'joiningDate' | null>(null);
+  const [userSortDir, setUserSortDir] = useState<'asc' | 'desc'>('asc');
+
+  // Server-side audit logs
+  const AUDIT_LOGS_PER_PAGE = 10;
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditTotalPages, setAuditTotalPages] = useState(1);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const transformAuditLog = (apiLog: any): AuditLog => ({
+    id: apiLog.id || apiLog._id,
+    actorId: apiLog.actorId?.id || apiLog.actorId?._id || apiLog.actorId,
+    actorName: apiLog.actorName,
+    action: apiLog.action,
+    targetType: apiLog.targetType,
+    targetId: apiLog.targetId,
+    beforeData: apiLog.beforeData,
+    afterData: apiLog.afterData,
+    details: apiLog.details,
+    timestamp: apiLog.timestamp || apiLog.createdAt || apiLog.created_at,
+  });
+
+  useEffect(() => {
+    if (activeTab !== 'audit') return;
+
+    const timer = setTimeout(async () => {
+      setAuditLoading(true);
+      try {
+        const response = await auditAPI.getAuditLogs({
+          page: auditPage,
+          limit: AUDIT_LOGS_PER_PAGE,
+          search: auditSearch,
+        });
+        setAuditLogs((response.logs || []).map(transformAuditLog));
+        setAuditTotal(response.total ?? 0);
+        setAuditTotalPages(response.totalPages ?? 1);
+      } catch (error) {
+        console.error('Failed to load audit logs:', error);
+        setAuditLogs([]);
+        setAuditTotal(0);
+        setAuditTotalPages(1);
+      } finally {
+        setAuditLoading(false);
+      }
+    }, auditSearch ? 300 : 0);
+
+    return () => clearTimeout(timer);
+  }, [activeTab, auditPage, auditSearch]);
 
   // Bond Management states
   const [bondSearchTerm, setBondSearchTerm] = useState('');
@@ -72,7 +128,11 @@ export const AdminDashboard: React.FC = () => {
     aadhaarNumber: '',
     guardianName: '',
     mobileNumber: '',
-    guardianMobileNumber: ''
+    guardianMobileNumber: '',
+    bankName: '',
+    bankAccountHolderName: '',
+    bankAccountNumber: '',
+    bankIfscCode: ''
   });
   const [salaryBreakdownRows, setSalaryBreakdownRows] = useState<SalaryBreakdownRow[]>([]);
   const [salaryBreakdownData, setSalaryBreakdownData] = useState<{ [key: string]: number }>({});
@@ -237,7 +297,7 @@ export const AdminDashboard: React.FC = () => {
           id: `virtual-absent-${dateStr}`,
           userId: selectedUserId,
           date: dateStr,
-          status: 'Absent',
+          status: 'Unpaid Leave',
           totalWorkedSeconds: 0,
           isVirtual: true,
           isPenaltyDisabled: false
@@ -249,17 +309,56 @@ export const AdminDashboard: React.FC = () => {
     return finalRecords.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   }, [attendanceRecords, selectedUserId, selectedMonth, leaveRequests, holidayDateSet, selectedUser]);
 
-  // Pagination logic for All Users table
-  const totalUserPages = Math.max(1, Math.ceil(users.length / USERS_PER_PAGE));
+  // Filter + pagination for All Users table
+  const filteredUsers = useMemo(() => {
+    const q = userSearchQuery.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter(u =>
+      u.name.toLowerCase().includes(q) ||
+      (u.email || '').toLowerCase().includes(q) ||
+      (u.username || '').toLowerCase().includes(q) ||
+      (u.department || '').toLowerCase().includes(q) ||
+      u.role.toLowerCase().includes(q)
+    );
+  }, [users, userSearchQuery]);
+
+  const sortedFilteredUsers = useMemo(() => {
+    if (!userSortField) return filteredUsers;
+    const list = [...filteredUsers];
+    const joinTs = (u: User) => {
+      if (!u.joiningDate) return null;
+      return parseDDMMYYYY(u.joiningDate)?.getTime() ?? null;
+    };
+    list.sort((a, b) => {
+      let cmp = 0;
+      if (userSortField === 'name') {
+        cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      } else {
+        const ta = joinTs(a);
+        const tb = joinTs(b);
+        if (ta === null && tb === null) cmp = 0;
+        else if (ta === null) cmp = 1;
+        else if (tb === null) cmp = -1;
+        else cmp = ta - tb;
+      }
+      return userSortDir === 'asc' ? cmp : -cmp;
+    });
+    return list;
+  }, [filteredUsers, userSortField, userSortDir]);
+
+  const totalUserPages = Math.max(1, Math.ceil(sortedFilteredUsers.length / USERS_PER_PAGE));
   const paginatedUsers = useMemo(() => {
     const start = (userPage - 1) * USERS_PER_PAGE;
-    return users.slice(start, start + USERS_PER_PAGE);
-  }, [users, userPage]);
+    return sortedFilteredUsers.slice(start, start + USERS_PER_PAGE);
+  }, [sortedFilteredUsers, userPage]);
 
-  // Reset user page if users count changes significantly
+  useEffect(() => {
+    setUserPage(1);
+  }, [userSearchQuery, userSortField, userSortDir]);
+
   useEffect(() => {
     if (userPage > totalUserPages) setUserPage(Math.max(1, totalUserPages));
-  }, [users.length, totalUserPages, userPage]);
+  }, [sortedFilteredUsers.length, totalUserPages, userPage]);
 
   // Get leaves for selected user in selected month
   const monthlyLeaves = useMemo(() => {
@@ -727,72 +826,50 @@ export const AdminDashboard: React.FC = () => {
       
       const record = recordsMap.get(dateStr);
       let netWorkedSeconds = record ? (record.totalWorkedSeconds || 0) : 0;
-      
-      // If it's a real record or it's a working day (or holiday) that should be counted
-      if (record || (!leaveDates.has(dateStr) && dayOfWeek !== 0)) {
-        // Holiday rule: all worked time is overtime, never low time
+
+      if (dayOfWeek === 0) {
+        iter.setDate(iter.getDate() + 1);
+        continue;
+      }
+
+      const leaveCredit = (user && typeof user !== 'string')
+        ? getLeaveDayCredit(dateStr, user.id, monthLeaves, holidayDateSet, {
+            hasAttendance: Boolean(record?.checkIn),
+            treatAbsentAsUnpaidLeave: true,
+            todayStr
+          })
+        : { creditSeconds: 0, isFullDayLeave: false, isHalfDayLeave: false, isImplicitUnpaid: false, skipLowTime: false, category: null };
+
+      netWorkedSeconds = applyLeaveCreditToWorkedSeconds(netWorkedSeconds, leaveCredit);
+
+      if (record || leaveCredit.creditSeconds > 0 || !leaveDates.has(dateStr)) {
         if (isHolidayDay) {
           if (netWorkedSeconds > 0) totalExtraTimeSeconds += netWorkedSeconds;
         } else {
-          // Check for approved Extra Time Leave to add to net worked time
-          const extraTimeLeaveForDate = monthLeaves.find(leave => {
-            const status = (leave.status || '').trim();
-            if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
-            if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
-            const start = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : leave.startDate;
-            const end = typeof leave.endDate === 'string' ? leave.endDate.split('T')[0] : leave.endDate;
-            return dateStr >= start && dateStr <= end;
-          });
-
-          if (extraTimeLeaveForDate) {
-             const leaveHours = extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime 
-               ? calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime)
-               : 8.25;
-             netWorkedSeconds += leaveHours * 3600;
-          }
-
-          // Check for Half Day Leave
-          const hasHalfDay = leaveDates.has(dateStr) && monthLeaves.some(l => 
-            l.category === LeaveCategory.HALF_DAY && 
-            (l.startDate === dateStr || l.endDate === dateStr || (new Date(dateStr) >= new Date(l.startDate) && new Date(dateStr) <= new Date(l.endDate)))
-          );
+          const hasHalfDay = leaveCredit.isHalfDayLeave;
 
           const approvedOT = (record?.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
-          const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay, approvedOT, dateStr);
-          
-          // Count late penalties and absence penalties
-          if (!isHolidayDay && !record?.isPenaltyDisabled) {
-              if (record?.lateCheckIn && record.penaltySeconds && !hasHalfDay) {
-                  totalPenaltySeconds += record.penaltySeconds;
-                  penaltyCount++;
-              }
-              // Absence penalty for unexcused absence
-              // Sync: Include today in deficit calculation if record exists or if it's past day
-              const absenceStart = typeof user === 'string' ? ABSENCE_PENALTY_EFFECTIVE_DATE : getAbsenceStartDate(user, firstCheckInDate);
-              if ((!record || netWorkedSeconds === 0) && !leaveDates.has(dateStr) && dayOfWeek !== 0 && dateStr >= absenceStart && dateStr < todayStr) {
-                  totalPenaltySeconds += 29700; // 8h 15m penalty
-                  penaltyCount++;
-              }
+          const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(
+            netWorkedSeconds,
+            hasHalfDay,
+            isHolidayDay,
+            approvedOT,
+            dateStr,
+            systemSettings,
+            leaveCredit.skipLowTime || Boolean(record?.isVirtual)
+          );
+
+          if (!isHolidayDay && record && !record.isPenaltyDisabled) {
+            if (record.lateCheckIn && record.penaltySeconds && !hasHalfDay) {
+              totalPenaltySeconds += record.penaltySeconds;
+              penaltyCount++;
+            }
           }
 
-          if (!record || netWorkedSeconds === 0) {
-            // Absence Deficit: only apply if on or after effective date
-            // AND strictly before today (don't mark today as absent before it's over)
-            // If it's a real record but missing checkOut, treat as IN PROGRESS and ignore
-            const isNoRecord = !record;
-            const absenceStart = typeof user === 'string' ? ABSENCE_PENALTY_EFFECTIVE_DATE : getAbsenceStartDate(user);
-            if (dateStr >= absenceStart && dateStr < todayStr && (isNoRecord || (record && record.checkOut))) {
-              totalLowTimeSeconds += lowTimeSeconds;
-            }
-          } else {
-            // Only count low time if finalized (has checkOut).
-            // This prevents "In Progress" sessions (today or past missed checkouts) 
-            // from showing a full deficit.
-            if (record.checkOut) {
-              totalLowTimeSeconds += lowTimeSeconds;
-            }
-            totalExtraTimeSeconds += extraTimeSeconds;
+          if (record?.checkOut && !leaveCredit.skipLowTime && !record?.isVirtual) {
+            totalLowTimeSeconds += lowTimeSeconds;
           }
+          totalExtraTimeSeconds += extraTimeSeconds;
         }
       }
       iter.setDate(iter.getDate() + 1);
@@ -978,7 +1055,14 @@ export const AdminDashboard: React.FC = () => {
 
         // Use unified calculation utility
         const approvedOT = (record.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
-        const { lowTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay, approvedOT, recordDateISO);
+        const { lowTimeSeconds } = calculateDailyTimeStats(
+          netWorkedSeconds,
+          hasHalfDay,
+          isHolidayDay,
+          approvedOT,
+          recordDateISO,
+          systemSettings
+        );
         totalLowTimeSeconds += lowTimeSeconds;
       }
     });
@@ -1027,10 +1111,11 @@ export const AdminDashboard: React.FC = () => {
     // Use same rule as employee dashboard: stored totalWorkedSeconds and same leave-matching (date-in-range)
     monthlyAttendance.forEach(record => {
       // Changed to >= 0 to include virtual absent records and zero-work days
-      if ((record.totalWorkedSeconds || 0) >= 0 || (record.checkIn && !record.checkOut)) {
+        if ((record.totalWorkedSeconds || 0) >= 0 || (record.checkIn && !record.checkOut)) {
         if (!record.isVirtual) daysPresent++;
         const netWorkedRaw = record.totalWorkedSeconds || 0;
         totalWorkedSeconds += netWorkedRaw;
+        totalBreakSeconds += getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
 
         const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
         const isHolidayDay = holidayDateSet.has(recordDateISO as string);
@@ -1040,62 +1125,32 @@ export const AdminDashboard: React.FC = () => {
           return;
         }
 
-        // Match extra time leave when record date is within leave range (same as employee dashboard)
-        const extraTimeLeaveForDate = approvedLeaves.find(leave => {
-          if (leave.userId !== record.userId) return false;
-          if (leave.category !== LeaveCategory.EXTRA_TIME && !(leave.category === LeaveCategory.HALF_DAY && leave.reason?.includes('[Extra Time Leave]'))) return false;
-          const leaveStart = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : new Date(leave.startDate).toISOString().split('T')[0];
-          const leaveEnd = typeof leave.endDate === 'string' ? leave.endDate.split('T')[0] : new Date(leave.endDate).toISOString().split('T')[0];
-          return recordDateISO >= leaveStart && recordDateISO <= leaveEnd;
-        });
-        let netWorkedSeconds = netWorkedRaw;
-        if (extraTimeLeaveForDate) {
-          if (extraTimeLeaveForDate.category === LeaveCategory.HALF_DAY) {
-            netWorkedSeconds += 4 * 3600; // half-day extra time leave = 4 hours (same as employee)
-          } else if (extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
-            const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
-            netWorkedSeconds += leaveHours * 3600;
-          } else {
-            netWorkedSeconds += 8.25 * 3600;
-          }
-        }
+        const leaveCredit = selectedUser
+          ? getLeaveDayCredit(recordDateISO, selectedUser.id, approvedLeaves, holidayDateSet, {
+              hasAttendance: Boolean(record.checkIn),
+              treatAbsentAsUnpaidLeave: true,
+              todayStr
+            })
+          : { creditSeconds: 0, isFullDayLeave: false, isHalfDayLeave: false, isImplicitUnpaid: false, skipLowTime: false, category: null };
 
-        // Half-day: match by exact date (same as employee dashboard)
-        const hasHalfDay = approvedLeaves.some(leave => {
-          if (leave.userId !== record.userId || leave.category !== LeaveCategory.HALF_DAY) return false;
-          if (leave.reason?.includes('[Extra Time Leave]')) return false;
-          const leaveDate = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : new Date(leave.startDate).toISOString().split('T')[0];
-          return leaveDate === recordDateISO;
-        });
+        let netWorkedSeconds = applyLeaveCreditToWorkedSeconds(netWorkedRaw, leaveCredit);
+        const hasHalfDay = leaveCredit.isHalfDayLeave;
 
         const approvedOT = (record.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
-        const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(netWorkedSeconds, hasHalfDay, isHolidayDay, approvedOT, recordDateISO);
-        
-        // ONLY apply low time deficit for absences if on or after effective date
-        if (record.isVirtual || netWorkedSeconds === 0) {
-          // Only apply low time deficit for absences if on or after effective date 
-          // AND strictly before today.
-          // If it's a real record but missing checkOut, treat as IN PROGRESS and ignore.
-          const firstCheckIn = selectedUser ? attendanceRecords
-            .filter(r => r.userId === selectedUser.id && r.checkIn)
-            .sort((a, b) => {
-              const d1 = typeof a.date === 'string' && !a.date.includes('T') ? a.date : getLocalISOString(new Date(a.date));
-              const d2 = typeof b.date === 'string' && !b.date.includes('T') ? b.date : getLocalISOString(new Date(b.date));
-              return d1.localeCompare(d2);
-            })[0]?.date : undefined;
-          const absenceStart = selectedUser ? getAbsenceStartDate(selectedUser, firstCheckIn) : ABSENCE_PENALTY_EFFECTIVE_DATE;
-          if (recordDateISO >= absenceStart && recordDateISO < todayStr && (record.isVirtual || record.checkOut)) {
-            totalLowTimeSeconds += lowTimeSeconds;
-          }
-        } else {
-          // Only count low time if finalized (has checkOut).
-          // This prevents "In Progress" sessions (today or past missed checkouts) 
-          // from showing a full deficit in the monthly summary.
-          if (record.checkOut) {
-            totalLowTimeSeconds += lowTimeSeconds;
-          }
-          totalExtraTimeSeconds += extraTimeSeconds;
+        const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(
+          netWorkedSeconds,
+          hasHalfDay,
+          isHolidayDay,
+          approvedOT,
+          recordDateISO,
+          systemSettings,
+          leaveCredit.skipLowTime || Boolean(record.isVirtual)
+        );
+
+        if (record.checkOut && !leaveCredit.skipLowTime && !record.isVirtual) {
+          totalLowTimeSeconds += lowTimeSeconds;
         }
+        totalExtraTimeSeconds += extraTimeSeconds;
       }
     });
 
@@ -1429,26 +1484,26 @@ export const AdminDashboard: React.FC = () => {
 
       {/* CONSOLIDATED DASHBOARD TAB */}
       {activeTab === 'consolidated' && (
-        <div className="space-y-8">
-          {/* Summary Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-5">
-              <div className="h-14 w-14 rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-600">
-                <Users size={28} />
+        <div className="space-y-5">
+          {/* Summary Grid — medium KPI cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 w-full">
+            <div className="bg-white px-3.5 py-3 rounded-xl shadow-sm border border-gray-100 flex items-center gap-3 min-w-0">
+              <div className="h-10 w-10 shrink-0 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600">
+                <Users size={20} />
               </div>
-              <div>
-                <p className="text-gray-500 text-sm font-medium">Total Employees</p>
-                <h3 className="text-2xl font-bold text-gray-800">{users.filter(u => u.role !== Role.ADMIN).length}</h3>
+              <div className="min-w-0">
+                <p className="text-gray-500 text-xs font-medium truncate">Total Employees</p>
+                <h3 className="text-xl font-bold text-gray-800">{users.filter(u => u.role !== Role.ADMIN).length}</h3>
               </div>
             </div>
 
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-5">
-              <div className="h-14 w-14 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600">
-                <CheckCircle size={28} />
+            <div className="bg-white px-3.5 py-3 rounded-xl shadow-sm border border-gray-100 flex items-center gap-3 min-w-0">
+              <div className="h-10 w-10 shrink-0 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600">
+                <CheckCircle size={20} />
               </div>
-              <div>
-                <p className="text-gray-500 text-sm font-medium">Today's Presence</p>
-                <h3 className="text-2xl font-bold text-gray-800">
+              <div className="min-w-0">
+                <p className="text-gray-500 text-xs font-medium truncate">Today's Presence</p>
+                <h3 className="text-xl font-bold text-gray-800">
                   {attendanceRecords.filter(r => {
                     const today = getTodayStr();
                     return (typeof r.date === 'string' ? r.date.split('T')[0] : r.date) === today && r.checkIn;
@@ -1457,13 +1512,13 @@ export const AdminDashboard: React.FC = () => {
               </div>
             </div>
 
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-5">
-              <div className="h-14 w-14 rounded-2xl bg-amber-50 flex items-center justify-center text-amber-600">
-                <Clock size={28} />
+            <div className="bg-white px-3.5 py-3 rounded-xl shadow-sm border border-gray-100 flex items-center gap-3 min-w-0">
+              <div className="h-10 w-10 shrink-0 rounded-lg bg-amber-50 flex items-center justify-center text-amber-600">
+                <Clock size={20} />
               </div>
-              <div>
-                <p className="text-gray-500 text-sm font-medium">Today's On Time</p>
-                <h3 className="text-2xl font-bold text-gray-800">
+              <div className="min-w-0">
+                <p className="text-gray-500 text-xs font-medium truncate">Today's On Time</p>
+                <h3 className="text-xl font-bold text-gray-800">
                   {attendanceRecords.filter(r => {
                     const today = getTodayStr();
                     return (typeof r.date === 'string' ? r.date.split('T')[0] : r.date) === today && r.checkIn && !r.lateCheckIn;
@@ -1472,54 +1527,54 @@ export const AdminDashboard: React.FC = () => {
               </div>
             </div>
 
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-5">
-              <div className="h-14 w-14 rounded-2xl bg-rose-50 flex items-center justify-center text-rose-600">
-                <AlertCircle size={28} />
+            <div className="bg-white px-3.5 py-3 rounded-xl shadow-sm border border-gray-100 flex items-center gap-3 min-w-0">
+              <div className="h-10 w-10 shrink-0 rounded-lg bg-rose-50 flex items-center justify-center text-rose-600">
+                <AlertCircle size={20} />
               </div>
-              <div>
-                <p className="text-gray-500 text-sm font-medium">Pending Leaves</p>
-                <h3 className="text-2xl font-bold text-gray-800">{leaveRequests.filter(l => l.status === 'Pending').length}</h3>
+              <div className="min-w-0">
+                <p className="text-gray-500 text-xs font-medium truncate">Pending Leaves</p>
+                <h3 className="text-xl font-bold text-gray-800">{leaveRequests.filter(l => l.status === 'Pending').length}</h3>
               </div>
             </div>
           </div>
 
-          {/* Quick Actions */}
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2">
-              <Activity className="h-5 w-5 text-indigo-600" />
+          {/* Quick Actions — medium action cards */}
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 w-full">
+            <h3 className="text-base font-bold text-gray-800 mb-3 flex items-center gap-2">
+              <Activity className="h-4 w-4 text-indigo-600" />
               Quick Actions
             </h3>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 w-full">
               <button
                 onClick={() => navigate('/admin-users', { state: { openAddUserModal: true } })}
-                className="flex flex-col items-center justify-center p-6 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-700 hover:bg-indigo-100 transition-all gap-3"
+                className="flex flex-col items-center justify-center px-3 py-3.5 rounded-xl bg-indigo-50 border border-indigo-100 text-indigo-700 hover:bg-indigo-100 transition-all gap-1.5"
               >
-                <UserPlus size={24} />
-                <span className="font-bold text-sm">Add User</span>
+                <UserPlus size={20} />
+                <span className="font-semibold text-xs">Add User</span>
               </button>
 
               <button
                 onClick={() => navigate('/holidays', { state: { openAddModal: true } })}
-                className="flex flex-col items-center justify-center p-6 rounded-2xl bg-purple-50 border border-purple-100 text-purple-700 hover:bg-purple-100 transition-all gap-3"
+                className="flex flex-col items-center justify-center px-3 py-3.5 rounded-xl bg-purple-50 border border-purple-100 text-purple-700 hover:bg-purple-100 transition-all gap-1.5"
               >
-                <Calendar size={24} />
-                <span className="font-bold text-sm">Add Holiday</span>
+                <Calendar size={20} />
+                <span className="font-semibold text-xs">Add Holiday</span>
               </button>
 
               <button
                 onClick={() => navigate('/admin-leaves', { state: { openAllocationModal: true } })}
-                className="flex flex-col items-center justify-center p-6 rounded-2xl bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100 transition-all gap-3"
+                className="flex flex-col items-center justify-center px-3 py-3.5 rounded-xl bg-emerald-50 border border-emerald-100 text-emerald-700 hover:bg-emerald-100 transition-all gap-1.5"
               >
-                <DollarSign size={24} />
-                <span className="font-bold text-sm">Allocate Paid Leave</span>
+                <DollarSign size={20} />
+                <span className="font-semibold text-xs">Allocate Paid Leave</span>
               </button>
 
               <button
                 onClick={() => setIsCorrectionModalOpen(true)}
-                className="flex flex-col items-center justify-center p-6 rounded-2xl bg-amber-50 border border-amber-100 text-amber-700 hover:bg-amber-100 transition-all gap-3"
+                className="flex flex-col items-center justify-center px-3 py-3.5 rounded-xl bg-amber-50 border border-amber-100 text-amber-700 hover:bg-amber-100 transition-all gap-1.5"
               >
-                <PenTool size={24} />
-                <span className="font-bold text-sm">Correct Attendance</span>
+                <PenTool size={20} />
+                <span className="font-semibold text-xs">Correct Attendance</span>
               </button>
             </div>
           </div>
@@ -1593,99 +1648,28 @@ export const AdminDashboard: React.FC = () => {
               )}
             </div>
 
-          {/* Pending Overtime Requests */}
-          <div className="bg-white rounded-2xl shadow-sm border border-indigo-100 overflow-hidden mb-6">
-            <div className="px-6 py-5 border-b border-indigo-50 bg-indigo-50/30 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-xl bg-indigo-100 flex items-center justify-center text-indigo-600">
-                  <Clock size={20} />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-gray-800 uppercase tracking-tight">Pending Overtime Requests</h3>
-                  <p className="text-indigo-600/70 text-xs font-bold uppercase tracking-wider">
-                    {pendingOvertimeRequests.length} requests needing verification
-                  </p>
-                </div>
-              </div>
+          </div>
+
+          {/* Pending Management OT — Admin can approve / reject */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
+            <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
+              <h3 className="text-lg font-bold text-gray-800">Pending Management Overtime</h3>
+              <p className="text-gray-500 text-sm">Approve or reject employee management OT requests</p>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50/50 text-gray-400 uppercase text-[10px] font-black tracking-widest">
-                    <th className="px-6 py-4 text-left">Employee</th>
-                    <th className="px-6 py-4 text-left">Date</th>
-                    <th className="px-6 py-4 text-left">Duration</th>
-                    <th className="px-6 py-4 text-left">Reason</th>
-                    <th className="px-6 py-4 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {pendingOvertimeRequests.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-6 py-12 text-center">
-                        <div className="flex flex-col items-center gap-2 opacity-30">
-                          <CheckCircle2 size={40} className="text-gray-400" />
-                          <p className="font-bold text-gray-500 uppercase tracking-widest text-xs">All caught up! No pending requests.</p>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : (
-                    pendingOvertimeRequests.map(record => (
-                      <tr key={record.id} className="hover:bg-indigo-50/20 transition-colors">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-3">
-                            <div className="h-8 w-8 rounded-lg bg-gray-100 flex items-center justify-center text-gray-600 font-bold text-xs">
-                              {users.find(u => u.id === (typeof record.userId === 'string' ? record.userId : record.userId?.id))?.name.charAt(0)}
-                            </div>
-                            <div>
-                              <p className="font-bold text-gray-800">{users.find(u => u.id === (typeof record.userId === 'string' ? record.userId : record.userId?.id))?.name || 'Unknown'}</p>
-                              <p className="text-[10px] text-gray-400 font-bold uppercase">{users.find(u => u.id === (typeof record.userId === 'string' ? record.userId : record.userId?.id))?.department}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <p className="font-bold text-gray-700">{formatDate(record.date)}</p>
-                        </td>
-                        <td className="px-6 py-4">
-                          <span className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-600 font-black text-xs border border-emerald-100">
-                            {record.overtimeRequest?.durationMinutes} MIN
-                          </span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <p className="text-gray-600 text-xs font-medium max-w-xs">{record.overtimeRequest?.reason}</p>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex items-center justify-center gap-2">
-                            <Button
-                              onClick={() => {
-                                if (window.confirm('Approve this overtime request? The duration will be added as extra time.')) {
-                                  reviewOvertime(record.id, 'Approved');
-                                }
-                              }}
-                              className="h-9 px-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg shadow-sm font-bold text-xs flex items-center gap-1.5"
-                            >
-                              <CheckCircle size={14} /> Approve
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              onClick={() => {
-                                if (window.confirm('Reject this overtime request?')) {
-                                  reviewOvertime(record.id, 'Rejected');
-                                }
-                              }}
-                              className="h-9 px-3 border-rose-100 text-rose-500 hover:bg-rose-50 rounded-lg font-bold text-xs"
-                            >
-                              Reject
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+            <div className="p-6">
+              <ManagementOvertimePanel variant="table" showTitle={false} />
             </div>
           </div>
+
+          {/* Pending Early OT — Admin can approve / reject */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
+            <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
+              <h3 className="text-lg font-bold text-gray-800">Pending Early OT</h3>
+              <p className="text-gray-500 text-sm">Approve or reject employee early checkout / early OT requests</p>
+            </div>
+            <div className="p-6">
+              <EarlyOvertimePanel variant="table" showTitle={false} />
+            </div>
           </div>
 
           {/* Monthly Performance Table */}
@@ -1709,6 +1693,7 @@ export const AdminDashboard: React.FC = () => {
                     <th className="px-3 py-3 text-left">Employee</th>
                     <th className="px-2 py-3 text-center">Joined</th>
                     <th className="px-2 py-3 text-center">Worked</th>
+                    <th className="px-2 py-3 text-center text-amber-600">Break</th>
                     <th className="px-1 py-3 text-center">Pres.</th>
                     <th className="px-2 py-3 text-center text-rose-600">Low</th>
                     <th className="px-2 py-3 text-center text-emerald-600">Extra</th>
@@ -1796,6 +1781,12 @@ export const AdminDashboard: React.FC = () => {
                         <td className="px-2 py-3 text-center font-medium whitespace-nowrap">
                           {formatHoursToHoursMinutes(empAttendance.reduce((sum, r) => sum + (r.totalWorkedSeconds || 0), 0) / 3600)}
                         </td>
+                        <td className="px-2 py-3 text-center text-amber-600 font-bold whitespace-nowrap">
+                          {(() => {
+                            const breakSec = empAttendance.reduce((sum, r) => sum + (getBreakSeconds(r.breaks) || 0), 0);
+                            return breakSec > 0 ? formatDuration(breakSec) : '-';
+                          })()}
+                        </td>
                         <td className="px-1 py-3 text-center">
                           <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-bold text-[9px] whitespace-nowrap">
                             {empAttendance.filter(r => (r.totalWorkedSeconds || 0) > 0 || (r.checkIn && r.checkOut)).length}D
@@ -1840,24 +1831,24 @@ export const AdminDashboard: React.FC = () => {
                             >
                               View
                             </button>
-                            {emp.lastForwardedMonth === selectedMonth ? (
-                                <span className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-600 font-bold text-[9px] flex items-center gap-1">
-                                    <CheckCircle size={10} /> Done
-                                </span>
-                            ) : (
-                                <button
-                                    onClick={() => handleForwardOvertime(emp, selectedMonth)}
-                                    disabled={isForwarding || balance.remainingExtraTimeLeaveHours === 0}
-                                    className={`px-2 py-1 rounded-lg font-bold text-[10px] transition-all ${
-                                        balance.remainingExtraTimeLeaveHours === 0 
-                                            ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
-                                            : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'
-                                    }`}
-                                    title={balance.remainingExtraTimeLeaveHours > 0 ? `Forward ${Math.round(balance.remainingExtraTimeLeaveHours * 100) / 100}h to next month` : 'Net deficit will be deducted if forwarded'}
-                                >
-                                    {isForwarding ? '...' : 'Forward'}
-                                </button>
-                            )}
+                              {/* {emp.lastForwardedMonth === selectedMonth ? (
+                                  <span className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-600 font-bold text-[9px] flex items-center gap-1">
+                                      <CheckCircle size={10} /> Done
+                                  </span>
+                              ) : (
+                                  <button
+                                      onClick={() => handleForwardOvertime(emp, selectedMonth)}
+                                      disabled={isForwarding || balance.remainingExtraTimeLeaveHours === 0}
+                                      className={`px-2 py-1 rounded-lg font-bold text-[10px] transition-all ${
+                                          balance.remainingExtraTimeLeaveHours === 0 
+                                              ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
+                                              : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'
+                                      }`}
+                                      title={balance.remainingExtraTimeLeaveHours > 0 ? `Forward ${Math.round(balance.remainingExtraTimeLeaveHours * 100) / 100}h to next month` : 'Net deficit will be deducted if forwarded'}
+                                  >
+                                      {isForwarding ? '...' : 'Forward'}
+                                  </button>
+                              )} */}
                           </div>
                         </td>
                       </tr>
@@ -2085,7 +2076,7 @@ export const AdminDashboard: React.FC = () => {
               )}
 
               {/* Stats Grid - Matching Image 2 */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
                 {/* Days Present */}
                 <div className="bg-[#f0f7ff] rounded-2xl border border-blue-100 p-6 flex flex-col gap-4">
                   <div className="flex items-center gap-3">
@@ -2116,6 +2107,25 @@ export const AdminDashboard: React.FC = () => {
                       <span className="text-sm font-bold text-gray-500">min</span>
                     </div>
                     <p className="text-gray-500 text-sm font-medium mt-1">Total Worked</p>
+                  </div>
+                </div>
+
+                {/* Total Break */}
+                <div className="bg-[#fffbeb] rounded-2xl border border-amber-100 p-6 flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-xl bg-amber-100 flex items-center justify-center">
+                      <Coffee className="h-5 w-5 text-amber-600" />
+                    </div>
+                    <span className="text-xs font-bold text-amber-600 uppercase tracking-wider">Break</span>
+                  </div>
+                  <div>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalBreakSeconds / 3600)}</span>
+                      <span className="text-sm font-bold text-gray-500">hours</span>
+                      <span className="text-2xl font-black text-gray-800 ml-2">{Math.floor((stats.totalBreakSeconds % 3600) / 60)}</span>
+                      <span className="text-sm font-bold text-gray-500">min</span>
+                    </div>
+                    <p className="text-gray-500 text-sm font-medium mt-1">Total Break</p>
                   </div>
                 </div>
 
@@ -2896,78 +2906,149 @@ export const AdminDashboard: React.FC = () => {
 
       {/* USER MANAGEMENT TAB */}
       {activeTab === 'users' && (
-        <div className="space-y-6">
-          {/* All Users Table */}
-          <Card className="overflow-hidden p-0">
-            <div className="p-5 border-b border-gray-100 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
-                  <Users className="h-5 w-5 text-emerald-600" />
+        <div className="pb-0">
+          <Card className="overflow-hidden shadow-sm w-full" bodyClassName="p-0">
+            <div className="px-4 py-2.5 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="h-8 w-8 shrink-0 rounded-lg bg-emerald-100 flex items-center justify-center">
+                  <Users className="h-4 w-4 text-emerald-600" />
                 </div>
-                <div>
-                  <h3 className="font-bold text-gray-800">All Users</h3>
-                  <p className="text-xs text-gray-500">{users.length} users</p>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-gray-800 leading-tight">All Users</h3>
+                  <p className="text-[11px] text-gray-500">
+                    {userSearchQuery.trim()
+                      ? `${sortedFilteredUsers.length} of ${users.length} users`
+                      : `${users.length} users`}
+                  </p>
                 </div>
               </div>
-              <button
-                onClick={() => setIsCreateUserModalOpen(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white rounded-xl shadow-md shadow-indigo-100 hover:shadow-indigo-200 transition-all active:scale-95 group"
-              >
-                <UserPlus size={18} className="group-hover:rotate-12 transition-transform" />
-                <span className="font-bold text-sm">Add New User</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                <div className="relative group flex-1 sm:flex-none min-w-[200px] sm:w-64">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Search size={16} className="text-gray-400 group-focus-within:text-indigo-500 transition-colors" />
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Search name, email, role, dept..."
+                    value={userSearchQuery}
+                    onChange={(e) => setUserSearchQuery(e.target.value)}
+                    className="block w-full pl-9 pr-9 py-1.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                  />
+                  {userSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setUserSearchQuery('')}
+                      className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-gray-400 hover:text-gray-600"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsCreateUserModalOpen(true)}
+                  title="Add User"
+                  className="shrink-0 p-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
+                >
+                  <UserPlus size={18} />
+                </button>
+              </div>
             </div>
-            <div className="overflow-x-auto max-h-[600px]">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs text-gray-500 uppercase sticky top-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead className="bg-slate-50 border-b border-gray-200">
                   <tr>
-                    <th className="px-5 py-3 text-left">User</th>
-                    <th className="px-5 py-3 text-left">Role</th>
-                    <th className="px-5 py-3 text-left">Department</th>
-                    <th className="px-5 py-3 text-left">Joining Date</th>
-                    <th className="px-5 py-3 text-left">Bond Period</th>
-                    <th className="px-5 py-3 text-center">Status</th>
-                    <th className="px-5 py-3 text-center">Actions</th>
+                    <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">
+                      <div className="flex items-center gap-1">
+                        <span>User</span>
+                        <span className="inline-flex items-center gap-0.5">
+                          <button
+                            type="button"
+                            title="Sort A–Z"
+                            onClick={() => { setUserSortField('name'); setUserSortDir('asc'); }}
+                            className={`p-0.5 rounded hover:bg-gray-200 ${userSortField === 'name' && userSortDir === 'asc' ? 'text-indigo-600' : 'text-gray-400'}`}
+                          >
+                            <ArrowUp size={12} strokeWidth={2.5} />
+                          </button>
+                          <button
+                            type="button"
+                            title="Sort Z–A"
+                            onClick={() => { setUserSortField('name'); setUserSortDir('desc'); }}
+                            className={`p-0.5 rounded hover:bg-gray-200 ${userSortField === 'name' && userSortDir === 'desc' ? 'text-indigo-600' : 'text-gray-400'}`}
+                          >
+                            <ArrowDown size={12} strokeWidth={2.5} />
+                          </button>
+                        </span>
+                      </div>
+                    </th>
+                    <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Role</th>
+                    <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Department</th>
+                    <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">
+                      <div className="flex items-center gap-1">
+                        <span>Joining Date</span>
+                        <span className="inline-flex items-center gap-0.5">
+                          <button
+                            type="button"
+                            title="Sort oldest first"
+                            onClick={() => { setUserSortField('joiningDate'); setUserSortDir('asc'); }}
+                            className={`p-0.5 rounded hover:bg-gray-200 ${userSortField === 'joiningDate' && userSortDir === 'asc' ? 'text-indigo-600' : 'text-gray-400'}`}
+                          >
+                            <ArrowUp size={12} strokeWidth={2.5} />
+                          </button>
+                          <button
+                            type="button"
+                            title="Sort newest first"
+                            onClick={() => { setUserSortField('joiningDate'); setUserSortDir('desc'); }}
+                            className={`p-0.5 rounded hover:bg-gray-200 ${userSortField === 'joiningDate' && userSortDir === 'desc' ? 'text-indigo-600' : 'text-gray-400'}`}
+                          >
+                            <ArrowDown size={12} strokeWidth={2.5} />
+                          </button>
+                        </span>
+                      </div>
+                    </th>
+                    <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Bond Period</th>
+                    <th className="px-4 py-2 text-center text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Status</th>
+                    <th className="px-4 py-2 text-center text-[11px] font-semibold text-gray-600 uppercase tracking-wide w-[120px]">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-gray-100 bg-white">
                   {paginatedUsers.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-5 py-8 text-center text-gray-400">
-                        No users found
+                      <td colSpan={7} className="px-4 py-6 text-center text-gray-400 text-sm">
+                        {userSearchQuery.trim() ? `No users match "${userSearchQuery}"` : 'No users found'}
                       </td>
                     </tr>
                   ) : (
                     paginatedUsers.map(user => {
                       const bondInfo = calculateBondRemaining(user.bonds, user.joiningDate);
                       return (
-                        <tr key={user.id} className="hover:bg-gray-50">
-                          <td className="px-5 py-4">
-                            <div className="flex items-center gap-3">
-                              <div className={`h-9 w-9 rounded-lg flex items-center justify-center text-white font-bold text-sm ${user.role === Role.ADMIN ? 'bg-purple-500' :
+                        <tr key={user.id} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="px-4 py-2">
+                            <div className="flex items-center gap-2.5">
+                              <div className={`h-8 w-8 shrink-0 rounded-md flex items-center justify-center text-white font-bold text-xs ${user.role === Role.ADMIN ? 'bg-purple-500' :
                                 user.role === Role.HR ? 'bg-blue-500' : 'bg-emerald-500'
                                 }`}>
                                 {user.name.charAt(0).toUpperCase()}
                               </div>
-                              <div>
-                                <p className="font-semibold text-gray-800">{user.name}</p>
-                                <p className="text-xs text-gray-400">{user.email}</p>
+                              <div className="min-w-0">
+                                <p className="font-medium text-gray-800 text-sm leading-tight truncate">{user.name}</p>
+                                <p className="text-[11px] text-gray-400 truncate">{user.email}</p>
                               </div>
                             </div>
                           </td>
-                          <td className="px-5 py-4">
-                            <span className={`px-2 py-1 rounded text-xs font-semibold ${user.role === Role.ADMIN ? 'bg-purple-100 text-purple-700' :
+                          <td className="px-4 py-2">
+                            <span className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-semibold ${user.role === Role.ADMIN ? 'bg-purple-100 text-purple-700' :
                               user.role === Role.HR ? 'bg-blue-100 text-blue-700' :
                                 'bg-emerald-100 text-emerald-700'
                               }`}>
                               {user.role}
                             </span>
                           </td>
-                          <td className="px-5 py-4 text-gray-600">{user.department}</td>
-                          <td className="px-5 py-4 text-gray-600 text-xs">
+                          <td className="px-4 py-2 text-gray-600 text-sm">{user.department}</td>
+                          <td className="px-4 py-2 text-gray-600 text-xs whitespace-nowrap">
                             {user.joiningDate || '-'}
                           </td>
-                          <td className="px-5 py-4 text-xs">
+                          <td className="px-4 py-2 text-xs">
                             {bondInfo.currentBond || bondInfo.totalRemaining.display !== '-' ? (
                               <button
                                 onClick={() => setBondModalUser(user)}
@@ -2979,14 +3060,14 @@ export const AdminDashboard: React.FC = () => {
                               <span className="text-gray-400">-</span>
                             )}
                           </td>
-                          <td className="px-5 py-4 text-center">
-                            <span className={`px-2 py-1 rounded text-xs font-semibold ${user.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                          <td className="px-4 py-2 text-center">
+                            <span className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-semibold ${user.isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
                               }`}>
                               {user.isActive ? 'Active' : 'Inactive'}
                             </span>
                           </td>
-                          <td className="px-5 py-4 text-center">
-                            <div className="flex items-center justify-center gap-2">
+                          <td className="px-4 py-2">
+                            <div className="flex items-center justify-center gap-0.5">
                               <button
                                 onClick={() => {
                                   setEditingUser(user);
@@ -3009,10 +3090,10 @@ export const AdminDashboard: React.FC = () => {
                                     paidLeaveAllocation: (user.paidLeaveAllocation || 0).toString()
                                   });
                                 }}
-                                className="text-gray-400 hover:text-blue-500 transition-colors p-2 rounded-lg hover:bg-blue-50"
+                                className="text-gray-400 hover:text-blue-600 p-1.5 rounded-md hover:bg-blue-50 transition-colors"
                                 title="Edit User"
                               >
-                                <PenTool size={16} />
+                                <PenTool size={15} />
                               </button>
                               <button
                                 onClick={() => {
@@ -3020,10 +3101,10 @@ export const AdminDashboard: React.FC = () => {
                                   setResetPasswordModalOpen(true);
                                   setNewEmployeePassword('');
                                 }}
-                                className="text-gray-400 hover:text-purple-500 transition-colors p-2 rounded-lg hover:bg-purple-50"
+                                className="text-gray-400 hover:text-purple-600 p-1.5 rounded-md hover:bg-purple-50 transition-colors"
                                 title="Reset Password"
                               >
-                                <Key size={16} />
+                                <Key size={15} />
                               </button>
                               {user.id !== auth.user?.id && (
                                 <button
@@ -3038,10 +3119,10 @@ export const AdminDashboard: React.FC = () => {
                                       }
                                     }
                                   }}
-                                  className="text-gray-400 hover:text-red-500 transition-colors p-2 rounded-lg hover:bg-red-50"
+                                  className="text-gray-400 hover:text-red-600 p-1.5 rounded-md hover:bg-red-50 transition-colors"
                                   title="Delete User"
                                 >
-                                  <Trash2 size={16} />
+                                  <Trash2 size={15} />
                                 </button>
                               )}
                             </div>
@@ -3053,13 +3134,21 @@ export const AdminDashboard: React.FC = () => {
                 </tbody>
               </table>
             </div>
-            
-            {/* Pagination for Users */}
-            {users.length > 0 && (
-                <div className="p-4 border-t border-gray-100 bg-gray-50/50 flex items-center justify-between">
+
+            {(sortedFilteredUsers.length > 0 || userSearchQuery.trim()) && (
+                <div className="px-4 py-2 border-t border-gray-100 bg-slate-50 flex items-center justify-between">
                     <div className="text-xs text-gray-500">
-                        Showing <span className="font-bold text-gray-800">{(userPage - 1) * USERS_PER_PAGE + 1}</span> to <span className="font-bold text-gray-800">{Math.min(userPage * USERS_PER_PAGE, users.length)}</span> of <span className="font-bold text-gray-800">{users.length}</span> users
+                        {sortedFilteredUsers.length === 0 ? (
+                          <span>No matching users</span>
+                        ) : (
+                          <>
+                            Showing <span className="font-bold text-gray-800">{sortedFilteredUsers.length === 0 ? 0 : (userPage - 1) * USERS_PER_PAGE + 1}</span> to{' '}
+                            <span className="font-bold text-gray-800">{Math.min(userPage * USERS_PER_PAGE, sortedFilteredUsers.length)}</span> of{' '}
+                            <span className="font-bold text-gray-800">{sortedFilteredUsers.length}</span> users
+                          </>
+                        )}
                     </div>
+                    {sortedFilteredUsers.length > 0 && (
                     <div className="flex items-center gap-2">
                         <button
                             onClick={() => setUserPage(p => Math.max(1, p - 1))}
@@ -3081,6 +3170,7 @@ export const AdminDashboard: React.FC = () => {
                             <ChevronRight size={16} />
                         </button>
                     </div>
+                    )}
                 </div>
             )}
           </Card>
@@ -3090,6 +3180,37 @@ export const AdminDashboard: React.FC = () => {
       {/* AUDIT LOGS TAB */}
       {activeTab === 'audit' && (
         <Card title="System Audit Logs">
+          <div className="px-6 pt-4 pb-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <p className="text-xs text-gray-500">
+              Search by actor, action, target, or details
+            </p>
+            <div className="relative group">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <Search size={18} className="text-gray-400 group-focus-within:text-indigo-500 transition-colors" />
+              </div>
+              <input
+                type="text"
+                placeholder="Search audit logs..."
+                value={auditSearch}
+                onChange={(e) => {
+                  setAuditSearch(e.target.value);
+                  setAuditPage(1);
+                }}
+                className="block w-full sm:w-72 pl-10 pr-10 py-2 border border-gray-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white shadow-sm transition-all"
+              />
+              {auditSearch && (
+                <button
+                  onClick={() => {
+                    setAuditSearch('');
+                    setAuditPage(1);
+                  }}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left text-gray-500">
               <thead className="text-xs text-gray-700 uppercase bg-gray-50 border-b">
@@ -3102,8 +3223,10 @@ export const AdminDashboard: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {auditLogs.length === 0 ? (
-                  <tr><td colSpan={5} className="text-center py-4 text-gray-400">No audit logs found</td></tr>
+                {auditLoading ? (
+                  <tr><td colSpan={5} className="text-center py-8 text-gray-400">Loading audit logs...</td></tr>
+                ) : auditLogs.length === 0 ? (
+                  <tr><td colSpan={5} className="text-center py-4 text-gray-400">{auditSearch ? 'No audit logs match your search' : 'No audit logs found'}</td></tr>
                 ) : (
                   auditLogs.map(log => {
                     const actor = users.find(u => u.id === log.actorId);
@@ -3141,6 +3264,37 @@ export const AdminDashboard: React.FC = () => {
               </tbody>
             </table>
           </div>
+          {auditTotal > 0 && (
+            <div className="p-4 border-t border-gray-100 bg-gray-50/50 flex items-center justify-between">
+              <div className="text-xs text-gray-500">
+                Showing <span className="font-bold text-gray-800">{(auditPage - 1) * AUDIT_LOGS_PER_PAGE + 1}</span> to{' '}
+                <span className="font-bold text-gray-800">{Math.min(auditPage * AUDIT_LOGS_PER_PAGE, auditTotal)}</span> of{' '}
+                <span className="font-bold text-gray-800">{auditTotal}</span> logs
+                {auditSearch && <span className="text-gray-400"> (filtered)</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setAuditPage(p => Math.max(1, p - 1))}
+                  disabled={auditPage === 1 || auditLoading}
+                  className={`p-1.5 rounded-lg border transition-all ${auditPage === 1 || auditLoading ? 'border-gray-100 text-gray-300 bg-gray-50 cursor-not-allowed' : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50 hover:border-gray-300 shadow-sm'}`}
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <div className="flex items-center gap-1 text-xs font-bold text-gray-700 mx-2">
+                  <span className="text-indigo-600 px-2 py-0.5 bg-indigo-50 rounded border border-indigo-100">{auditPage}</span>
+                  <span className="text-gray-400">/</span>
+                  <span>{auditTotalPages}</span>
+                </div>
+                <button
+                  onClick={() => setAuditPage(p => Math.min(auditTotalPages, p + 1))}
+                  disabled={auditPage === auditTotalPages || auditLoading}
+                  className={`p-1.5 rounded-lg border transition-all ${auditPage === auditTotalPages || auditLoading ? 'border-gray-100 text-gray-300 bg-gray-50 cursor-not-allowed' : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50 hover:border-gray-300 shadow-sm'}`}
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            </div>
+          )}
         </Card>
       )}
 
@@ -3462,22 +3616,38 @@ export const AdminDashboard: React.FC = () => {
 
       {/* SETTINGS TAB */}
       {activeTab === 'settings' && (
-        <Card title="Global System Settings">
-          <div className="max-w-md">
-            <label className="block text-sm font-bold text-gray-700 mb-2">Company Timezone</label>
-            <p className="text-xs text-gray-500 mb-2">This timezone affects how timestamps are displayed to all users.</p>
-            <select
-              className="w-full p-2 border rounded-lg"
-              value={systemSettings.timezone}
-              onChange={(e) => updateSystemSettings({ timezone: e.target.value })}
-            >
-              {timezones.map(tz => <option key={tz} value={tz}>{tz}</option>)}
-            </select>
-            <div className="mt-4 p-4 bg-gray-50 rounded border border-gray-200">
-              <p className="text-sm font-mono">Current Time in Zone: {new Date().toLocaleTimeString('en-US', { timeZone: systemSettings.timezone })}</p>
+        <div className="space-y-6 max-w-2xl">
+          <Card title="Global System Settings">
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2">Company Timezone</label>
+              <p className="text-xs text-gray-500 mb-2">Affects how timestamps are displayed and when check-in / checkout unlock.</p>
+              <select
+                className="w-full p-2 border rounded-lg"
+                value={systemSettings.timezone}
+                onChange={(e) => updateSystemSettings({ timezone: e.target.value })}
+              >
+                {timezones.map(tz => <option key={tz} value={tz}>{tz}</option>)}
+              </select>
+              <div className="mt-4 p-4 bg-gray-50 rounded border border-gray-200">
+                <p className="text-sm font-mono">Current Time in Zone: {new Date().toLocaleTimeString('en-US', { timeZone: systemSettings.timezone })}</p>
+              </div>
             </div>
-          </div>
-        </Card>
+          </Card>
+
+          <Card title="Check-in Time (All Employees)">
+            <CheckInTimeSettings
+              systemSettings={systemSettings}
+              updateSystemSettings={updateSystemSettings}
+            />
+          </Card>
+
+          <Card title="Checkout Time (All Employees)">
+            <CheckoutTimeSettings
+              systemSettings={systemSettings}
+              updateSystemSettings={updateSystemSettings}
+            />
+          </Card>
+        </div>
       )
       }
 
@@ -4022,8 +4192,21 @@ export const AdminDashboard: React.FC = () => {
               <div className="p-5 overflow-y-auto custom-scrollbar">
                 <form id="createUserForm" onSubmit={async (e) => {
                   e.preventDefault();
-                  if (!newUser.name || !newUser.username || !newUser.email || !newUser.department) {
+                  if (!newUser.name || !newUser.username || !newUser.email || !newUser.department || !newUser.mobileNumber || !newUser.aadhaarNumber || !newUser.bankName || !newUser.bankAccountHolderName || !newUser.bankAccountNumber || !newUser.bankIfscCode) {
                     alert('Please fill all required fields');
+                    return;
+                  }
+                  const accountDigits = newUser.bankAccountNumber.replace(/\D/g, '');
+                  if (!/^\d{9,18}$/.test(accountDigits)) {
+                    alert('Account number must be 9 to 18 digits');
+                    return;
+                  }
+                  if (newUser.bankIfscCode.trim().length !== 11) {
+                    alert('IFSC code must be exactly 11 characters');
+                    return;
+                  }
+                  if (!/^\d{12}$/.test(newUser.aadhaarNumber.replace(/\D/g, ''))) {
+                    alert('Aadhaar number must be exactly 12 digits');
                     return;
                   }
                   try {
@@ -4033,10 +4216,14 @@ export const AdminDashboard: React.FC = () => {
                       email: newUser.email,
                       department: newUser.department,
                       role: newUser.role,
-                      aadhaarNumber: newUser.aadhaarNumber,
+                      aadhaarNumber: newUser.aadhaarNumber.replace(/\D/g, ''),
                       guardianName: newUser.guardianName,
                       mobileNumber: newUser.mobileNumber,
                       guardianMobileNumber: newUser.guardianMobileNumber,
+                      bankName: newUser.bankName,
+                      bankAccountHolderName: newUser.bankAccountHolderName,
+                      bankAccountNumber: accountDigits,
+                      bankIfscCode: newUser.bankIfscCode.trim().toUpperCase(),
                       joiningDate: newUser.joiningDate ? convertToDDMMYYYY(newUser.joiningDate) : undefined,
                       bonds: newUser.bonds.filter(b => {
                         return b.periodMonths && parseInt(b.periodMonths) > 0;
@@ -4092,7 +4279,11 @@ export const AdminDashboard: React.FC = () => {
                       aadhaarNumber: '',
                       guardianName: '',
                       mobileNumber: '',
-                      guardianMobileNumber: ''
+                      guardianMobileNumber: '',
+                      bankName: '',
+                      bankAccountHolderName: '',
+                      bankAccountNumber: '',
+                      bankIfscCode: ''
                     });
                     setSalaryBreakdownRows([]);
                     setSalaryBreakdownData({});
@@ -4138,12 +4329,12 @@ export const AdminDashboard: React.FC = () => {
                         <input type="date" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''} onChange={e => setNewUser({ ...newUser, joiningDate: e.target.value })} />
                       </div>
                       <div>
-                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Mobile Number</label>
-                        <input type="tel" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.mobileNumber} onChange={e => setNewUser({ ...newUser, mobileNumber: e.target.value })} placeholder="Optional" />
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Mobile Number *</label>
+                        <input type="tel" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.mobileNumber} onChange={e => setNewUser({ ...newUser, mobileNumber: e.target.value })} placeholder="e.g. 9876543210" required />
                       </div>
                       <div>
-                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Aadhaar Number</label>
-                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.aadhaarNumber} onChange={e => setNewUser({ ...newUser, aadhaarNumber: e.target.value })} placeholder="Optional" />
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Aadhaar Number *</label>
+                        <input type="text" inputMode="numeric" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.aadhaarNumber} onChange={e => setNewUser({ ...newUser, aadhaarNumber: e.target.value.replace(/\D/g, '').slice(0, 12) })} placeholder="12-digit Aadhaar number" minLength={12} maxLength={12} required />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Guardian Name</label>
@@ -4152,6 +4343,31 @@ export const AdminDashboard: React.FC = () => {
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Guardian Mobile Number</label>
                         <input type="tel" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.guardianMobileNumber} onChange={e => setNewUser({ ...newUser, guardianMobileNumber: e.target.value })} placeholder="Optional" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Section: Bank Details */}
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4 flex items-center gap-2 pb-2 border-b border-gray-100">
+                      <Landmark size={16} className="text-indigo-500" /> Bank Details
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Employee Full Name (as per checkbook) *</label>
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.bankAccountHolderName} onChange={e => setNewUser({ ...newUser, bankAccountHolderName: e.target.value })} placeholder="Name as printed on checkbook" required />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Bank Name *</label>
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.bankName} onChange={e => setNewUser({ ...newUser, bankName: e.target.value })} placeholder="e.g. State Bank of India" required />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Account Number *</label>
+                        <input type="text" inputMode="numeric" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.bankAccountNumber} onChange={e => setNewUser({ ...newUser, bankAccountNumber: e.target.value.replace(/\D/g, '').slice(0, 18) })} placeholder="9 to 18 digits" minLength={9} maxLength={18} required />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">IFSC Code *</label>
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white uppercase" value={newUser.bankIfscCode} onChange={e => setNewUser({ ...newUser, bankIfscCode: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11) })} placeholder="11-character IFSC code" maxLength={11} required />
                       </div>
                     </div>
                   </div>

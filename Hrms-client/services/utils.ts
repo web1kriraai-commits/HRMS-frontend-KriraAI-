@@ -17,6 +17,8 @@ export const ABSENCE_PENALTY_EFFECTIVE_DATE = '2026-04-06';
 export const OVERTIME_POLICY_EFFECTIVE_DATE = '2026-04-06';
 /** Aligned with Hrms-server COMPULSORY_BREAK_EFFECTIVE_DATE */
 export const COMPULSORY_BREAK_EFFECTIVE_DATE = '2026-04-06';
+/** Minimum combined Break + Extra Break before checkout (20 minutes). */
+export const MIN_TOTAL_BREAK_SECONDS = 1200;
 
 const normYmd = (s: string) => {
   if (!s) return '';
@@ -123,11 +125,18 @@ export const calculateDurationSeconds = (start: string, end: string): number => 
 export const calculateTotalBreakSeconds = (breaks: Break[]): number => {
   return breaks.reduce((acc, b) => {
     if (b.start && b.end) {
+      const stored = (b as Break & { durationSeconds?: number }).durationSeconds;
+      if (typeof stored === 'number' && stored > 0) return acc + stored;
       return acc + calculateDurationSeconds(b.start, b.end);
     }
     return acc;
   }, 0);
 };
+
+export const hasMinimumTotalBreakTime = (
+  breaks: Break[],
+  minSeconds: number = MIN_TOTAL_BREAK_SECONDS
+): boolean => calculateTotalBreakSeconds(breaks) >= minSeconds;
 
 export const calculateWorkedSeconds = (attendance: Attendance, checkOutTime?: string): number => {
   if (!attendance.checkIn) return 0;
@@ -141,20 +150,19 @@ export const calculateWorkedSeconds = (attendance: Attendance, checkOutTime?: st
   return Math.max(0, totalSession - totalBreaks);
 };
 
-export const getFlags = (workedSeconds: number, isHalfDayApproved: boolean, approvedOvertimeMinutes: number = 0) => {
+export const getFlags = (
+  workedSeconds: number,
+  isHalfDayApproved: boolean,
+  _approvedOvertimeMinutes: number = 0,
+  isEarlyReleaseDay: boolean = false
+) => {
   const workedMinutes = workedSeconds / 60;
-
-  // If Half-Day, use adjusted threshold (Standard - 4h leave)
   const lowThreshold = isHalfDayApproved ? HALF_DAY_LOW_THRESHOLD_MINUTES : LOW_TIME_THRESHOLD_MINUTES;
   const extraThreshold = isHalfDayApproved ? HALF_DAY_EXTRA_THRESHOLD_MINUTES : EXTRA_TIME_THRESHOLD_MINUTES;
-  
-  // COMMITMENT RULE: Approved Overtime increases the target for extra work, 
-  // but Low Time is only triggered if work is below the standard minimum.
-  const targetMinutes = extraThreshold + approvedOvertimeMinutes;
 
   return {
-    lowTime: workedMinutes > 0 && workedMinutes < lowThreshold,
-    extraTime: approvedOvertimeMinutes > 0 && workedMinutes > extraThreshold
+    lowTime: isEarlyReleaseDay ? false : workedMinutes > 0 && workedMinutes < lowThreshold,
+    extraTime: workedMinutes > extraThreshold
   };
 };
 
@@ -163,43 +171,283 @@ export const getFlags = (workedSeconds: number, isHalfDayApproved: boolean, appr
  * 
  * Rules:
  * 1. Before OVERTIME_POLICY_EFFECTIVE_DATE: Extra time is granted for all work above threshold.
- * 2. On/After OVERTIME_POLICY_EFFECTIVE_DATE: Extra time requires approved overtime request.
+ * 2. On/After OVERTIME_POLICY_EFFECTIVE_DATE: Extra time is automatic above threshold (8h 15m + 7m buffer).
  */
-export const calculateDailyTimeStats = (effectiveWorkedSeconds: number, isHalfDayApproved: boolean, isHoliday: boolean, approvedOvertimeMinutes: number = 0, dateStr?: string) => {
+export const normalizeAttendanceDateStr = (dateStr?: string): string => {
+  if (!dateStr) return '';
+  return dateStr.includes('T') ? dateStr.split('T')[0] : dateStr.slice(0, 10);
+};
+
+export const FULL_DAY_SECONDS = LOW_TIME_THRESHOLD_MINUTES * 60; // 8h 15m
+export const HALF_DAY_LEAVE_CREDIT_SECONDS = Math.floor(FULL_DAY_SECONDS / 2);
+
+export type LeaveDayCreditCategory = LeaveCategory | 'ImplicitUnpaid' | null;
+
+export interface LeaveDayCredit {
+  creditSeconds: number;
+  isFullDayLeave: boolean;
+  isHalfDayLeave: boolean;
+  isImplicitUnpaid: boolean;
+  skipLowTime: boolean;
+  category: LeaveDayCreditCategory;
+}
+
+export const isDateInLeaveRange = (dateStr: string, leave: LeaveRequest): boolean => {
+  const d = normalizeAttendanceDateStr(dateStr);
+  const start = normalizeAttendanceDateStr(leave.startDate);
+  const end = normalizeAttendanceDateStr(leave.endDate);
+  return d >= start && d <= end;
+};
+
+/** Resolve half-day leaves to their effective category (Paid / Unpaid / Extra Time). */
+export const getEffectiveLeaveCategory = (leave: { category?: string; reason?: string }): string => {
+  const cat = leave.category || '';
+  if (cat === LeaveCategory.HALF_DAY || cat === 'Half Day Leave') {
+    const reason = leave.reason || '';
+    if (reason.includes('[Extra Time Leave]')) return LeaveCategory.EXTRA_TIME;
+    if (reason.includes('[Unpaid Leave]')) return LeaveCategory.UNPAID;
+    if (reason.includes('[Paid Leave]')) return LeaveCategory.PAID;
+    return LeaveCategory.PAID;
+  }
+  return cat;
+};
+
+/** Count working-day absences for a user within a calendar month (YYYY-MM). */
+export const calculateAbsentDaysForMonth = (
+  userId: string,
+  user: User | undefined,
+  monthStr: string,
+  attendanceRecords: Attendance[],
+  leaveRequests: LeaveRequest[],
+  holidayDateSet: Set<string>
+): number => {
+  const [y, m] = monthStr.split('-').map(Number);
+  if (!y || !m) return 0;
+
+  const monthStart = new Date(y, m - 1, 1);
+  const monthEnd = new Date(y, m, 0);
+  const todayStr = getTodayStr();
+
+  const attendedDates = new Set(
+    attendanceRecords
+      .filter(r => r.userId === userId && r.checkIn)
+      .map(r => normalizeAttendanceDateStr(typeof r.date === 'string' ? r.date : getLocalISOString(new Date(r.date))))
+  );
+
+  const leaveDates = new Set<string>();
+  leaveRequests
+    .filter(l => {
+      if (l.userId !== userId) return false;
+      const st = String(l.status || '').trim();
+      return st === 'Approved' || st === LeaveStatus.APPROVED;
+    })
+    .forEach(l => {
+      let curr = new Date(l.startDate);
+      const end = new Date(l.endDate);
+      while (curr <= end) {
+        leaveDates.add(getLocalISOString(curr));
+        curr.setDate(curr.getDate() + 1);
+      }
+    });
+
+  const firstCheckIn = attendanceRecords
+    .filter(r => r.userId === userId && r.checkIn)
+    .sort((a, b) => {
+      const d1 = normalizeAttendanceDateStr(typeof a.date === 'string' ? a.date : getLocalISOString(new Date(a.date)));
+      const d2 = normalizeAttendanceDateStr(typeof b.date === 'string' ? b.date : getLocalISOString(new Date(b.date)));
+      return d1.localeCompare(d2);
+    })[0]?.date;
+  const firstCheckInStr = firstCheckIn
+    ? normalizeAttendanceDateStr(typeof firstCheckIn === 'string' ? firstCheckIn : getLocalISOString(new Date(firstCheckIn)))
+    : undefined;
+  const absenceStart = getAbsenceStartDate(user, firstCheckInStr);
+
+  let absentCount = 0;
+  const iter = new Date(monthStart);
+  const now = new Date();
+  const endRange = monthEnd < now ? monthEnd : now;
+
+  while (iter <= endRange) {
+    const dateStr = getLocalISOString(iter);
+    const dayOfWeek = iter.getDay();
+    if (
+      dateStr.startsWith(monthStr) &&
+      !attendedDates.has(dateStr) &&
+      !leaveDates.has(dateStr) &&
+      dayOfWeek !== 0 &&
+      !holidayDateSet.has(dateStr) &&
+      dateStr >= absenceStart &&
+      dateStr < todayStr
+    ) {
+      absentCount += 1;
+    }
+    iter.setDate(iter.getDate() + 1);
+  }
+  return absentCount;
+};
+
+/** Approved leave credit for a calendar day (paid/unpaid/half-day/ETL). Absent days → implicit unpaid leave. */
+export const getLeaveDayCredit = (
+  dateStr: string,
+  userId: string,
+  leaves: LeaveRequest[],
+  holidayDateSet: Set<string>,
+  options: {
+    hasAttendance?: boolean;
+    treatAbsentAsUnpaidLeave?: boolean;
+    todayStr?: string;
+  } = {}
+): LeaveDayCredit => {
+  const empty: LeaveDayCredit = {
+    creditSeconds: 0,
+    isFullDayLeave: false,
+    isHalfDayLeave: false,
+    isImplicitUnpaid: false,
+    skipLowTime: false,
+    category: null
+  };
+
+  if (holidayDateSet.has(dateStr)) return empty;
+  const dayOfWeek = new Date(dateStr + 'T12:00:00').getDay();
+  if (dayOfWeek === 0) return empty;
+
+  const approvedOnDate = leaves.filter((l) => {
+    if (l.userId !== userId) return false;
+    const st = String(l.status || '').trim();
+    if (st !== 'Approved' && st !== LeaveStatus.APPROVED) return false;
+    return isDateInLeaveRange(dateStr, l);
+  });
+
+  const halfDay = approvedOnDate.find((l) => {
+    if (l.category !== LeaveCategory.HALF_DAY) return false;
+    return !(l.reason || '').includes('[Extra Time Leave]');
+  });
+  if (halfDay) {
+    return {
+      creditSeconds: HALF_DAY_LEAVE_CREDIT_SECONDS,
+      isFullDayLeave: false,
+      isHalfDayLeave: true,
+      isImplicitUnpaid: false,
+      skipLowTime: false,
+      category: LeaveCategory.HALF_DAY
+    };
+  }
+
+  const paid = approvedOnDate.find((l) => l.category === LeaveCategory.PAID);
+  if (paid) {
+    return {
+      creditSeconds: FULL_DAY_SECONDS,
+      isFullDayLeave: true,
+      isHalfDayLeave: false,
+      isImplicitUnpaid: false,
+      skipLowTime: true,
+      category: LeaveCategory.PAID
+    };
+  }
+
+  const unpaid = approvedOnDate.find((l) => l.category === LeaveCategory.UNPAID);
+  if (unpaid) {
+    return {
+      creditSeconds: FULL_DAY_SECONDS,
+      isFullDayLeave: true,
+      isHalfDayLeave: false,
+      isImplicitUnpaid: false,
+      skipLowTime: true,
+      category: LeaveCategory.UNPAID
+    };
+  }
+
+  const etl = approvedOnDate.find((l) => l.category === LeaveCategory.EXTRA_TIME);
+  if (etl) {
+    let credit = FULL_DAY_SECONDS;
+    if (etl.startTime && etl.endTime) {
+      const [sh, sm] = etl.startTime.split(':').map(Number);
+      const [eh, em] = etl.endTime.split(':').map(Number);
+      credit = Math.max(0, eh * 60 + em - (sh * 60 + sm)) * 60;
+    }
+    return {
+      creditSeconds: credit,
+      isFullDayLeave: true,
+      isHalfDayLeave: false,
+      isImplicitUnpaid: false,
+      skipLowTime: true,
+      category: LeaveCategory.EXTRA_TIME
+    };
+  }
+
+  const todayStr = options.todayStr || getTodayStr();
+  if (
+    options.treatAbsentAsUnpaidLeave &&
+    !options.hasAttendance &&
+    approvedOnDate.length === 0 &&
+    dateStr < todayStr
+  ) {
+    return {
+      creditSeconds: FULL_DAY_SECONDS,
+      isFullDayLeave: true,
+      isHalfDayLeave: false,
+      isImplicitUnpaid: true,
+      skipLowTime: true,
+      category: 'ImplicitUnpaid'
+    };
+  }
+
+  return empty;
+};
+
+/** Merge worked seconds with leave credit for working-hours totals. */
+export const applyLeaveCreditToWorkedSeconds = (
+  workedSeconds: number,
+  credit: LeaveDayCredit
+): number => {
+  if (credit.creditSeconds <= 0) return workedSeconds;
+  if (credit.isFullDayLeave) {
+    return Math.max(workedSeconds, credit.creditSeconds);
+  }
+  return workedSeconds + credit.creditSeconds;
+};
+
+export const calculateDailyTimeStats = (
+  effectiveWorkedSeconds: number,
+  isHalfDayApproved: boolean,
+  isHoliday: boolean,
+  _approvedOvertimeMinutes: number = 0,
+  dateStr?: string,
+  systemSettings?: { checkoutTimeOverrides?: Record<string, string> },
+  skipLowTime: boolean = false
+) => {
   if (isHoliday) {
     return { lowTimeSeconds: 0, extraTimeSeconds: effectiveWorkedSeconds };
   }
 
+  const normDate = normalizeAttendanceDateStr(dateStr);
+  const isEarlyReleaseDay =
+    Boolean(normDate && systemSettings && hasCheckoutOverrideForDate(systemSettings, normDate));
+
   const lowThresholdSec = (isHalfDayApproved ? HALF_DAY_LOW_THRESHOLD_MINUTES : LOW_TIME_THRESHOLD_MINUTES) * 60;
   const extraThresholdSec = (isHalfDayApproved ? HALF_DAY_EXTRA_THRESHOLD_MINUTES : EXTRA_TIME_THRESHOLD_MINUTES) * 60;
-  
+
   let lowTimeSeconds = 0;
   let extraTimeSeconds = 0;
 
+  if (skipLowTime) {
+    if (effectiveWorkedSeconds > extraThresholdSec) {
+      extraTimeSeconds = effectiveWorkedSeconds - extraThresholdSec;
+    }
+    return { lowTimeSeconds: 0, extraTimeSeconds };
+  }
+
   // Deficit calculation: only against standard lower bound (not target)
-  if (effectiveWorkedSeconds < lowThresholdSec) {
-    // If they haven't started working, don't show full deficit
+  if (!isEarlyReleaseDay && effectiveWorkedSeconds < lowThresholdSec) {
     if (effectiveWorkedSeconds > 0) {
       lowTimeSeconds = lowThresholdSec - effectiveWorkedSeconds;
     } else {
       lowTimeSeconds = lowThresholdSec;
     }
-  } 
-  
+  }
+
   if (effectiveWorkedSeconds > extraThresholdSec) {
-    const actualExtraSec = effectiveWorkedSeconds - extraThresholdSec;
-    
-    // Policy rule: Approved overtime request is required from April 6th onwards
-    const isPrePolicy = dateStr && dateStr < OVERTIME_POLICY_EFFECTIVE_DATE;
-    
-    if (isPrePolicy) {
-      // Before policy: give full extra time surplus
-      extraTimeSeconds = actualExtraSec;
-    } else if (approvedOvertimeMinutes > 0) {
-      // After policy: only if approved, capped by approved amount
-      const maxApprovedSec = approvedOvertimeMinutes * 60;
-      extraTimeSeconds = Math.min(actualExtraSec, maxApprovedSec);
-    }
+    extraTimeSeconds = effectiveWorkedSeconds - extraThresholdSec;
   }
 
   return { lowTimeSeconds, extraTimeSeconds };
@@ -231,6 +479,130 @@ export const formatDate = (dateStr: string | Date): string => {
   if (isNaN(date.getTime())) return 'Invalid Date';
 
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+export const DEFAULT_CHECK_IN_TIME = '08:30';
+export const DEFAULT_CHECKOUT_TIME = '17:30';
+
+export const getWallClockHM = (
+  date: Date,
+  timeZone: string = 'Asia/Kolkata'
+): { hour: number; minute: number } => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false
+    });
+    const parts = formatter.formatToParts(date);
+    const hour = parseInt(parts.find((p) => p.type === 'hour')!.value, 10);
+    const minute = parseInt(parts.find((p) => p.type === 'minute')!.value, 10);
+    return { hour, minute };
+  } catch {
+    return { hour: date.getHours(), minute: date.getMinutes() };
+  }
+};
+
+export const getDateStrInTimezone = (date: Date, timeZone: string = 'Asia/Kolkata'): string => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(date);
+  } catch {
+    return date.toISOString().split('T')[0];
+  }
+};
+
+export const parseCheckoutTime = (timeStr?: string): { hour: number; minute: number } => {
+  const s = String(timeStr || DEFAULT_CHECKOUT_TIME).trim();
+  const match = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return { hour: 17, minute: 30 };
+  const hour = parseInt(match[1], 10);
+  const minute = parseInt(match[2], 10);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return { hour: 17, minute: 30 };
+  return { hour, minute };
+};
+
+export const parseCheckInTime = (timeStr?: string): { hour: number; minute: number } => {
+  const s = String(timeStr || DEFAULT_CHECK_IN_TIME).trim();
+  const match = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return { hour: 8, minute: 30 };
+  const hour = parseInt(match[1], 10);
+  const minute = parseInt(match[2], 10);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return { hour: 8, minute: 30 };
+  return { hour, minute };
+};
+
+export const getCheckInOverrideForDate = (
+  settings: { checkInTimeOverrides?: Record<string, string> },
+  dateStr: string
+): string | null => settings?.checkInTimeOverrides?.[dateStr] ?? null;
+
+export const hasCheckInOverrideForDate = (
+  settings: { checkInTimeOverrides?: Record<string, string> },
+  dateStr: string
+): boolean => Boolean(getCheckInOverrideForDate(settings, dateStr));
+
+export const resolveCheckInTimeForDate = (
+  settings: { defaultCheckInTime?: string; checkInTimeOverrides?: Record<string, string> },
+  dateStr: string
+): { hour: number; minute: number } => {
+  const override = getCheckInOverrideForDate(settings, dateStr);
+  return parseCheckInTime(override || settings?.defaultCheckInTime || DEFAULT_CHECK_IN_TIME);
+};
+
+export const getCheckoutOverrideForDate = (
+  settings: { checkoutTimeOverrides?: Record<string, string> },
+  dateStr: string
+): string | null => settings?.checkoutTimeOverrides?.[dateStr] ?? null;
+
+export const hasCheckoutOverrideForDate = (
+  settings: { checkoutTimeOverrides?: Record<string, string> },
+  dateStr: string
+): boolean => Boolean(getCheckoutOverrideForDate(settings, dateStr));
+
+export const resolveCheckoutTimeForDate = (
+  settings: { defaultCheckoutTime?: string; checkoutTimeOverrides?: Record<string, string> },
+  dateStr: string
+): { hour: number; minute: number } => {
+  const override = getCheckoutOverrideForDate(settings, dateStr);
+  return parseCheckoutTime(override || settings?.defaultCheckoutTime || DEFAULT_CHECKOUT_TIME);
+};
+
+export const formatCheckoutTimeLabel = (hour: number, minute: number): string => {
+  const h12 = hour % 12 || 12;
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  return `${h12}:${String(minute).padStart(2, '0')} ${ampm}`;
+};
+
+export const isClockOutTimeAllowed = (
+  now: Date,
+  opts: {
+    hasHalfDayLeave?: boolean;
+    earlyLogoutApproved?: boolean;
+    roleIsAdmin?: boolean;
+    isHoliday?: boolean;
+    checkoutHour?: number;
+    checkoutMinute?: number;
+    timeZone?: string;
+  } = {}
+): boolean => {
+  const {
+    hasHalfDayLeave = false,
+    earlyLogoutApproved = false,
+    roleIsAdmin = false,
+    isHoliday = false,
+    checkoutHour = 17,
+    checkoutMinute = 30,
+    timeZone = 'Asia/Kolkata'
+  } = opts;
+  if (roleIsAdmin || earlyLogoutApproved || isHoliday || hasHalfDayLeave) return true;
+  const { hour, minute } = getWallClockHM(now, timeZone);
+  return hour > checkoutHour || (hour === checkoutHour && minute >= checkoutMinute);
 };
 
 /** True if local time in `timeZone` is still before 8:30 (employees cannot check in yet). */
@@ -661,6 +1033,167 @@ export const calculateBondRemaining = (bonds?: Bond[], joiningDate?: string) => 
     firstCompletionBondType: firstCompletionBondType, // Type of the first bond that will complete
     currentSalary: currentSalary // Current salary/stipend based on active bond
   };
+};
+
+/** Resolve general OT from new or legacy fields — never discards historical overtimeRequest data. */
+export const resolveGeneralOvertimeMinutes = (record: Attendance): number => {
+  const stored = record.generalOvertimeMinutes;
+  if (typeof stored === 'number' && stored > 0) return stored;
+  const ot = record.overtimeRequest;
+  if (ot?.completedMinutes && ot.completedMinutes > 0) return ot.completedMinutes;
+  if (ot?.status === 'Approved' && ot.durationMinutes && ot.durationMinutes > 0) return ot.durationMinutes;
+  return stored ?? 0;
+};
+
+export interface MonthlyOvertimeSummary {
+  workingDays: number;
+  expectedSeconds: number;
+  actualWorkedSeconds: number;
+  generalOvertimeSeconds: number;
+  managementOvertimeSeconds: number;
+  earlyOvertimeOutstandingSeconds: number;
+  earlyOvertimeCoveredSeconds: number;
+  remainingSeconds: number;
+}
+
+/** Monthly overtime breakdown for dashboard (3 OT types + remaining). */
+export const calculateMonthlyOvertimeSummary = (
+  monthStr: string,
+  attendanceRecords: Attendance[],
+  leaves: LeaveRequest[],
+  holidayDateSet: Set<string>,
+  userId: string,
+  systemSettings?: { checkoutTimeOverrides?: Record<string, string> }
+): MonthlyOvertimeSummary => {
+  const [year, month] = monthStr.split('-').map(Number);
+  const startDate = new Date(year, month - 1, 1);
+  const lastOfMonth = new Date(year, month, 0);
+  const nowDay = new Date();
+  const endDate = lastOfMonth < nowDay ? lastOfMonth : nowDay;
+
+  const attendanceMap = new Map<string, Attendance>();
+  attendanceRecords
+    .filter((r) => r.userId === userId)
+    .forEach((r) => {
+      const d = normalizeAttendanceDateStr(r.date);
+      if (d.startsWith(monthStr)) attendanceMap.set(d, r);
+    });
+
+  const approvedLeaveDates = new Set<string>();
+  leaves
+    .filter((l) => {
+      if (l.userId !== userId) return false;
+      const st = String(l.status || '').trim();
+      return st === 'Approved' || st === LeaveStatus.APPROVED;
+    })
+    .forEach((l) => {
+      let curr = new Date(l.startDate);
+      const end = new Date(l.endDate);
+      while (curr <= end) {
+        approvedLeaveDates.add(getLocalISOString(curr));
+        curr.setDate(curr.getDate() + 1);
+      }
+    });
+
+  let workingDays = 0;
+  let actualWorkedSeconds = 0;
+  let generalOvertimeSeconds = 0;
+  let managementOvertimeSeconds = 0;
+  let earlyOvertimeOutstandingSeconds = 0;
+  let earlyOvertimeCoveredSeconds = 0;
+
+  const todayStr = getTodayStr();
+
+  for (let iter = new Date(startDate); iter <= endDate; iter.setDate(iter.getDate() + 1)) {
+    const dateStr = getLocalISOString(iter);
+    const dayOfWeek = iter.getDay();
+    const isHoliday = holidayDateSet.has(dateStr);
+    const hasFullLeave = approvedLeaveDates.has(dateStr);
+
+    if (dayOfWeek === 0) continue;
+
+    const record = attendanceMap.get(dateStr);
+    const leaveCredit = getLeaveDayCredit(dateStr, userId, leaves, holidayDateSet, {
+      hasAttendance: Boolean(record?.checkIn),
+      treatAbsentAsUnpaidLeave: true,
+      todayStr
+    });
+
+    const hasHalfDay = leaveCredit.isHalfDayLeave;
+
+    // Count as working day if not on full-day leave and not a holiday
+    if (!isHoliday && (!hasFullLeave || hasHalfDay)) {
+      workingDays += hasHalfDay ? 0.5 : 1;
+    }
+
+    let effectiveWorked = record?.checkOut ? (record.totalWorkedSeconds || 0) : 0;
+    effectiveWorked = applyLeaveCreditToWorkedSeconds(effectiveWorked, leaveCredit);
+
+    // Leave-only or absent (implicit unpaid) day — no attendance record
+    if (!record?.checkOut && leaveCredit.creditSeconds > 0) {
+      if (!isHoliday) {
+        actualWorkedSeconds += effectiveWorked;
+      }
+      continue;
+    }
+
+    if (!record?.checkOut) continue;
+
+    if (isHoliday) {
+      actualWorkedSeconds += effectiveWorked;
+      generalOvertimeSeconds += record.totalWorkedSeconds || 0;
+      continue;
+    }
+
+    actualWorkedSeconds += effectiveWorked;
+
+    const generalMins = resolveGeneralOvertimeMinutes(record);
+    if (generalMins > 0) {
+      generalOvertimeSeconds += generalMins * 60;
+    } else {
+      const minSec = (hasHalfDay ? HALF_DAY_LOW_THRESHOLD_MINUTES : LOW_TIME_THRESHOLD_MINUTES) * 60;
+      const rawWorked = record.totalWorkedSeconds || 0;
+      if (rawWorked > minSec) {
+        generalOvertimeSeconds += rawWorked - minSec;
+      }
+    }
+
+    const mgmtMins =
+      record.managementOvertime?.status === 'Approved'
+        ? record.managementOvertime.completedMinutes || record.managementOvertime.durationMinutes || 0
+        : 0;
+    managementOvertimeSeconds += mgmtMins * 60;
+
+    const eo = record.earlyOvertime;
+    if (eo && eo.deficitMinutes > 0) {
+      earlyOvertimeCoveredSeconds += (eo.coveredMinutes || 0) * 60;
+      earlyOvertimeOutstandingSeconds +=
+        Math.max(0, eo.deficitMinutes - (eo.coveredMinutes || 0)) * 60;
+    }
+  }
+
+  const expectedSeconds = Math.round(workingDays * FULL_DAY_SECONDS);
+  const remainingSeconds = expectedSeconds - actualWorkedSeconds;
+
+  return {
+    workingDays,
+    expectedSeconds,
+    actualWorkedSeconds,
+    generalOvertimeSeconds,
+    managementOvertimeSeconds,
+    earlyOvertimeOutstandingSeconds,
+    earlyOvertimeCoveredSeconds,
+    remainingSeconds
+  };
+};
+
+export const formatHoursMinutesShort = (totalSeconds: number): string => {
+  const abs = Math.abs(totalSeconds);
+  const h = Math.floor(abs / 3600);
+  const m = Math.floor((abs % 3600) / 60);
+  const sign = totalSeconds < 0 ? '-' : '';
+  if (h === 0) return `${sign}${m}m`;
+  return `${sign}${h}h ${m}m`;
 };
 
 export const downloadCSV = (filename: string, rows: any[]) => {
