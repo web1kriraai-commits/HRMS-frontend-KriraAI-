@@ -13,7 +13,11 @@ const HALF_DAY_EXTRA_THRESHOLD_MINUTES = 262; // (8h 22m - 4h) = 4h 22m
 export const HALF_DAY_EXTRA_THRESHOLD_SECONDS = HALF_DAY_EXTRA_THRESHOLD_MINUTES * 60;
 export const PENALTY_EFFECTIVE_DATE = '2026-03-01';
 export const LATE_PENALTY_SECONDS = 900; // 15 minutes
-export const DEFAULT_LATE_PENALTY_START_TIME = '09:00';
+export const LEGACY_LATE_PENALTY_START_TIME = '09:00';
+export const CURRENT_LATE_PENALTY_START_TIME = '09:15';
+/** From this date penalty starts after 09:15; before uses 09:00. */
+export const LATE_PENALTY_915_EFFECTIVE_DATE = '2026-07-06';
+export const DEFAULT_LATE_PENALTY_START_TIME = CURRENT_LATE_PENALTY_START_TIME;
 export const ABSENCE_PENALTY_EFFECTIVE_DATE = '2026-04-06';
 export const OVERTIME_POLICY_EFFECTIVE_DATE = '2026-04-06';
 /** Aligned with Hrms-server COMPULSORY_BREAK_EFFECTIVE_DATE */
@@ -46,8 +50,17 @@ export const hasApprovedHalfDayLeaveOnDate = (
   });
 };
 
-export const resolveLatePenaltyStartTime = (settings?: { latePenaltyStartTime?: string } | null): string =>
-  settings?.latePenaltyStartTime || DEFAULT_LATE_PENALTY_START_TIME;
+/** Penalty cutoff for attendance date — before 2026-07-06 uses 09:00, on/after uses 09:15. */
+export const resolveLatePenaltyStartTime = (
+  settings?: { latePenaltyStartTime?: string; timezone?: string } | null,
+  dateStr?: string | null
+): string => {
+  const normalizedDate = dateStr ? String(dateStr).slice(0, 10) : null;
+  if (normalizedDate && normalizedDate < LATE_PENALTY_915_EFFECTIVE_DATE) {
+    return LEGACY_LATE_PENALTY_START_TIME;
+  }
+  return settings?.latePenaltyStartTime || CURRENT_LATE_PENALTY_START_TIME;
+};
 
 export const isLateCheckIn = (
   isoStr?: string,
@@ -102,7 +115,7 @@ export const getAbsenceStartDate = (user?: User | null, firstCheckInDate?: strin
 };
 
 /**
- * Seconds late relative to the configured penalty start time (default 09:00).
+ * Seconds late relative to the configured penalty start time (default 09:15).
  * Minimum penalty is 15 minutes (900s).
  */
 export const calculateLatenessPenaltySeconds = (
@@ -132,7 +145,7 @@ export const getLateCheckInPenaltyInfo = (
   hasHalfDayLeave = false
 ): { isLate: boolean; penaltySeconds: number } => {
   const timeZone = settings?.timezone || 'Asia/Kolkata';
-  const cutoff = resolveLatePenaltyStartTime(settings);
+  const cutoff = resolveLatePenaltyStartTime(settings, record.date);
   const isLate =
     !record.isPenaltyDisabled &&
     !hasHalfDayLeave &&
@@ -393,6 +406,246 @@ export const calculateAbsentDaysForMonth = (
     iter.setDate(iter.getDate() + 1);
   }
   return absentCount;
+};
+
+/** Bond leave tracking starts here; pre-March leaves were legacy Paid Leave only. */
+export const BOND_LEAVE_EFFECTIVE_DATE = '2025-03-01';
+
+export interface BondLeaveSummary {
+  allocated: number;
+  /** Leave consumed from allocation pool (capped at allocated). */
+  used: number;
+  remaining: number;
+  /** Leave taken beyond bond allocation. */
+  extra: number;
+  totalTaken: number;
+  appliedDays: number;
+  absentDays: number;
+  countStart: string;
+  countEnd: string;
+}
+
+const isApprovedLeaveStatus = (status?: string): boolean => {
+  const st = String(status || '').trim();
+  return st === 'Approved' || st === LeaveStatus.APPROVED;
+};
+
+/** Approved full/half-day leave counts toward bond used leave; Extra Time Leave does not. */
+export const countsTowardBondUsedLeave = (leave: { category?: string; reason?: string }): boolean => {
+  const cat = leave.category || '';
+  if (cat === LeaveCategory.EXTRA_TIME || cat === 'Extra Time Leave') return false;
+  if (cat === LeaveCategory.HALF_DAY || cat === 'Half Day Leave') {
+    return !(leave.reason || '').includes('[Extra Time Leave]');
+  }
+  return true;
+};
+
+/** Working days between two dates (excludes Sundays and holidays), optionally clipped to a range. */
+export const calculateLeaveWorkingDays = (
+  startDateStr: string,
+  endDateStr: string,
+  holidayDateSet: Set<string>,
+  limitStartYmd?: string,
+  limitEndYmd?: string
+): number => {
+  if (!startDateStr || !endDateStr) return 0;
+
+  let start = new Date(startDateStr + 'T00:00:00');
+  let end = new Date(endDateStr + 'T23:59:59');
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) return 0;
+
+  if (limitStartYmd) {
+    const lim = new Date(limitStartYmd + 'T00:00:00');
+    if (!isNaN(lim.getTime()) && start < lim) start = lim;
+  }
+  if (limitEndYmd) {
+    const lim = new Date(limitEndYmd + 'T23:59:59');
+    if (!isNaN(lim.getTime()) && end > lim) end = lim;
+  }
+  if (start > end) return 0;
+
+  let days = 0;
+  const current = new Date(start);
+  current.setHours(0, 0, 0, 0);
+  const stop = new Date(end);
+  stop.setHours(23, 59, 59, 999);
+
+  while (current <= stop) {
+    const dayOfWeek = current.getDay();
+    const dateStr = getLocalISOString(current);
+    if (dayOfWeek !== 0 && !holidayDateSet.has(dateStr)) days += 1;
+    current.setDate(current.getDate() + 1);
+  }
+  return days;
+};
+
+/** Absent working days in [startYmd, endYmd] — no check-in & check-out, not on approved leave. */
+export const calculateAbsentDaysForDateRange = (
+  userId: string,
+  user: User | undefined,
+  startYmd: string,
+  endYmd: string,
+  attendanceRecords: Attendance[],
+  leaveRequests: LeaveRequest[],
+  holidayDateSet: Set<string>
+): number => {
+  if (!startYmd || !endYmd || startYmd > endYmd) return 0;
+
+  const todayStr = getTodayStr();
+  const userRecordsByDate = new Map<string, Attendance>();
+  attendanceRecords
+    .filter(r => r.userId === userId)
+    .forEach(r => {
+      const dateKey = normalizeAttendanceDateStr(
+        typeof r.date === 'string' ? r.date : getLocalISOString(new Date(r.date))
+      );
+      userRecordsByDate.set(dateKey, r);
+    });
+
+  const leaveDates = new Set<string>();
+  leaveRequests
+    .filter(l => {
+      if (l.userId !== userId) return false;
+      if (!isApprovedLeaveStatus(l.status)) return false;
+      return countsTowardBondUsedLeave(l);
+    })
+    .forEach(l => {
+      let curr = new Date(l.startDate + 'T00:00:00');
+      const end = new Date(l.endDate + 'T00:00:00');
+      while (curr <= end) {
+        leaveDates.add(getLocalISOString(curr));
+        curr.setDate(curr.getDate() + 1);
+      }
+    });
+
+  const firstCheckIn = attendanceRecords
+    .filter(r => r.userId === userId && r.checkIn)
+    .sort((a, b) => {
+      const d1 = normalizeAttendanceDateStr(typeof a.date === 'string' ? a.date : getLocalISOString(new Date(a.date)));
+      const d2 = normalizeAttendanceDateStr(typeof b.date === 'string' ? b.date : getLocalISOString(new Date(b.date)));
+      return d1.localeCompare(d2);
+    })[0]?.date;
+  const firstCheckInStr = firstCheckIn
+    ? normalizeAttendanceDateStr(typeof firstCheckIn === 'string' ? firstCheckIn : getLocalISOString(new Date(firstCheckIn)))
+    : undefined;
+  const absenceStart = getAbsenceStartDate(user, firstCheckInStr);
+
+  let absentCount = 0;
+  const iter = new Date(startYmd + 'T00:00:00');
+  const endRange = new Date(endYmd + 'T23:59:59');
+  const now = new Date();
+  const cappedEnd = endRange < now ? endRange : now;
+
+  while (iter <= cappedEnd) {
+    const dateStr = getLocalISOString(iter);
+    const dayOfWeek = iter.getDay();
+    if (
+      dateStr >= startYmd &&
+      dateStr <= endYmd &&
+      dateStr >= absenceStart &&
+      dateStr < todayStr &&
+      dayOfWeek !== 0 &&
+      !holidayDateSet.has(dateStr) &&
+      !isPresentForAbsentCount(userRecordsByDate.get(dateStr)) &&
+      !leaveDates.has(dateStr)
+    ) {
+      absentCount += 1;
+    }
+    iter.setDate(iter.getDate() + 1);
+  }
+  return absentCount;
+};
+
+/** Bond allocation = total bond months (12-month bond → 12 leaves). Falls back to manual allocation. */
+export const getBondLeaveAllocation = (user?: User | null): number => {
+  const bondPeriod = getEmployeeBondPeriod(user);
+  if (bondPeriod.hasBonds && bondPeriod.totalMonths > 0) return bondPeriod.totalMonths;
+  return user?.paidLeaveAllocation || 0;
+};
+
+/**
+ * Bond leave summary from March 2025: applied full/half-day + absent days (no punch).
+ * allocated − totalTaken = remaining; overflow → extra leave.
+ */
+export const calculateBondLeaveSummary = (
+  user: User | undefined,
+  leaveRequests: LeaveRequest[],
+  attendanceRecords: Attendance[],
+  holidayDateSet: Set<string>,
+  manualAdjustments: { paid?: number; halfDay?: number; unpaid?: number } = {}
+): BondLeaveSummary => {
+  const empty: BondLeaveSummary = {
+    allocated: 0,
+    used: 0,
+    remaining: 0,
+    extra: 0,
+    totalTaken: 0,
+    appliedDays: 0,
+    absentDays: 0,
+    countStart: BOND_LEAVE_EFFECTIVE_DATE,
+    countEnd: getTodayStr(),
+  };
+  if (!user?.id) return empty;
+
+  const bondPeriod = getEmployeeBondPeriod(user);
+  const countStart =
+    bondPeriod.startDate > BOND_LEAVE_EFFECTIVE_DATE ? bondPeriod.startDate : BOND_LEAVE_EFFECTIVE_DATE;
+  const countEnd = bondPeriod.endDate;
+
+  let appliedDays = 0;
+  for (const leave of leaveRequests) {
+    if (leave.userId !== user.id) continue;
+    if (!isApprovedLeaveStatus(leave.status)) continue;
+    if (!countsTowardBondUsedLeave(leave)) continue;
+    if (!leaveOverlapsDateRange(leave, countStart, countEnd)) continue;
+
+    const cat = String(leave.category || '');
+    if (cat === LeaveCategory.HALF_DAY || cat === 'Half Day Leave') {
+      const day = normalizeAttendanceDateStr(leave.startDate);
+      if (day >= countStart && day <= countEnd) appliedDays += 0.5;
+    } else {
+      appliedDays += calculateLeaveWorkingDays(
+        leave.startDate,
+        leave.endDate,
+        holidayDateSet,
+        countStart,
+        countEnd
+      );
+    }
+  }
+
+  const manualTotal =
+    (manualAdjustments.paid || 0) +
+    (manualAdjustments.halfDay || 0) +
+    (manualAdjustments.unpaid || 0);
+
+  const absentDays = calculateAbsentDaysForDateRange(
+    user.id,
+    user,
+    countStart,
+    countEnd,
+    attendanceRecords,
+    leaveRequests,
+    holidayDateSet
+  );
+
+  const totalTaken = appliedDays + absentDays + manualTotal;
+  const allocated = getBondLeaveAllocation(user);
+  const remaining = Math.max(0, allocated - totalTaken);
+  const extra = Math.max(0, totalTaken - allocated);
+  const used = Math.min(totalTaken, allocated);
+
+  return {
+    allocated,
+    used,
+    remaining,
+    extra,
+    totalTaken,
+    appliedDays,
+    absentDays,
+    countStart,
+    countEnd,
+  };
 };
 
 /** Approved leave credit for a calendar day (paid/unpaid/half-day/ETL). Absent days → implicit unpaid leave. */

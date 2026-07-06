@@ -8,7 +8,7 @@ import { CheckInTimeSettings } from '../components/CheckInTimeSettings';
 import { LatePenaltySettings } from '../components/LatePenaltySettings';
 import { Role, LeaveCategory, LeaveStatus, User, Attendance, AuditLog } from '../types';
 import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft, Search, ArrowUp, ArrowDown, Landmark } from 'lucide-react';
-import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds } from '../services/utils';
+import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, resolveLatePenaltyStartTime } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI, auditAPI } from '../services/api';
 import { ManagementOvertimePanel } from '../components/ManagementOvertimePanel';
@@ -1049,7 +1049,7 @@ export const AdminDashboard: React.FC = () => {
 
         // Late check-in penalty: use centralized utility (skip if admin disabled penalty or half-day leave)
         const penaltySeconds = !isHolidayDay && !record.isPenaltyDisabled && !hasHalfDay && isPenaltyEffective(recordDateISO as string)
-          ? calculateLatenessPenaltySeconds(record.checkIn, systemSettings.latePenaltyStartTime, systemSettings.timezone)
+          ? calculateLatenessPenaltySeconds(record.checkIn, resolveLatePenaltyStartTime(systemSettings, recordDateISO as string), systemSettings.timezone)
           : 0;
         const netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
 
@@ -1668,10 +1668,10 @@ export const AdminDashboard: React.FC = () => {
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
             <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
               <h3 className="text-lg font-bold text-gray-800">Pending Early OT</h3>
-              <p className="text-gray-500 text-sm">Approve or reject employee early checkout requests</p>
+              <p className="text-gray-500 text-sm">Approve or reject employee early checkout requests (today only)</p>
             </div>
             <div className="p-6">
-              <EarlyOvertimePanel variant="table" showTitle={false} />
+              <EarlyOvertimePanel variant="table" showTitle={false} todayOnly />
             </div>
           </div>
 

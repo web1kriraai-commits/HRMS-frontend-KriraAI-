@@ -5,8 +5,8 @@ import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
 import { MonthlyOvertimeSummary } from '../components/MonthlyOvertimeSummary';
 import { resolveGeneralOvertimeMinutes } from '../services/utils';
-import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn, HALF_DAY_EXTRA_THRESHOLD_SECONDS, calculateTotalBreakSeconds, hasMinimumTotalBreakTime, MIN_TOTAL_BREAK_SECONDS, getDateStrInTimezone, resolveCheckInTimeForDate, resolveCheckoutTimeForDate, formatCheckoutTimeLabel, isClockOutTimeAllowed, hasCheckoutOverrideForDate, formatHoursMinutesShort, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, getEffectiveLeaveCategory, getEmployeeBondPeriod, leaveOverlapsDateRange, getLateCheckInPenaltyInfo } from '../services/utils';
-import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare, Briefcase, ChevronDown } from 'lucide-react';
+import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn, HALF_DAY_EXTRA_THRESHOLD_SECONDS, calculateTotalBreakSeconds, hasMinimumTotalBreakTime, MIN_TOTAL_BREAK_SECONDS, getDateStrInTimezone, resolveCheckInTimeForDate, resolveCheckoutTimeForDate, formatCheckoutTimeLabel, isClockOutTimeAllowed, hasCheckoutOverrideForDate, formatHoursMinutesShort, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, getEffectiveLeaveCategory, getEmployeeBondPeriod, calculateBondLeaveSummary, BOND_LEAVE_EFFECTIVE_DATE, getLateCheckInPenaltyInfo, resolveLatePenaltyStartTime } from '../services/utils';
+import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare, Briefcase, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { appAlert } from '../services/appAlert';
@@ -14,6 +14,7 @@ import { appAlert } from '../services/appAlert';
 /** Half-day minimum net worked time (matches server: Math.floor(495/2)*60). */
 const HALF_DAY_MIN_SHIFT_SECONDS = Math.floor(495 / 2) * 60;
 const FULL_DAY_MIN_SHIFT_SECONDS = (8 * 3600) + (15 * 60);
+const ATTENDANCE_HISTORY_PAGE_SIZE = 8;
 
 /** Employee apply-form category options (display label vs backend category). */
 const EMPLOYEE_LEAVE_FORM_OPTIONS: { value: LeaveCategory; label: string }[] = [
@@ -99,6 +100,7 @@ export const EmployeeDashboard: React.FC = () => {
 
   /** Updates every second so check-in/checkout time gates unlock without waiting for unrelated re-renders */
   const [wallClockNow, setWallClockNow] = useState(() => new Date());
+  const [attendanceHistoryPage, setAttendanceHistoryPage] = useState(1);
   useEffect(() => {
     const id = window.setInterval(() => setWallClockNow(new Date()), 1000);
     return () => window.clearInterval(id);
@@ -366,6 +368,18 @@ export const EmployeeDashboard: React.FC = () => {
   const myLeaves = leaveRequests.filter(l => l.userId === user?.id);
   const myNotifications = notifications.filter(n => n.userId === user?.id);
   const myAttendanceHistory = attendanceRecords.filter(r => r.userId === user?.id).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  const attendanceHistoryTotalPages = Math.max(1, Math.ceil(myAttendanceHistory.length / ATTENDANCE_HISTORY_PAGE_SIZE));
+  const paginatedAttendanceHistory = useMemo(() => {
+    const start = (attendanceHistoryPage - 1) * ATTENDANCE_HISTORY_PAGE_SIZE;
+    return myAttendanceHistory.slice(start, start + ATTENDANCE_HISTORY_PAGE_SIZE);
+  }, [myAttendanceHistory, attendanceHistoryPage]);
+
+  useEffect(() => {
+    if (attendanceHistoryPage > attendanceHistoryTotalPages) {
+      setAttendanceHistoryPage(attendanceHistoryTotalPages);
+    }
+  }, [attendanceHistoryPage, attendanceHistoryTotalPages]);
 
   // Early-checkout deficit outstanding THIS calendar month only — repayment (Early OT) can only
   // ever apply against deficits incurred in the current month.
@@ -773,61 +787,23 @@ export const EmployeeDashboard: React.FC = () => {
 
   const bondPeriod = useMemo(() => getEmployeeBondPeriod(user), [user?.bonds, user?.joiningDate]);
 
-  const bondLeaveSummary = useMemo(() => {
-    const rangeStart = new Date(`${bondPeriod.startDate}T00:00:00`);
-    const rangeEnd = new Date(`${bondPeriod.endDate}T23:59:59`);
-    const isApproved = (leave: typeof myLeaves[0]) => {
-      const status = (leave.status || '').trim();
-      return status === 'Approved' || status === LeaveStatus.APPROVED;
-    };
-    const inBond = (leave: typeof myLeaves[0]) =>
-      isApproved(leave) && leaveOverlapsDateRange(leave, bondPeriod.startDate, bondPeriod.endDate);
-
-    const bondUsedPaid = myLeaves
-      .filter(l => {
-        if (!inBond(l)) return false;
-        if (l.category === LeaveCategory.PAID) return true;
-        if (l.category === LeaveCategory.HALF_DAY) {
-          const reason = l.reason || '';
-          return !reason.includes('[Extra Time Leave]') && !reason.includes('[Unpaid Leave]');
-        }
-        return false;
-      })
-      .reduce((sum, leave) => {
-        if (leave.category === LeaveCategory.HALF_DAY) return sum + 0.5;
-        return sum + calculateLeaveDays(leave.startDate, leave.endDate, rangeStart, rangeEnd);
-      }, 0) + manualPaidAdjustment + manualHalfDayAdjustment;
-
-    const bondUnpaidUsed = myLeaves
-      .filter(l => {
-        if (!inBond(l)) return false;
-        if (l.category === LeaveCategory.UNPAID) return true;
-        if (l.category === LeaveCategory.HALF_DAY) return (l.reason || '').includes('[Unpaid Leave]');
-        return false;
-      })
-      .reduce((sum, leave) => {
-        if (leave.category === LeaveCategory.HALF_DAY) return sum + 0.5;
-        return sum + calculateLeaveDays(leave.startDate, leave.endDate, rangeStart, rangeEnd);
-      }, 0) + manualUnpaidAdjustment;
-
-    const bondExtraUsed = myLeaves
-      .filter(l => {
-        if (!inBond(l)) return false;
-        if (l.category === LeaveCategory.EXTRA_TIME) return true;
-        if (l.category === LeaveCategory.HALF_DAY) return (l.reason || '').includes('[Extra Time Leave]');
-        return false;
-      })
-      .reduce((sum, leave) => {
-        if (leave.category === LeaveCategory.HALF_DAY) return sum + 0.5;
-        return sum + calculateLeaveDays(leave.startDate, leave.endDate, rangeStart, rangeEnd);
-      }, 0) + manualExtraAdjustment;
-
-    const allocated = TOTAL_PAID_LEAVES;
-    const used = bondUsedPaid + bondUnpaidUsed;
-    const remaining = Math.max(0, allocated - bondUsedPaid);
-
-    return { allocated, used, remaining, extra: bondExtraUsed };
-  }, [myLeaves, bondPeriod, manualPaidAdjustment, manualHalfDayAdjustment, manualExtraAdjustment, manualUnpaidAdjustment, TOTAL_PAID_LEAVES, holidayDateSet]);
+  const bondLeaveSummary = useMemo(
+    () =>
+      calculateBondLeaveSummary(user, myLeaves, myAttendanceHistory, holidayDateSet, {
+        paid: manualPaidAdjustment,
+        halfDay: manualHalfDayAdjustment,
+        unpaid: manualUnpaidAdjustment,
+      }),
+    [
+      user,
+      myLeaves,
+      myAttendanceHistory,
+      holidayDateSet,
+      manualPaidAdjustment,
+      manualHalfDayAdjustment,
+      manualUnpaidAdjustment,
+    ]
+  );
 
 
   // Show notifications popup only once per user per latest notification batch
@@ -1357,7 +1333,7 @@ export const EmployeeDashboard: React.FC = () => {
                           if (isPenaltyEffective(getTodayStr())) {
                             livePenaltySeconds = calculateLatenessPenaltySeconds(
                               checkInTime.toISOString(),
-                              systemSettings.latePenaltyStartTime,
+                              resolveLatePenaltyStartTime(systemSettings, getTodayStr()),
                               systemSettings.timezone
                             );
                           }
@@ -2004,6 +1980,9 @@ export const EmployeeDashboard: React.FC = () => {
                   <span className="block text-slate-300 mt-0.5">
                     {formatDate(bondPeriod.startDate)} – {formatDate(bondPeriod.displayEndDate)}
                   </span>
+                  <span className="block text-slate-300 mt-0.5">
+                    Leave counted from {formatDate(BOND_LEAVE_EFFECTIVE_DATE)}
+                  </span>
                 </p>
                 <div className="grid grid-cols-4 gap-2 sm:gap-3 min-w-0">
                   {[
@@ -2132,9 +2111,9 @@ export const EmployeeDashboard: React.FC = () => {
 
         {/* Attendance History Table (FR20) */}
         <Card title="My Attendance History" className="w-full">
-          <div className="overflow-x-auto max-h-80 overflow-y-auto">
+          <div className="overflow-x-auto">
             <table className="w-full text-sm text-left text-gray-500">
-              <thead className="text-xs text-gray-700 uppercase bg-gray-50 border-b sticky top-0">
+              <thead className="text-xs text-gray-700 uppercase bg-gray-50 border-b">
                 <tr>
                   <th className="px-4 py-3">Date</th>
                   <th className="px-4 py-3">Check In</th>
@@ -2148,7 +2127,7 @@ export const EmployeeDashboard: React.FC = () => {
                 {myAttendanceHistory.length === 0 ? (
                   <tr><td colSpan={6} className="text-center py-4">No records found.</td></tr>
                 ) : (
-                  myAttendanceHistory.map(r => {
+                  paginatedAttendanceHistory.map(r => {
                     const recordDate = typeof r.date === 'string' ? r.date.split('T')[0] : getLocalISOString(new Date(r.date));
                     const halfDayThisDate =
                       user?.id && hasApprovedHalfDayLeaveOnDate(myLeaves, user.id, recordDate);
@@ -2303,6 +2282,45 @@ export const EmployeeDashboard: React.FC = () => {
               </tbody>
             </table>
           </div>
+          {myAttendanceHistory.length > ATTENDANCE_HISTORY_PAGE_SIZE && (
+            <div className="px-4 py-3 border-t border-gray-100 bg-gray-50/50 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <p className="text-sm text-gray-500">
+                Showing{' '}
+                <span className="font-semibold text-gray-800">
+                  {(attendanceHistoryPage - 1) * ATTENDANCE_HISTORY_PAGE_SIZE + 1}
+                </span>
+                {' '}to{' '}
+                <span className="font-semibold text-gray-800">
+                  {Math.min(attendanceHistoryPage * ATTENDANCE_HISTORY_PAGE_SIZE, myAttendanceHistory.length)}
+                </span>
+                {' '}of{' '}
+                <span className="font-semibold text-gray-800">{myAttendanceHistory.length}</span> records
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setAttendanceHistoryPage(p => Math.max(1, p - 1))}
+                  disabled={attendanceHistoryPage === 1}
+                  className="h-8 w-8 p-0"
+                >
+                  <ChevronLeft size={16} />
+                </Button>
+                <span className="text-sm text-gray-600 min-w-[5rem] text-center">
+                  Page {attendanceHistoryPage} of {attendanceHistoryTotalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setAttendanceHistoryPage(p => Math.min(attendanceHistoryTotalPages, p + 1))}
+                  disabled={attendanceHistoryPage === attendanceHistoryTotalPages}
+                  className="h-8 w-8 p-0"
+                >
+                  <ChevronRight size={16} />
+                </Button>
+              </div>
+            </div>
+          )}
         </Card>
 
         {/* Leave Listing */}

@@ -221,7 +221,7 @@ export interface SystemSettings {
   defaultCheckoutTime: string;
   /** Per-day checkout override YYYY-MM-DD → HH:mm */
   checkoutTimeOverrides: Record<string, string>;
-  /** Late check-in penalty applies after this time HH:mm (24h), e.g. 09:00 */
+  /** Late check-in penalty applies after this time HH:mm (24h), e.g. 09:15 */
   latePenaltyStartTime: string;
 }
 

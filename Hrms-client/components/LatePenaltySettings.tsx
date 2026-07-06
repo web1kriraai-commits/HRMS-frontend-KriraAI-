@@ -10,11 +10,11 @@ type Props = {
 };
 
 export const LatePenaltySettings: React.FC<Props> = ({ systemSettings, updateSystemSettings }) => {
-  const [penaltyStartTime, setPenaltyStartTime] = useState(systemSettings.latePenaltyStartTime || '09:00');
+  const [penaltyStartTime, setPenaltyStartTime] = useState(systemSettings.latePenaltyStartTime || '09:15');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    setPenaltyStartTime(systemSettings.latePenaltyStartTime || '09:00');
+    setPenaltyStartTime(systemSettings.latePenaltyStartTime || '09:15');
   }, [systemSettings.latePenaltyStartTime]);
 
   const handleSave = async () => {
@@ -37,7 +37,8 @@ export const LatePenaltySettings: React.FC<Props> = ({ systemSettings, updateSys
         <label className="block text-sm font-bold text-gray-700 mb-1">Penalty starts from</label>
         <p className="text-xs text-gray-500 mb-3">
           Employees who check in after this time receive a late check-in penalty (minimum 15 minutes deducted from
-          worked time). Check-in at or before this time is not penalized. Current cutoff:{' '}
+          worked time). Check-in at or before this time is not penalized. Applies from 6 Jul 2026 onward; earlier
+          dates used 09:00. Current cutoff:{' '}
           <span className="font-semibold">{formatCheckoutTimeLabel(hour, minute)}</span> (24h: {penaltyStartTime}).
         </p>
         <div className="flex flex-wrap items-center gap-3">

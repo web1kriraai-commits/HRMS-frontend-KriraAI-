@@ -135,8 +135,12 @@ const transformAttendance = (
   apiAttendance: any,
   options?: { latePenaltyStartTime?: string; timeZone?: string }
 ): Attendance => {
-  const penaltyCutoff = options?.latePenaltyStartTime || DEFAULT_LATE_PENALTY_START_TIME;
   const timeZone = options?.timeZone || 'Asia/Kolkata';
+  const recordDate = apiAttendance.date?.split('T')[0] || apiAttendance.date;
+  const penaltyCutoff = resolveLatePenaltyStartTime(
+    { latePenaltyStartTime: options?.latePenaltyStartTime, timezone: timeZone },
+    recordDate
+  );
   const penaltyDisabled = !!apiAttendance.isPenaltyDisabled;
   const penaltyEffective = isPenaltyEffective(apiAttendance.date);
   const late = isLateCheckIn(apiAttendance.checkIn, penaltyCutoff, timeZone);
@@ -279,7 +283,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     checkInTimeOverrides: {},
     defaultCheckoutTime: '17:30',
     checkoutTimeOverrides: {},
-    latePenaltyStartTime: '09:00'
+    latePenaltyStartTime: '09:15'
   });
   const [loading, setLoading] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -414,7 +418,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 checkInTimeOverrides: settingsData?.checkInTimeOverrides || {},
                 defaultCheckoutTime: settingsData?.defaultCheckoutTime || '17:30',
                 checkoutTimeOverrides: settingsData?.checkoutTimeOverrides || {},
-                latePenaltyStartTime: settingsData?.latePenaltyStartTime || '09:00'
+                latePenaltyStartTime: settingsData?.latePenaltyStartTime || '09:15'
               });
             })
         );
@@ -765,7 +769,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         checkInTimeOverrides: data.checkInTimeOverrides || {},
         defaultCheckoutTime: data.defaultCheckoutTime || '17:30',
         checkoutTimeOverrides: data.checkoutTimeOverrides || {},
-        latePenaltyStartTime: data.latePenaltyStartTime || '09:00'
+        latePenaltyStartTime: data.latePenaltyStartTime || '09:15'
       });
       await refreshData(); // Refresh audit logs
     } catch (error) {

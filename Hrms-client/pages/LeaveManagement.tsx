@@ -26,7 +26,7 @@ import {
     Trash2,
     Filter
 } from 'lucide-react';
-import { formatDate, getTodayStr, getEffectiveLeaveCategory, calculateAbsentDaysForMonth } from '../services/utils';
+import { formatDate, getTodayStr, getEffectiveLeaveCategory, calculateAbsentDaysForMonth, calculateBondLeaveSummary } from '../services/utils';
 import { userAPI } from '../services/api';
 import { appAlert } from '../services/appAlert';
 
@@ -221,10 +221,21 @@ export const LeaveManagement: React.FC = () => {
                 const usedLeaveInMonth = monthApprovedLeaves
                     .reduce((sum, l) => sum + l.daysCount, 0);
 
-                const allocated = user.paidLeaveAllocation || 0;
                 const manualPaid = user.manualPaidLeaveAdjustment || 0;
                 const manualHalfDay = user.manualHalfDayLeaveAdjustment || 0;
                 const totalPaidUsed = usedPaidLeavesAllTime + manualPaid + manualHalfDay;
+
+                const bondSummary = calculateBondLeaveSummary(
+                    user,
+                    leaveRequests,
+                    attendanceRecords,
+                    holidayDateSet,
+                    {
+                        paid: user.manualPaidLeaveAdjustment || 0,
+                        halfDay: user.manualHalfDayLeaveAdjustment || 0,
+                        unpaid: user.manualUnpaidLeaveAdjustment || 0,
+                    }
+                );
 
                 const absentDays = calculateAbsentDaysForMonth(
                     user.id,
@@ -242,7 +253,13 @@ export const LeaveManagement: React.FC = () => {
                     role: user.role,
                     department: user.department,
                     paidLeaveAccess: user.paidLeaveAccess !== false,
-                    paidAllocated: allocated,
+                    paidAllocated: bondSummary.allocated,
+                    usedLeaveBond: bondSummary.totalTaken,
+                    usedLeaveFromPool: bondSummary.used,
+                    remainingLeave: bondSummary.remaining,
+                    extraLeave: bondSummary.extra,
+                    appliedDays: bondSummary.appliedDays,
+                    absentDaysBond: bondSummary.absentDays,
                     usedLeaveInMonth,
                     usedPaidLeaves: totalPaidUsed,
                     usedPaidInMonth: usedPaidLeavesInMonth,
@@ -426,7 +443,7 @@ export const LeaveManagement: React.FC = () => {
                     <div>
                         <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Total Allocated</p>
                         <p className="text-2xl font-black text-slate-800">
-                            {formatDisplayDays(users.reduce((sum, u) => sum + (u.paidLeaveAllocation || 0), 0))} <span className="text-xs text-slate-400 font-bold">Days</span>
+                            {formatDisplayDays(employeeLeaveStats.reduce((sum, s) => sum + s.paidAllocated, 0))} <span className="text-xs text-slate-400 font-bold">Days</span>
                         </p>
                     </div>
                 </div>
@@ -435,9 +452,9 @@ export const LeaveManagement: React.FC = () => {
                         <Calendar size={24} />
                     </div>
                     <div>
-                        <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Total Used (Paid)</p>
+                        <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Total Used (Bond)</p>
                         <p className="text-2xl font-black text-rose-600">
-                            {formatDisplayDays(employeeLeaveStats.reduce((sum, s) => sum + s.usedPaidLeaves, 0))} <span className="text-xs text-rose-400 font-bold">Days</span>
+                            {formatDisplayDays(employeeLeaveStats.reduce((sum, s) => sum + s.usedLeaveBond, 0))} <span className="text-xs text-rose-400 font-bold">Days</span>
                         </p>
                     </div>
                 </div>
@@ -446,9 +463,9 @@ export const LeaveManagement: React.FC = () => {
                         <TrendingUp size={24} />
                     </div>
                     <div>
-                        <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Extra Time Taken</p>
+                        <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Extra Leave (Beyond Bond)</p>
                         <p className="text-2xl font-black text-emerald-600">
-                            {formatDisplayDays(employeeLeaveStats.reduce((sum, s) => sum + s.totalExtraTime, 0))} <span className="text-xs text-emerald-400 font-bold">Days</span>
+                            {formatDisplayDays(employeeLeaveStats.reduce((sum, s) => sum + s.extraLeave, 0))} <span className="text-xs text-emerald-400 font-bold">Days</span>
                         </p>
                     </div>
                 </div>
@@ -471,7 +488,7 @@ export const LeaveManagement: React.FC = () => {
                             <Users className="text-blue-400" size={22} />
                             Employee Leave Summary
                         </h3>
-                        <p className="text-slate-400 text-xs font-medium mt-1">Allocated, used & absent leave per employee</p>
+                        <p className="text-slate-400 text-xs font-medium mt-1">Bond leave: allocated, used, remaining &amp; extra (from Mar 2025)</p>
                     </div>
                     <div className="flex flex-wrap items-center gap-3">
                         <input
@@ -501,7 +518,8 @@ export const LeaveManagement: React.FC = () => {
                                 <th className="px-6 py-4 text-left">Employee</th>
                                 <th className="px-4 py-4 text-center">Allocated</th>
                                 <th className="px-4 py-4 text-center">Used Leave</th>
-                                <th className="px-4 py-4 text-center">Absent</th>
+                                <th className="px-4 py-4 text-center">Remaining</th>
+                                <th className="px-4 py-4 text-center">Extra</th>
                                 <th className="px-6 py-4 text-center">History</th>
                             </tr>
                         </thead>
@@ -532,12 +550,17 @@ export const LeaveManagement: React.FC = () => {
                                         </div>
                                     </td>
                                     <td className="px-4 py-4 text-center">
-                                        <span className="font-bold text-rose-500 bg-rose-50 border border-rose-100 px-3 py-1 rounded-lg text-xs">{formatDisplayDays(stat.usedLeaveInMonth)}</span>
-                                        <p className="text-[9px] text-slate-400 mt-0.5">this month</p>
+                                        <span className="font-bold text-rose-500 bg-rose-50 border border-rose-100 px-3 py-1 rounded-lg text-xs">{formatDisplayDays(stat.usedLeaveBond)}</span>
+                                        <p className="text-[9px] text-slate-400 mt-0.5">bond period · from Mar 2025</p>
                                     </td>
                                     <td className="px-4 py-4 text-center">
-                                        <span className={`font-bold px-3 py-1 rounded-lg text-xs border ${stat.absentDays > 0 ? 'text-amber-600 bg-amber-50 border-amber-100' : 'text-slate-400 bg-slate-50 border-slate-100'}`}>
-                                            {formatDisplayDays(stat.absentDays)}
+                                        <span className={`font-bold px-3 py-1 rounded-lg text-xs border ${stat.remainingLeave > 0 ? 'text-indigo-600 bg-indigo-50 border-indigo-100' : 'text-slate-400 bg-slate-50 border-slate-100'}`}>
+                                            {formatDisplayDays(stat.remainingLeave)}
+                                        </span>
+                                    </td>
+                                    <td className="px-4 py-4 text-center">
+                                        <span className={`font-bold px-3 py-1 rounded-lg text-xs border ${stat.extraLeave > 0 ? 'text-emerald-600 bg-emerald-50 border-emerald-100' : 'text-slate-400 bg-slate-50 border-slate-100'}`}>
+                                            {formatDisplayDays(stat.extraLeave)}
                                         </span>
                                     </td>
                                     <td className="px-6 py-4 text-center">

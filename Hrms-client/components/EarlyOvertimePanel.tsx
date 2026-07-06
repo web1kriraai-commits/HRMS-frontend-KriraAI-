@@ -25,14 +25,20 @@ interface EarlyOvertimePanelProps {
   className?: string;
   /** When true, hide pending requests from previous months (popup uses this). */
   currentMonthOnly?: boolean;
+  /** When true, show only today's pending requests (admin dashboard table). */
+  todayOnly?: boolean;
 }
+
+const normalizeRequestDate = (date?: string) =>
+  (date?.split('T')[0] || date || '').trim();
 
 export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
   variant = 'full',
   maxItems,
   showTitle = true,
   className = '',
-  currentMonthOnly = false
+  currentMonthOnly = false,
+  todayOnly = false
 }) => {
   const { users, reviewEarlyCheckout, auth, refreshData } = useApp();
   const [pending, setPending] = useState<PendingEarlyOT[]>([]);
@@ -78,13 +84,23 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
   }, [loadPending]);
 
   const visible = useMemo(() => {
-    const monthKey = getTodayStr().slice(0, 7);
-    let list = currentMonthOnly
-      ? pending.filter((req) => (req.date?.split('T')[0] || req.date || '').slice(0, 7) === monthKey)
-      : pending;
+    const today = getTodayStr();
+    const monthKey = today.slice(0, 7);
+    let list = pending;
+    if (todayOnly) {
+      list = list.filter((req) => normalizeRequestDate(req.date) === today);
+    } else if (currentMonthOnly) {
+      list = list.filter((req) => normalizeRequestDate(req.date).slice(0, 7) === monthKey);
+    }
     if (maxItems != null) return list.slice(0, maxItems);
     return list;
-  }, [pending, maxItems, currentMonthOnly]);
+  }, [pending, maxItems, currentMonthOnly, todayOnly]);
+
+  const emptyMessage = todayOnly
+    ? 'No pending early OT requests for today'
+    : currentMonthOnly
+      ? 'No pending early OT requests this month'
+      : 'No pending early OT requests';
 
   const handleAction = async (
     recordId: string,
@@ -118,7 +134,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
               <Clock size={18} className="text-amber-600" />
               <h3 className="text-lg font-bold text-gray-800">Pending Early OT</h3>
               <span className="bg-amber-100 text-amber-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
-                {pending.length}
+                {visible.length}
               </span>
             </div>
             <button
@@ -148,7 +164,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
               {visible.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-8 text-center text-gray-400 italic">
-                    No pending early OT requests
+                    {emptyMessage}
                   </td>
                 </tr>
               ) : (
@@ -218,7 +234,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
             <Clock size={18} className="text-amber-600" />
             <h3 className="text-lg font-bold text-gray-800">Early OT Requests</h3>
             <span className="bg-amber-100 text-amber-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
-              {pending.length}
+              {visible.length}
             </span>
           </div>
           <button
@@ -234,7 +250,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
       )}
 
       {visible.length === 0 ? (
-        <p className="text-gray-400 text-sm italic py-4">No pending early OT requests.</p>
+        <p className="text-gray-400 text-sm italic py-4">{emptyMessage}.</p>
       ) : (
         <div
           className={
