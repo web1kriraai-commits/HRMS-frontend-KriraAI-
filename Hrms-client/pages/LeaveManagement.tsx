@@ -24,10 +24,9 @@ import {
     Pencil,
     RotateCcw,
     Trash2,
-    Filter,
-    Loader2
+    Filter
 } from 'lucide-react';
-import { formatDate, getTodayStr } from '../services/utils';
+import { formatDate, getTodayStr, getEffectiveLeaveCategory, calculateAbsentDaysForMonth } from '../services/utils';
 import { userAPI } from '../services/api';
 
 const formatDisplayDays = (val: number) => {
@@ -37,14 +36,13 @@ const formatDisplayDays = (val: number) => {
 };
 
 export const LeaveManagement: React.FC = () => {
-    const { users, leaveRequests, companyHolidays, refreshData, updateUser, updateLeaveStatus } = useApp();
+    const { users, leaveRequests, companyHolidays, attendanceRecords, refreshData, updateUser, updateLeaveStatus } = useApp();
     const [selectedUserForAllocation, setSelectedUserForAllocation] = useState('');
     const [allocationAmount, setAllocationAmount] = useState('');
     const [extraTimeAllocationAmount, setExtraTimeAllocationAmount] = useState('');
     const [allocationAction, setAllocationAction] = useState<'set' | 'add'>('add');
     const [searchQuery, setSearchQuery] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
-    const [togglingPaidAccessUserId, setTogglingPaidAccessUserId] = useState<string | null>(null);
     const [selectedHistoryUser, setSelectedHistoryUser] = useState<any>(null);
     const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
     const [isAllocationModalOpen, setIsAllocationModalOpen] = useState(false);
@@ -60,14 +58,21 @@ export const LeaveManagement: React.FC = () => {
     const [manualHalfDayAdjustment, setManualHalfDayAdjustment] = useState('');
     const [paidLeaveAccessEnabled, setPaidLeaveAccessEnabled] = useState(true);
 
+    const currentMonthDefault = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+    const currentYearDefault = new Date().getFullYear();
+
     // Global History Filters & Pagination
     const [histStatusFilter, setHistStatusFilter] = useState<'All' | 'Pending' | 'Approved' | 'Rejected' | 'Cancelled'>('All');
     const [histStartDateFilter, setHistStartDateFilter] = useState('');
     const [histEndDateFilter, setHistEndDateFilter] = useState('');
-    const [histMonthFilter, setHistMonthFilter] = useState('');
+    const [histMonthFilter, setHistMonthFilter] = useState(currentMonthDefault);
     const [histSearchQuery, setHistSearchQuery] = useState('');
     const [currentPageHist, setCurrentPageHist] = useState(1);
     const HIST_ITEMS_PER_PAGE = 10;
+
+    // Employee summary month filter (defaults to current month)
+    const [summaryMonthFilter, setSummaryMonthFilter] = useState(currentMonthDefault);
+    const [historyYearFilter, setHistoryYearFilter] = useState(currentYearDefault);
 
     const [isOverviewModalOpen, setIsOverviewModalOpen] = useState(false);
 
@@ -170,6 +175,15 @@ export const LeaveManagement: React.FC = () => {
         return { basePaid, baseExtra, baseUnpaid };
     };
 
+    // Helper: check if leave overlaps a month (YYYY-MM)
+    const leaveOverlapsMonth = (leave: { startDate: string; endDate: string }, monthStr: string) => {
+        if (!monthStr) return true;
+        const [y, m] = monthStr.split('-').map(Number);
+        const mStart = `${monthStr}-01`;
+        const mEnd = `${monthStr}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+        return leave.startDate <= mEnd && leave.endDate >= mStart;
+    };
+
     // Process paid leave statistics for employees
     const employeeLeaveStats = useMemo(() => {
         return users
@@ -177,65 +191,48 @@ export const LeaveManagement: React.FC = () => {
             .map(user => {
                 const userLeaves = leaveRequests.filter(l => l.userId === user.id);
 
-                // Detailed history for hover
+                // Detailed history for modal
                 const leaveHistory = userLeaves
                     .filter(l => (l.status === 'Approved' || l.status === LeaveStatus.APPROVED))
                     .map(l => {
+                        const effectiveCategory = getEffectiveLeaveCategory(l);
                         let daysCount = 0;
                         if (l.category === LeaveCategory.HALF_DAY) {
                             daysCount = 0.5;
-                        } else if (l.category === LeaveCategory.EXTRA_TIME) {
-                            daysCount = calculateLeaveDays(l.startDate, l.endDate);
                         } else {
                             daysCount = calculateLeaveDays(l.startDate, l.endDate);
                         }
-                        return { ...l, daysCount };
+                        return { ...l, daysCount, effectiveCategory };
                     })
                     .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
 
-                const usedPaidLeaves = leaveHistory
-                    .filter(l => l.category === LeaveCategory.PAID ||
-                        (l.category === LeaveCategory.HALF_DAY && !(l.reason || '').includes('[Extra Time Leave]') && !(l.reason || '').includes('[Unpaid Leave]')))
+                // Month-scoped approved leaves
+                const monthApprovedLeaves = leaveHistory.filter(l => leaveOverlapsMonth(l, summaryMonthFilter));
+
+                const usedPaidLeavesAllTime = leaveHistory
+                    .filter(l => l.effectiveCategory === LeaveCategory.PAID)
                     .reduce((sum, l) => sum + l.daysCount, 0);
 
-                // Calculate counts for all categories
-                const categorySummaries = leaveHistory.reduce((acc: { [key: string]: number }, l) => {
-                    let cat = l.category || 'Other';
+                const usedPaidLeavesInMonth = monthApprovedLeaves
+                    .filter(l => l.effectiveCategory === LeaveCategory.PAID)
+                    .reduce((sum, l) => sum + l.daysCount, 0);
 
-                    // Correctly categorize half-day leaves based on reason tags
-                    if (cat === LeaveCategory.HALF_DAY) {
-                        const reason = l.reason || '';
-                        if (reason.includes('[Extra Time Leave]')) {
-                            cat = LeaveCategory.EXTRA_TIME;
-                        } else if (reason.includes('[Unpaid Leave]')) {
-                            cat = LeaveCategory.UNPAID;
-                        } else {
-                            cat = LeaveCategory.PAID;
-                        }
-                    }
-
-                    acc[cat] = (acc[cat] || 0) + l.daysCount;
-                    return acc;
-                }, {});
+                const usedLeaveInMonth = monthApprovedLeaves
+                    .reduce((sum, l) => sum + l.daysCount, 0);
 
                 const allocated = user.paidLeaveAllocation || 0;
-
-                // Incorporate manual adjustments
                 const manualPaid = user.manualPaidLeaveAdjustment || 0;
-                const manualExtraTime = user.manualExtraTimeAdjustment || 0;
-                const manualUnpaid = user.manualUnpaidLeaveAdjustment || 0;
                 const manualHalfDay = user.manualHalfDayLeaveAdjustment || 0;
+                const totalPaidUsed = usedPaidLeavesAllTime + manualPaid + manualHalfDay;
 
-                // Merge half day adjustments into paid total now that column is removed
-                const totalPaid = usedPaidLeaves + manualPaid + manualHalfDay;
-                const remainingPaid = Math.max(0, allocated - totalPaid);
-
-                const extraTimeAllocated = user.extraTimeLeaveAllocation || 0;
-                const totalExtraTime = (categorySummaries[LeaveCategory.EXTRA_TIME] || 0) + manualExtraTime;
-                const remainingExtra = Math.max(0, extraTimeAllocated - totalExtraTime);
-
-                const totalUnpaid = (categorySummaries[LeaveCategory.UNPAID] || 0) + manualUnpaid;
-                const totalHalfDay = (categorySummaries[LeaveCategory.HALF_DAY] || 0) + manualHalfDay;
+                const absentDays = calculateAbsentDaysForMonth(
+                    user.id,
+                    user,
+                    summaryMonthFilter,
+                    attendanceRecords,
+                    leaveRequests,
+                    holidayDateSet
+                );
 
                 return {
                     id: user.id,
@@ -245,31 +242,23 @@ export const LeaveManagement: React.FC = () => {
                     department: user.department,
                     paidLeaveAccess: user.paidLeaveAccess !== false,
                     paidAllocated: allocated,
-                    extraTimeAllocated,
-                    usedPaidLeaves: totalPaid,
-                    manualPaid,
-                    manualExtraTime,
-                    manualUnpaid,
-                    manualHalfDay,
-                    totalExtraTime,
-                    totalUnpaid,
-                    totalHalfDay,
-                    remainingPaid,
-                    remainingExtra,
+                    usedLeaveInMonth,
+                    usedPaidLeaves: totalPaidUsed,
+                    usedPaidInMonth: usedPaidLeavesInMonth,
+                    absentDays,
                     leaveHistory,
-                    categorySummaries
                 };
             })
             .filter(stat =>
                 stat.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                 stat.department.toLowerCase().includes(searchQuery.toLowerCase())
             );
-    }, [users, leaveRequests, holidayDateSet, searchQuery]);
+    }, [users, leaveRequests, holidayDateSet, searchQuery, summaryMonthFilter, attendanceRecords]);
 
-    // Reset pagination on search
+    // Reset pagination on search or month change
     useEffect(() => {
         setCurrentPage(1);
-    }, [searchQuery]);
+    }, [searchQuery, summaryMonthFilter]);
 
     const totalPages = Math.ceil(employeeLeaveStats.length / ITEMS_PER_PAGE);
     const paginatedStats = employeeLeaveStats.slice(
@@ -340,16 +329,31 @@ export const LeaveManagement: React.FC = () => {
         currentPageHist * HIST_ITEMS_PER_PAGE
     );
 
-    const toggleEmployeePaidLeaveAccess = async (stat: { id: string; paidLeaveAccess: boolean }) => {
-        if (togglingPaidAccessUserId) return;
-        setTogglingPaidAccessUserId(stat.id);
-        try {
-            await updateUser(stat.id, { paidLeaveAccess: !stat.paidLeaveAccess });
-        } catch (err: any) {
-            alert(err?.message || 'Could not update paid leave access. Only Admin can change this.');
-        } finally {
-            setTogglingPaidAccessUserId(null);
-        }
+    const historyYearOptions = useMemo(() => {
+        const start = 2025;
+        const end = new Date().getFullYear();
+        return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+    }, []);
+
+    const filteredHistoryForModal = useMemo(() => {
+        if (!selectedHistoryUser) return [];
+        return (selectedHistoryUser.leaveHistory || []).filter((l: any) => {
+            const year = new Date(l.startDate).getFullYear();
+            return year === historyYearFilter;
+        });
+    }, [selectedHistoryUser, historyYearFilter]);
+
+    const openAllocationForUser = (stat: typeof employeeLeaveStats[0]) => {
+        setSelectedUserForAllocation(stat.id);
+        setAllocationAmount(stat.paidAllocated.toString());
+        setExtraTimeAllocationAmount('0');
+        setManualPaidAdjustment(stat.usedPaidLeaves.toString());
+        setManualExtraTimeAdjustment('0');
+        setManualUnpaidAdjustment('0');
+        setManualHalfDayAdjustment('0');
+        setAllocationAction('set');
+        setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
+        setIsAllocationModalOpen(true);
     };
 
     const handleAllocationSubmit = async (e: React.FormEvent) => {
@@ -405,7 +409,7 @@ export const LeaveManagement: React.FC = () => {
                         resetAllocationFields();
                         setIsAllocationModalOpen(true);
                     }}
-                    className="flex items-center gap-2 bg-slate-900 text-white px-6 py-3.5 rounded-2xl font-bold hover:bg-slate-800 transition-all shadow-xl shadow-slate-200 active:scale-95"
+                    className="flex items-center gap-2 bg-blue-500 text-white px-6 py-3.5 rounded-2xl font-bold hover:bg-blue-600 transition-all shadow-lg shadow-blue-100 active:scale-95"
                 >
                     <PlusCircle size={20} />
                     Allocate Paid Leave
@@ -459,212 +463,92 @@ export const LeaveManagement: React.FC = () => {
             </div>
 
             {/* Table Section */}
-            <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden">
+            <div className="bg-white rounded-3xl shadow-lg border border-slate-100 overflow-hidden">
                 <div className="p-8 border-b border-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-6">
                     <div>
-                        <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                            <Users className="text-blue-500" size={22} />
+                        <h3 className="text-xl font-bold text-slate-700 flex items-center gap-2">
+                            <Users className="text-blue-400" size={22} />
                             Employee Leave Summary
                         </h3>
-                        <p className="text-slate-400 text-xs font-medium mt-1 uppercase tracking-wider">Historical breakdown per category</p>
-                        <p className="text-slate-500 text-[11px] font-medium mt-2 normal-case tracking-normal max-w-xl">
-                            <strong className="text-slate-700">Paid use:</strong> click <span className="text-emerald-700 font-semibold">Yes</span> / <span className="text-slate-600 font-semibold">No</span> to allow or block paid leave for that employee. When <strong>No</strong>, their dashboard hides Paid Leave and half-day can only be unpaid.
-                        </p>
+                        <p className="text-slate-400 text-xs font-medium mt-1">Allocated, used & absent leave per employee</p>
                     </div>
-                    <div className="relative">
+                    <div className="flex flex-wrap items-center gap-3">
                         <input
-                            type="text"
-                            placeholder="Search staff or dept..."
-                            className="bg-slate-50 border-none rounded-2xl px-5 py-3 pl-12 text-sm focus:ring-4 focus:ring-blue-100 min-w-[320px] font-medium transition-all"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
+                            type="month"
+                            className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2.5 text-xs font-semibold text-slate-600 focus:ring-4 focus:ring-blue-50"
+                            value={summaryMonthFilter}
+                            onChange={(e) => setSummaryMonthFilter(e.target.value)}
+                            title="Filter summary by month"
                         />
-                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={20} />
+                        <div className="relative">
+                            <input
+                                type="text"
+                                placeholder="Search staff or dept..."
+                                className="bg-slate-50 border border-slate-100 rounded-xl px-5 py-2.5 pl-11 text-sm focus:ring-4 focus:ring-blue-50 min-w-[240px] font-medium transition-all"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                            />
+                            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                        </div>
                     </div>
                 </div>
 
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead>
-                            <tr className="bg-slate-50/70 text-slate-400 uppercase text-[10px] font-black tracking-[0.15em] border-b border-slate-100">
-                                <th className="px-8 py-5 text-left w-[18%] font-black uppercase tracking-widest text-slate-400">Employee</th>
-                                <th className="px-3 py-5 text-center font-black uppercase tracking-widest text-slate-400" title="Click Yes to allow paid leave; No = unpaid only (also in Adjust Leave Balances)">Paid use</th>
-                                <th className="px-4 py-5 text-center font-black uppercase tracking-widest text-slate-400">Allocated</th>
-                                <th className="px-4 py-5 text-center font-black uppercase tracking-widest text-slate-400">Paid</th>
-                                <th className="px-4 py-5 text-center font-black uppercase tracking-widest text-slate-400">Extra Time</th>
-                                <th className="px-4 py-5 text-center font-black uppercase tracking-widest text-slate-400">Unpaid</th>
-                                <th className="px-6 py-5 text-center font-black uppercase tracking-widest text-slate-400">Remaining</th>
-                                <th className="px-8 py-5 text-right font-black uppercase tracking-widest text-slate-400">History</th>
+                            <tr className="bg-slate-50/80 text-slate-400 uppercase text-[10px] font-bold tracking-wider border-b border-slate-100">
+                                <th className="px-6 py-4 text-left">Employee</th>
+                                <th className="px-4 py-4 text-center">Allocated</th>
+                                <th className="px-4 py-4 text-center">Used Leave</th>
+                                <th className="px-4 py-4 text-center">Absent</th>
+                                <th className="px-6 py-4 text-center">History</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-50">
                             {paginatedStats.map(stat => (
-                                <tr key={stat.id} className="hover:bg-blue-50/40 transition-all duration-200 group">
-                                    <td className="px-8 py-5">
-                                        <div className="flex items-center gap-4">
-                                            <div className="h-11 w-11 rounded-2xl bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center text-slate-600 font-black text-sm ring-4 ring-white shadow-sm">
+                                <tr key={stat.id} className="hover:bg-blue-50/30 transition-colors group">
+                                    <td className="px-6 py-4">
+                                        <div className="flex items-center gap-3">
+                                            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center text-blue-500 font-bold text-sm">
                                                 {stat.name.charAt(0)}
                                             </div>
                                             <div>
-                                                <p className="font-bold text-slate-800 text-base mb-0.5 group-hover:text-blue-600 transition-colors uppercase tracking-tight">{stat.name}</p>
-                                                <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">{stat.department}</p>
+                                                <p className="font-semibold text-slate-700 group-hover:text-blue-500 transition-colors">{stat.name}</p>
+                                                <p className="text-[10px] text-slate-400 font-medium uppercase tracking-wide">{stat.department}</p>
                                             </div>
                                         </div>
                                     </td>
-                                    <td className="px-3 py-5 text-center">
+                                    <td className="px-4 py-4 text-center">
+                                        <div className="flex items-center justify-center gap-1.5">
+                                            <span className="font-bold text-slate-600 bg-slate-50 border border-slate-100 px-3 py-1 rounded-lg text-xs">{formatDisplayDays(stat.paidAllocated)}</span>
+                                            <button
+                                                onClick={() => openAllocationForUser(stat)}
+                                                className="p-1 rounded-md bg-slate-50 text-slate-400 hover:bg-blue-100 hover:text-blue-500 transition-all opacity-0 group-hover:opacity-100"
+                                                title="Edit allocation"
+                                            >
+                                                <Pencil size={10} />
+                                            </button>
+                                        </div>
+                                    </td>
+                                    <td className="px-4 py-4 text-center">
+                                        <span className="font-bold text-rose-500 bg-rose-50 border border-rose-100 px-3 py-1 rounded-lg text-xs">{formatDisplayDays(stat.usedLeaveInMonth)}</span>
+                                        <p className="text-[9px] text-slate-400 mt-0.5">this month</p>
+                                    </td>
+                                    <td className="px-4 py-4 text-center">
+                                        <span className={`font-bold px-3 py-1 rounded-lg text-xs border ${stat.absentDays > 0 ? 'text-amber-600 bg-amber-50 border-amber-100' : 'text-slate-400 bg-slate-50 border-slate-100'}`}>
+                                            {formatDisplayDays(stat.absentDays)}
+                                        </span>
+                                    </td>
+                                    <td className="px-6 py-4 text-center">
                                         <button
-                                            type="button"
-                                            onClick={() => toggleEmployeePaidLeaveAccess(stat)}
-                                            disabled={!!togglingPaidAccessUserId}
-                                            title={stat.paidLeaveAccess ? 'Paid leave allowed — click to turn off (employee will only see Unpaid)' : 'Paid leave off — click to allow again'}
-                                            className={`min-w-[3.25rem] inline-flex items-center justify-center gap-1 text-[9px] font-black uppercase tracking-wider px-2.5 py-1.5 rounded-lg border transition-all shadow-sm disabled:opacity-60 ${stat.paidLeaveAccess
-                                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100 cursor-pointer'
-                                                : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200 cursor-pointer'
-                                                }`}
+                                            onClick={() => {
+                                                setSelectedHistoryUser(stat);
+                                                setHistoryYearFilter(currentYearDefault);
+                                                setIsHistoryModalOpen(true);
+                                            }}
+                                            className="bg-blue-50 text-blue-500 hover:bg-blue-100 px-4 py-2 rounded-xl text-xs font-semibold transition-all active:scale-95 inline-flex items-center gap-1.5"
                                         >
-                                            {togglingPaidAccessUserId === stat.id ? (
-                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                            ) : stat.paidLeaveAccess ? (
-                                                'Yes'
-                                            ) : (
-                                                'No'
-                                            )}
-                                        </button>
-                                    </td>
-                                    <td className="px-4 py-5 text-center">
-                                        <div className="flex items-center justify-center gap-2 group/palloc">
-                                            <span className="font-black text-slate-700 bg-slate-50 border border-slate-100 px-3 py-1.5 rounded-xl text-xs">{formatDisplayDays(stat.paidAllocated)}</span>
-                                            <button
-                                                onClick={() => {
-                                                    setSelectedUserForAllocation(stat.id);
-                                                    setAllocationAmount(stat.paidAllocated.toString());
-                                                    setExtraTimeAllocationAmount(stat.extraTimeAllocated.toString());
-                                                    setManualPaidAdjustment(stat.usedPaidLeaves.toString());
-                                                    setManualExtraTimeAdjustment(stat.totalExtraTime.toString());
-                                                    setManualUnpaidAdjustment(stat.totalUnpaid.toString());
-                                                    setManualHalfDayAdjustment('0');
-                                                    setAllocationAction('set');
-                                                    setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
-                                                    setIsAllocationModalOpen(true);
-                                                }}
-                                                className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-blue-600 hover:text-white transition-all opacity-0 group-hover/palloc:opacity-100 shadow-sm"
-                                                title="Edit Allocation"
-                                            >
-                                                <Pencil size={10} />
-                                            </button>
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-5 text-center">
-                                        <div className="flex items-center justify-center gap-2 group/paid">
-                                            <span className="font-black text-rose-600 bg-rose-50/50 border border-rose-100 px-3 py-1.5 rounded-xl text-xs">{formatDisplayDays(stat.usedPaidLeaves)}</span>
-                                            <button
-                                                onClick={() => {
-                                                    setSelectedUserForAllocation(stat.id);
-                                                    setAllocationAmount(stat.paidAllocated.toString());
-                                                    setExtraTimeAllocationAmount(stat.extraTimeAllocated.toString());
-                                                    setManualPaidAdjustment(stat.usedPaidLeaves.toString());
-                                                    setManualExtraTimeAdjustment(stat.totalExtraTime.toString());
-                                                    setManualUnpaidAdjustment(stat.totalUnpaid.toString());
-                                                    setManualHalfDayAdjustment('0');
-                                                    setAllocationAction('set');
-                                                    setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
-                                                    setIsAllocationModalOpen(true);
-                                                }}
-                                                className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-rose-600 hover:text-white transition-all opacity-0 group-hover/paid:opacity-100 shadow-sm"
-                                                title="Adjust Paid Usage"
-                                            >
-                                                <Pencil size={10} />
-                                            </button>
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-5 text-center">
-                                        <div className="flex items-center justify-center gap-2 group/extra">
-                                            <span className={`font-black px-3 py-1.5 rounded-xl text-xs border ${stat.totalExtraTime > 0
-                                                ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
-                                                : 'bg-slate-50 text-slate-300 border-slate-100 opacity-50'
-                                                }`}>
-                                                {formatDisplayDays(stat.totalExtraTime)}
-                                            </span>
-                                            <button
-                                                onClick={() => {
-                                                    setSelectedUserForAllocation(stat.id);
-                                                    setAllocationAmount(stat.paidAllocated.toString());
-                                                    setExtraTimeAllocationAmount(stat.extraTimeAllocated.toString());
-                                                    setManualPaidAdjustment(stat.usedPaidLeaves.toString());
-                                                    setManualExtraTimeAdjustment(stat.totalExtraTime.toString());
-                                                    setManualUnpaidAdjustment(stat.totalUnpaid.toString());
-                                                    setManualHalfDayAdjustment('0');
-                                                    setAllocationAction('set');
-                                                    setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
-                                                    setIsAllocationModalOpen(true);
-                                                }}
-                                                className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-emerald-600 hover:text-white transition-all opacity-0 group-hover/extra:opacity-100 shadow-sm"
-                                                title="Adjust Extra Time"
-                                            >
-                                                <Pencil size={10} />
-                                            </button>
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-5 text-center">
-                                        <div className="flex items-center justify-center gap-2 group/unpaid">
-                                            <span className={`font-black px-3 py-1.5 rounded-xl text-xs border ${stat.totalUnpaid > 0
-                                                ? 'bg-rose-50 text-rose-700 border-rose-100'
-                                                : 'bg-slate-50 text-slate-300 border-slate-100 opacity-50'
-                                                }`}>
-                                                {formatDisplayDays(stat.totalUnpaid)}
-                                            </span>
-                                            <button
-                                                onClick={() => {
-                                                    setSelectedUserForAllocation(stat.id);
-                                                    setAllocationAmount(stat.paidAllocated.toString());
-                                                    setExtraTimeAllocationAmount(stat.extraTimeAllocated.toString());
-                                                    setManualPaidAdjustment(stat.usedPaidLeaves.toString());
-                                                    setManualExtraTimeAdjustment(stat.totalExtraTime.toString());
-                                                    setManualUnpaidAdjustment(stat.totalUnpaid.toString());
-                                                    setManualHalfDayAdjustment('0');
-                                                    setAllocationAction('set');
-                                                    setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
-                                                    setIsAllocationModalOpen(true);
-                                                }}
-                                                className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-rose-700 hover:text-white transition-all opacity-0 group-hover/unpaid:opacity-100 shadow-sm"
-                                                title="Adjust Unpaid Usage"
-                                            >
-                                                <Pencil size={10} />
-                                            </button>
-                                        </div>
-                                    </td>
-                                    <td className="px-6 py-5 text-center">
-                                        <div className="flex items-center justify-center gap-2 group/balance">
-                                            <div className="flex items-center bg-blue-600 rounded-xl px-4 py-1.5 shadow-sm">
-                                                <span className={`font-black text-xs text-white`}>
-                                                    {formatDisplayDays(stat.remainingPaid)}
-                                                </span>
-                                            </div>
-                                            <button
-                                                onClick={() => {
-                                                    setSelectedUserForAllocation(stat.id);
-                                                    setAllocationAmount(stat.paidAllocated.toString());
-                                                    setExtraTimeAllocationAmount(stat.extraTimeAllocated.toString());
-                                                    setManualPaidAdjustment(stat.usedPaidLeaves.toString());
-                                                    setManualExtraTimeAdjustment(stat.totalExtraTime.toString());
-                                                    setManualUnpaidAdjustment(stat.totalUnpaid.toString());
-                                                    setManualHalfDayAdjustment('0');
-                                                    setAllocationAction('set');
-                                                    setPaidLeaveAccessEnabled(stat.paidLeaveAccess);
-                                                    setIsAllocationModalOpen(true);
-                                                }}
-                                                className="p-1.5 rounded-lg bg-slate-100 text-slate-400 hover:bg-slate-900 hover:text-white transition-all opacity-0 group-hover/balance:opacity-100 shadow-sm"
-                                                title="Edit Balances"
-                                            >
-                                                <Pencil size={10} />
-                                            </button>
-                                        </div>
-                                    </td>
-                                    <td className="px-8 py-5 text-right">
-                                        <button
-                                            onClick={() => { setSelectedHistoryUser(stat); setIsHistoryModalOpen(true); }}
-                                            className="bg-slate-100 text-slate-600 hover:bg-slate-900 hover:text-white px-5 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-sm active:scale-95"
-                                        >
+                                            <History size={14} />
                                             History
                                         </button>
                                     </td>
@@ -846,8 +730,13 @@ export const LeaveManagement: React.FC = () => {
                                             )}
                                         </td>
                                         <td className="px-6 py-5 text-center">
-                                            <span className="text-[10px] font-black text-slate-500 bg-slate-100 px-3 py-1 rounded-lg uppercase tracking-tight">
-                                                {leave.category}
+                                            <span className={`text-[10px] font-semibold px-2.5 py-1 rounded-lg ${
+                                                getEffectiveLeaveCategory(leave) === LeaveCategory.PAID ? 'bg-blue-50 text-blue-500' :
+                                                getEffectiveLeaveCategory(leave) === LeaveCategory.UNPAID ? 'bg-rose-50 text-rose-500' :
+                                                getEffectiveLeaveCategory(leave) === LeaveCategory.EXTRA_TIME ? 'bg-emerald-50 text-emerald-600' :
+                                                'bg-amber-50 text-amber-600'
+                                            }`}>
+                                                {getEffectiveLeaveCategory(leave)}
                                             </span>
                                         </td>
                                         <td className="px-6 py-5 text-center">
@@ -957,23 +846,23 @@ export const LeaveManagement: React.FC = () => {
 
             {/* Allocation Modal */}
             {isAllocationModalOpen && (
-                <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xl animate-in fade-in duration-300">
-                    <Card className="w-full max-w-lg border-none shadow-2xl overflow-hidden bg-white animate-in zoom-in-95 duration-200">
+                <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-400/30 backdrop-blur-sm animate-in fade-in duration-300">
+                    <Card className="w-full max-w-lg border-none shadow-xl overflow-hidden bg-white animate-in zoom-in-95 duration-200">
                         {/* Modal Header */}
-                        <div className="bg-slate-900 p-6 py-6 text-white relative">
+                        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-6 border-b border-slate-100 relative">
                             <button
                                 onClick={() => setIsAllocationModalOpen(false)}
-                                className="absolute top-5 right-6 h-8 w-8 rounded-xl bg-white/5 flex items-center justify-center hover:bg-white/10 hover:rotate-90 transition-all duration-300 group"
+                                className="absolute top-5 right-5 h-8 w-8 rounded-xl bg-white border border-slate-100 flex items-center justify-center hover:bg-slate-50 transition-all group"
                             >
-                                <X size={18} className="text-slate-400 group-hover:text-white transition-colors" />
+                                <X size={16} className="text-slate-400 group-hover:text-slate-600 transition-colors" />
                             </button>
                             <div className="flex items-center gap-4">
-                                <div className="h-12 w-12 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20 ring-4 ring-blue-600/10">
-                                    <PlusCircle className="text-white" size={24} />
+                                <div className="h-11 w-11 bg-blue-100 rounded-xl flex items-center justify-center">
+                                    <PlusCircle className="text-blue-500" size={22} />
                                 </div>
                                 <div>
-                                    <h2 className="text-lg font-bold uppercase tracking-tight">Adjust Leave Balances</h2>
-                                    <p className="text-slate-400 text-[9px] font-bold mt-0.5 uppercase tracking-wider">Adjustment Center • HR Panel</p>
+                                    <h2 className="text-lg font-bold text-slate-700">Adjust Leave Balances</h2>
+                                    <p className="text-slate-400 text-xs mt-0.5">Allocation & paid leave access</p>
                                 </div>
                             </div>
                         </div>
@@ -1150,85 +1039,107 @@ export const LeaveManagement: React.FC = () => {
 
             {/* History Modal */}
             {isHistoryModalOpen && selectedHistoryUser && (
-                <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xl animate-in fade-in duration-300">
-                    <div className="bg-white rounded-[32px] shadow-2xl w-full max-w-2xl overflow-hidden animate-in zoom-in-95 duration-200 border border-white/20">
-                        <div className="bg-slate-900 p-8 text-white flex items-center justify-between">
-                            <div>
-                                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400 mb-2">Employee Activity Log</p>
-                                <h2 className="text-2xl font-black flex items-center gap-3 tracking-tight">
-                                    <History className="text-white opacity-40" size={24} />
-                                    {selectedHistoryUser.name}
-                                </h2>
-                                <p className="text-slate-400 text-xs font-bold mt-1 uppercase tracking-wider">{selectedHistoryUser.department} • {selectedHistoryUser.role}</p>
+                <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-400/30 backdrop-blur-sm animate-in fade-in duration-300">
+                    <div className="bg-white rounded-3xl shadow-xl w-full max-w-2xl overflow-hidden animate-in zoom-in-95 duration-200 border border-slate-100">
+                        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-6 border-b border-slate-100">
+                            <div className="flex items-start justify-between gap-4">
+                                <div>
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-blue-400 mb-1">Leave History</p>
+                                    <h2 className="text-xl font-bold text-slate-700 flex items-center gap-2">
+                                        <History className="text-blue-400" size={22} />
+                                        {selectedHistoryUser.name}
+                                    </h2>
+                                    <p className="text-slate-400 text-xs mt-1">{selectedHistoryUser.department}</p>
+                                </div>
+                                <button
+                                    onClick={() => setIsHistoryModalOpen(false)}
+                                    className="h-9 w-9 rounded-xl bg-white border border-slate-100 flex items-center justify-center hover:bg-slate-50 transition-all text-slate-400"
+                                >
+                                    <X size={18} />
+                                </button>
                             </div>
-                            <button
-                                onClick={() => setIsHistoryModalOpen(false)}
-                                className="h-12 w-12 rounded-2xl bg-white/10 flex items-center justify-center hover:bg-white/20 transition-all active:scale-90"
-                            >
-                                <X size={24} />
-                            </button>
+
+                            <div className="flex flex-wrap items-center gap-3 mt-4">
+                                <label className="text-xs font-semibold text-slate-500">Year:</label>
+                                <select
+                                    className="bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-600 focus:ring-2 focus:ring-blue-100"
+                                    value={historyYearFilter}
+                                    onChange={(e) => setHistoryYearFilter(Number(e.target.value))}
+                                >
+                                    {historyYearOptions.map(y => (
+                                        <option key={y} value={y}>{y}</option>
+                                    ))}
+                                </select>
+                                <div className="flex gap-2 ml-auto">
+                                    <div className="bg-white rounded-lg px-3 py-1.5 border border-slate-100 text-center">
+                                        <p className="text-[9px] text-slate-400 font-semibold uppercase">Records</p>
+                                        <p className="text-sm font-bold text-blue-500">{filteredHistoryForModal.length}</p>
+                                    </div>
+                                    <div className="bg-white rounded-lg px-3 py-1.5 border border-slate-100 text-center">
+                                        <p className="text-[9px] text-slate-400 font-semibold uppercase">Total Days</p>
+                                        <p className="text-sm font-bold text-rose-500">
+                                            {formatDisplayDays(filteredHistoryForModal.reduce((s: number, l: any) => s + l.daysCount, 0))}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
-                        <div className="p-8 max-h-[55vh] overflow-y-auto bg-slate-50/50 custom-scrollbar">
-                            {selectedHistoryUser.leaveHistory.length === 0 ? (
-                                <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-100">
-                                    <div className="h-20 w-20 bg-slate-50 rounded-3xl flex items-center justify-center mx-auto mb-6 text-slate-200">
-                                        <Info size={32} />
-                                    </div>
-                                    <p className="text-slate-400 font-black uppercase tracking-widest text-xs">No leave records found</p>
+                        <div className="p-6 max-h-[50vh] overflow-y-auto bg-slate-50/30">
+                            {filteredHistoryForModal.length === 0 ? (
+                                <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-slate-200">
+                                    <Info size={28} className="mx-auto mb-3 text-slate-300" />
+                                    <p className="text-slate-400 text-sm font-medium">No leave records for {historyYearFilter}</p>
                                 </div>
                             ) : (
-                                <div className="space-y-4">
-                                    {selectedHistoryUser.leaveHistory.map((leave: any, idx: number) => (
-                                        <div key={idx} className="bg-white rounded-2xl p-6 border border-slate-100 flex gap-6 transition-all hover:border-blue-200 hover:shadow-xl hover:shadow-blue-50/50 group">
-                                            <div className={`h-14 w-14 rounded-2xl flex-shrink-0 flex items-center justify-center shadow-lg transition-transform group-hover:scale-110 ${leave.category === LeaveCategory.PAID ? 'bg-blue-600 text-white shadow-blue-100' :
-                                                leave.category === LeaveCategory.HALF_DAY ? 'bg-amber-500 text-white shadow-amber-100' :
-                                                    leave.category === LeaveCategory.EXTRA_TIME ? 'bg-emerald-500 text-white shadow-emerald-100' :
-                                                        'bg-purple-600 text-white shadow-purple-100'
-                                                }`}>
-                                                <Calendar size={24} />
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-center justify-between mb-2">
-                                                    <span className="font-black text-slate-900 text-base uppercase tracking-tight">{leave.category}</span>
-                                                    <div className="bg-slate-900 text-white px-3 py-1 rounded-lg text-[10px] font-black tracking-widest">
-                                                        {leave.daysCount} DAY{leave.daysCount !== 1 ? 'S' : ''}
-                                                    </div>
+                                <div className="space-y-3">
+                                    {filteredHistoryForModal.map((leave: any, idx: number) => {
+                                        const cat = leave.effectiveCategory || getEffectiveLeaveCategory(leave);
+                                        const catColor = cat === LeaveCategory.PAID ? 'bg-blue-100 text-blue-600 border-blue-100' :
+                                            cat === LeaveCategory.UNPAID ? 'bg-rose-100 text-rose-500 border-rose-100' :
+                                                cat === LeaveCategory.EXTRA_TIME ? 'bg-emerald-100 text-emerald-600 border-emerald-100' :
+                                                    'bg-amber-100 text-amber-600 border-amber-100';
+                                        return (
+                                            <div key={idx} className="bg-white rounded-xl p-4 border border-slate-100 hover:border-blue-100 hover:shadow-sm transition-all">
+                                                <div className="flex items-start justify-between gap-3 mb-2">
+                                                    <span className={`text-[10px] font-semibold px-2.5 py-1 rounded-lg border ${catColor}`}>{cat}</span>
+                                                    <span className="text-xs font-bold text-slate-500 bg-slate-50 px-2 py-1 rounded-lg">
+                                                        {leave.daysCount} {leave.daysCount === 1 ? 'day' : 'days'}
+                                                    </span>
                                                 </div>
-                                                <div className="flex items-center gap-2 mb-4">
-                                                    <div className="h-1.5 w-1.5 rounded-full bg-blue-500"></div>
-                                                    <p className="text-xs font-black text-blue-600 tracking-tight italic">
-                                                        {formatDate(leave.startDate)} {leave.startDate !== leave.endDate && `— ${formatDate(leave.endDate)}`}
-                                                        {leave.startTime && (
-                                                            <span className="ml-2 font-bold text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded uppercase tracking-tighter not-italic">
-                                                                • {leave.startTime}
-                                                            </span>
-                                                        )}
+                                                <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
+                                                    <Calendar size={12} className="text-blue-400" />
+                                                    <span className="font-medium">
+                                                        {formatDate(leave.startDate)}
+                                                        {leave.startDate !== leave.endDate && ` — ${formatDate(leave.endDate)}`}
+                                                    </span>
+                                                    {leave.startTime && (
+                                                        <span className="text-[10px] bg-blue-50 text-blue-500 px-2 py-0.5 rounded font-medium">
+                                                            {leave.startTime}{leave.endTime ? ` – ${leave.endTime}` : ''}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                {leave.reason && (
+                                                    <p className="text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2 leading-relaxed">
+                                                        {leave.reason.replace(/^\[(Paid Leave|Unpaid Leave|Extra Time Leave)\]\s*/, '')}
                                                     </p>
-                                                </div>
-                                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 group-hover:bg-white transition-colors">
-                                                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 italic">Submission Reason</p>
-                                                    <p className="text-sm text-slate-700 font-bold leading-relaxed">"{leave.reason}"</p>
-                                                </div>
+                                                )}
                                             </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             )}
                         </div>
 
-                        <div className="p-8 bg-white border-t border-slate-100 flex items-center justify-between">
-                            <div className="flex flex-col">
-                                <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-1 italic">Total Approved Days</span>
-                                <span className="text-lg font-black text-slate-900 tracking-tight">
-                                    {selectedHistoryUser.leaveHistory.reduce((s: number, l: any) => s + l.daysCount, 0)} Record Found
-                                </span>
-                            </div>
+                        <div className="p-5 bg-white border-t border-slate-100 flex items-center justify-between">
+                            <p className="text-xs text-slate-400">
+                                Showing <span className="font-semibold text-slate-600">{filteredHistoryForModal.length}</span> approved leave{filteredHistoryForModal.length !== 1 ? 's' : ''} in {historyYearFilter}
+                            </p>
                             <Button
                                 onClick={() => setIsHistoryModalOpen(false)}
-                                className="px-10 py-4 rounded-2xl font-black uppercase tracking-[0.2em] text-xs shadow-xl transition-all hover:translate-y-[-2px] active:scale-95"
+                                className="px-6 py-2.5 rounded-xl font-semibold text-sm bg-blue-50 text-blue-500 hover:bg-blue-100 border-0 shadow-none"
                             >
-                                Close View
+                                Close
                             </Button>
                         </div>
                     </div>
@@ -1238,7 +1149,7 @@ export const LeaveManagement: React.FC = () => {
             {isOverviewModalOpen && (
                 <div 
                     onClick={() => setIsOverviewModalOpen(false)}
-                    className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-xl animate-in fade-in duration-300"
+                    className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-400/30 backdrop-blur-sm animate-in fade-in duration-300"
                 >
                     <div 
                         onClick={(e) => e.stopPropagation()}
@@ -1319,18 +1230,18 @@ export const LeaveManagement: React.FC = () => {
                                             ))}
                                         </tbody>
                                         <tfoot>
-                                            <tr className="bg-slate-900 text-white">
-                                                <td className="px-5 py-4 font-black uppercase tracking-widest text-[9px]">Grand Total</td>
+                                            <tr className="bg-blue-50 text-slate-600">
+                                                <td className="px-5 py-4 font-semibold uppercase tracking-wider text-[9px]">Grand Total</td>
                                                 <td className="px-4 py-4 text-center">
                                                     <div className="inline-flex items-center gap-1 text-[11px] font-black">
                                                         {formatDisplayDays(overviewData.reduce((sum, s) => sum + s.fullDays, 0))}
-                                                        <span className="text-[8px] text-indigo-300 uppercase">Days</span>
+                                                        <span className="text-[8px] text-blue-400 uppercase">Days</span>
                                                     </div>
                                                 </td>
                                                 <td className="px-5 py-4 text-right">
                                                     <div className="inline-flex items-center gap-1 text-[11px] font-black">
                                                         {formatDisplayDays(overviewData.reduce((sum, s) => sum + s.halfDays, 0))}
-                                                        <span className="text-[8px] text-indigo-300 uppercase">Days</span>
+                                                        <span className="text-[8px] text-blue-400 uppercase">Days</span>
                                                     </div>
                                                 </td>
                                             </tr>

@@ -49,6 +49,10 @@ export interface User {
   guardianName?: string; // Guardian/emergency contact name
   mobileNumber?: string; // Mobile/phone number
   guardianMobileNumber?: string; // Guardian mobile number
+  bankName?: string;
+  bankAccountHolderName?: string;
+  bankAccountNumber?: string;
+  bankIfscCode?: string;
   salaryBreakdown?: Array<{
     month: number; // 1-12
     year: number;
@@ -115,6 +119,29 @@ export interface Attendance {
   earlyLogoutRequest?: 'None' | 'Pending' | 'Approved' | 'Rejected';
   earlyLogoutRequestNote?: string;
   isCompulsoryBreakDisabled?: boolean;
+  /** Auto-calculated OT above 8h 15m per day */
+  generalOvertimeMinutes?: number;
+  managementOvertime?: {
+    reason: string;
+    durationMinutes: number;
+    status: 'None' | 'Pending' | 'Approved' | 'Rejected';
+    requestedAt?: string;
+    approvedBy?: string;
+    approvedAt?: string;
+    completedMinutes?: number;
+  };
+  earlyOvertime?: {
+    reason?: string;
+    durationMinutes?: number;
+    requestStatus?: 'None' | 'Pending' | 'Approved' | 'Rejected';
+    requestedAt?: string;
+    approvedBy?: string;
+    approvedAt?: string;
+    deficitMinutes: number;
+    coveredMinutes: number;
+    status: 'None' | 'Pending' | 'Partial' | 'Covered';
+  };
+  /** @deprecated Legacy — mirrors general OT */
   overtimeRequest?: {
     reason: string;
     durationMinutes: number;
@@ -122,6 +149,8 @@ export interface Attendance {
     requestedAt?: string;
     approvedBy?: string;
     approvedAt?: string;
+    completedMinutes?: number;
+    unfulfilledMinutes?: number;
   };
 }
 

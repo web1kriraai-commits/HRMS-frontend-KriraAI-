@@ -17,7 +17,9 @@ import {
   ChevronRight,
   ChevronLeft,
   Briefcase,
-  Users
+  Users,
+  Check,
+  X
 } from 'lucide-react';
 import { 
   formatDate, 
@@ -49,8 +51,32 @@ const formatHoursMinutes = (totalMinutes: number) => {
   return `${m}m`;
 };
 
+const resolveManagementOvertimeFields = (r: Attendance) => {
+  const mgmt = r.managementOvertime;
+  if (mgmt?.status && mgmt.status !== 'None') {
+    return {
+      status: mgmt.status,
+      durationMinutes: mgmt.durationMinutes || 0,
+      completedMinutes: mgmt.completedMinutes || 0,
+      reason: mgmt.reason || '',
+      isManagement: true
+    };
+  }
+  const legacy = r.overtimeRequest;
+  if (legacy?.status && legacy.status !== 'None') {
+    return {
+      status: legacy.status,
+      durationMinutes: legacy.durationMinutes || 0,
+      completedMinutes: legacy.completedMinutes || 0,
+      reason: legacy.reason || '',
+      isManagement: false
+    };
+  }
+  return null;
+};
+
 export const MonthlySummary: React.FC = () => {
-  const { users, attendanceRecords, leaveRequests, companyHolidays, systemSettings, loading } = useApp();
+  const { users, attendanceRecords, leaveRequests, companyHolidays, systemSettings, loading, auth, reviewManagementOvertime, refreshData } = useApp();
   
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
@@ -66,6 +92,11 @@ export const MonthlySummary: React.FC = () => {
   const [activeTableTab, setActiveTableTab] = useState<'penalties' | 'leaves' | 'earlyCheckout' | 'overtime'>('penalties');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+  const [otComments, setOtComments] = useState<Record<string, string>>({});
+  const [submittingOtId, setSubmittingOtId] = useState<string | null>(null);
+
+  const canReviewOt =
+    auth.user?.role === Role.ADMIN || auth.user?.role === Role.HR;
 
   const employeeOptions = useMemo(
     () =>
@@ -155,39 +186,7 @@ export const MonthlySummary: React.FC = () => {
         }
       });
 
-      // Absence Penalties (Injection)
-      const now = new Date();
-      const iter = new Date(startDate);
-      const endRange = endDate < now ? endDate : now;
-      
-      const firstCheckInDate = attendanceRecords
-        .filter(r => r.userId === user.id && r.checkIn)
-        .sort((a, b) => {
-          const d1 = typeof a.date === 'string' && !a.date.includes('T') ? a.date : getLocalISOString(new Date(a.date));
-          const d2 = typeof b.date === 'string' && !b.date.includes('T') ? b.date : getLocalISOString(new Date(b.date));
-          return d1.localeCompare(d2);
-        })[0]?.date;
-
-      while (iter <= endRange) {
-        const dateStr = getLocalISOString(iter);
-        const dayOfWeek = iter.getDay(); // 0 = Sunday
-        const absenceStart = getAbsenceStartDate(user, firstCheckInDate);
-
-        if (!recordsMap.has(dateStr) && !leaveDates.has(dateStr) && dayOfWeek !== 0 && !holidayDateSet.has(dateStr) && dateStr >= absenceStart && dateStr < todayStr) {
-          penalties.push({
-            id: `absent-${user.id}-${dateStr}`,
-            userId: user.id,
-            userName: user.name,
-            department: user.department,
-            date: dateStr,
-            type: 'Absence',
-            amount: '8h 15m',
-            amountSeconds: ABSENCE_PENALTY_SECONDS,
-            details: 'Unexcused absence'
-          });
-        }
-        iter.setDate(iter.getDate() + 1);
-      }
+      // Absence days are treated as unpaid leave (8h 15m working credit) — no low-time penalty list
     });
 
     let sorted = penalties.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -280,8 +279,8 @@ export const MonthlySummary: React.FC = () => {
       if (!inMonth) return false;
       if (!isAllEmployees && r.userId !== selectedEmployeeId) return false;
 
-      const hasOT = r.overtimeRequest && r.overtimeRequest.status !== 'None';
-      if (!hasOT) return false;
+      const otFields = resolveManagementOvertimeFields(r);
+      if (!otFields) return false;
 
       if (searchQuery) {
         const user = users.find(u => u.id === r.userId);
@@ -290,19 +289,26 @@ export const MonthlySummary: React.FC = () => {
 
       return true;
     }).map(r => {
-      const requested = r.overtimeRequest?.durationMinutes || 0;
+      const otFields = resolveManagementOvertimeFields(r)!;
+      const requested = otFields.durationMinutes;
       const workedSec = r.totalWorkedSeconds || 0;
       const isHoliday = holidayDateSet.has(r.date);
       const stats = calculateDailyTimeStats(workedSec, false, isHoliday, 0, r.date, systemSettings);
-      const completedMinutes = Math.floor(stats.extraTimeSeconds / 60);
+      const completedMinutes = otFields.isManagement
+        ? otFields.completedMinutes
+        : Math.floor(stats.extraTimeSeconds / 60);
 
       return {
         ...r,
         userName: users.find(u => u.id === r.userId)?.name || 'Unknown',
         department: users.find(u => u.id === r.userId)?.department || 'N/A',
         requestedMinutes: requested,
-        completedMinutes: completedMinutes,
-        approvedMinutes: r.overtimeRequest?.status === 'Approved' ? requested : 0
+        completedMinutes,
+        approvedMinutes: otFields.status === 'Approved' ? requested : 0,
+        otStatus: otFields.status,
+        otReason: otFields.reason,
+        isPendingMgmtOt: otFields.isManagement && otFields.status === 'Pending',
+        recordId: r.id
       };
     }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [attendanceRecords, users, selectedMonth, searchQuery, holidayDateSet, selectedEmployeeId, isAllEmployees]);
@@ -450,13 +456,30 @@ export const MonthlySummary: React.FC = () => {
         Date: o.date,
         Requested: `${o.requestedMinutes}m`,
         Completed: `${o.completedMinutes}m`,
-        Status: o.overtimeRequest?.status,
-        Reason: o.overtimeRequest?.reason
+        Status: o.otStatus,
+        Reason: o.otReason
       }));
       filename = `Overtime_History_${selectedMonth}${empSuffix}.csv`;
     }
 
     downloadCSV(filename, dataToExport);
+  };
+
+  const handleOtReview = async (recordId: string, status: 'Approved' | 'Rejected') => {
+    setSubmittingOtId(recordId);
+    try {
+      await reviewManagementOvertime(recordId, status, otComments[recordId]?.trim() || undefined);
+      setOtComments((prev) => {
+        const next = { ...prev };
+        delete next[recordId];
+        return next;
+      });
+      await refreshData(true);
+    } catch (error: any) {
+      alert(error.message || 'Failed to process management overtime request');
+    } finally {
+      setSubmittingOtId(null);
+    }
   };
 
   const getMonthName = () => {
@@ -774,14 +797,15 @@ export const MonthlySummary: React.FC = () => {
                   <th className="px-6 py-4">Employee</th>
                   <th className="px-6 py-4">Date</th>
                   <th className="px-6 py-4 text-center">Requested</th>
-                  <th className="px-6 py-4 text-center">Completed (Admin)</th>
+                  <th className="px-6 py-4 text-center">Completed</th>
                   <th className="px-6 py-4">Status</th>
                   <th className="px-6 py-4">Reason</th>
+                  {canReviewOt && <th className="px-6 py-4 text-center">Action</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {overtimeHistory.length === 0 ? (
-                  <tr><td colSpan={6} className="px-6 py-20 text-center text-slate-400 font-medium italic">No overtime requests in this month.</td></tr>
+                  <tr><td colSpan={canReviewOt ? 7 : 6} className="px-6 py-20 text-center text-slate-400 font-medium italic">No overtime requests in this month.</td></tr>
                 ) : overtimeHistory.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage).map((o, idx) => (
                   <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
                     <td className="px-6 py-4 font-bold text-slate-800">{o.userName}</td>
@@ -800,15 +824,52 @@ export const MonthlySummary: React.FC = () => {
                     </td>
                     <td className="px-6 py-4">
                       <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase ${
-                        o.overtimeRequest?.status === 'Approved' ? 'bg-emerald-100 text-emerald-600' : 
-                        o.overtimeRequest?.status === 'Rejected' ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-600'
+                        o.otStatus === 'Approved' ? 'bg-emerald-100 text-emerald-600' : 
+                        o.otStatus === 'Rejected' ? 'bg-rose-100 text-rose-600' : 'bg-amber-100 text-amber-600'
                       }`}>
-                        {o.overtimeRequest?.status}
+                        {o.otStatus}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-xs text-slate-500 italic truncate max-w-xs" title={o.overtimeRequest?.reason}>
-                      {o.overtimeRequest?.reason}
+                    <td className="px-6 py-4 text-xs text-slate-500 italic truncate max-w-xs" title={o.otReason}>
+                      {o.otReason}
                     </td>
+                    {canReviewOt && (
+                      <td className="px-6 py-4">
+                        {o.isPendingMgmtOt ? (
+                          <div className="flex flex-col items-center gap-2 min-w-[140px]">
+                            <input
+                              type="text"
+                              className="w-full text-xs p-1.5 border rounded"
+                              placeholder="Note..."
+                              value={otComments[o.recordId] || ''}
+                              onChange={(e) => setOtComments({ ...otComments, [o.recordId]: e.target.value })}
+                            />
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                disabled={submittingOtId === o.recordId}
+                                onClick={() => handleOtReview(o.recordId, 'Approved')}
+                                className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 disabled:opacity-50"
+                                title="Approve"
+                              >
+                                <Check size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={submittingOtId === o.recordId}
+                                onClick={() => handleOtReview(o.recordId, 'Rejected')}
+                                className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 disabled:opacity-50"
+                                title="Reject"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-300">—</span>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

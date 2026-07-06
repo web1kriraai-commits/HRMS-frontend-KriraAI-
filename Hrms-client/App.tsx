@@ -12,7 +12,8 @@ import { Profile } from '@/pages/Profile';
 import { Analytics } from '@/pages/Analytics';
 import { MonthlySummary } from '@/pages/MonthlySummary';
 import { Sidebar } from './components/Sidebar';
-import { EarlyLogoutPopup } from './components/EarlyLogoutPopup';
+import { EarlyOvertimePopup } from './components/EarlyOvertimePopup';
+import { ManagementOvertimePopup } from './components/ManagementOvertimePopup';
 import { RouteDataLoader } from './components/RouteDataLoader';
 import { Role } from './types';
 
@@ -47,7 +48,12 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           {children}
         </div>
       </main>
-      {(auth.user?.role === Role.ADMIN || auth.user?.role === Role.HR) && <EarlyLogoutPopup />}
+      {(auth.user?.role === Role.ADMIN || auth.user?.role === Role.HR) && (
+        <>
+          <EarlyOvertimePopup />
+          <ManagementOvertimePopup />
+        </>
+      )}
     </div>
   );
 };

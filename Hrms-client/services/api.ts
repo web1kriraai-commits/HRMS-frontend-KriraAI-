@@ -234,10 +234,16 @@ export const attendanceAPI = {
       body: JSON.stringify({ date, hours, note, department }),
     });
   },
-  requestEarlyCheckout: async (note: string) => {
+  requestEarlyCheckout: async (note: string, durationMinutes?: number) => {
     return apiRequest('/attendance/request-early-checkout', {
       method: 'POST',
-      body: JSON.stringify({ note }),
+      body: JSON.stringify({ note, durationMinutes }),
+    });
+  },
+  requestEarlyOvertime: async (reason: string, durationMinutes: number, date?: string) => {
+    return apiRequest('/attendance/request-early-overtime', {
+      method: 'POST',
+      body: JSON.stringify({ reason, durationMinutes, date }),
     });
   },
   reviewEarlyCheckout: async (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => {
@@ -245,6 +251,9 @@ export const attendanceAPI = {
       method: 'POST',
       body: JSON.stringify({ status, adminNote }),
     });
+  },
+  getPendingEarlyOvertime: async () => {
+    return apiRequest('/attendance/admin/pending-early-overtime');
   },
   requestOvertime: async (reason: string, durationMinutes: number, date?: string) => {
     return apiRequest('/attendance/request-overtime', {
@@ -255,10 +264,10 @@ export const attendanceAPI = {
   getPendingOvertime: async () => {
     return apiRequest('/attendance/admin/pending-overtime');
   },
-  reviewOvertime: async (recordId: string, status: 'Approved' | 'Rejected') => {
+  reviewOvertime: async (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => {
     return apiRequest(`/attendance/admin/review-overtime/${recordId}`, {
       method: 'POST',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, adminNote }),
     });
   },
   recalculateHolidayFlags: async () => {

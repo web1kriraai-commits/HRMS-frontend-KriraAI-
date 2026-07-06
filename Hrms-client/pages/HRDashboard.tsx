@@ -6,8 +6,10 @@ import { Button } from '../components/ui/Button';
 import { LeaveStatus, Role, LeaveCategory, User } from '../types';
 import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
-import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, RotateCcw, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2, Key, Loader2 } from 'lucide-react';
+import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, RotateCcw, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2, Key, Loader2, Landmark } from 'lucide-react';
 import { attendanceAPI, holidayAPI, userAPI } from '../services/api';
+import { ManagementOvertimePanel } from '../components/ManagementOvertimePanel';
+import { EarlyOvertimePanel } from '../components/EarlyOvertimePanel';
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
 const formatHoursToHoursMinutes = (hours: number) => {
@@ -44,7 +46,11 @@ export const HRDashboard: React.FC = () => {
     aadhaarNumber: '',
     guardianName: '',
     mobileNumber: '',
-    guardianMobileNumber: ''
+    guardianMobileNumber: '',
+    bankName: '',
+    bankAccountHolderName: '',
+    bankAccountNumber: '',
+    bankIfscCode: ''
   });
   const [salaryBreakdownRows, setSalaryBreakdownRows] = useState<SalaryBreakdownRow[]>([]);
   const [salaryBreakdownData, setSalaryBreakdownData] = useState<{ [key: string]: number }>({});
@@ -592,79 +598,99 @@ export const HRDashboard: React.FC = () => {
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (newUser.name && newUser.username && newUser.email && newUser.department) {
-      try {
-        await createUser({
-          ...newUser,
-          role: Role.EMPLOYEE,
-          isActive: true,
-          joiningDate: newUser.joiningDate ? convertToDDMMYYYY(newUser.joiningDate) : undefined,
-          bonds: newUser.bonds.filter(b => {
-            // Include bond if periodMonths is provided
-            return b.periodMonths && parseInt(b.periodMonths) > 0;
-          }).map((b, bondIndex, filteredBonds) => {
-            const periodMonths = parseInt(b.periodMonths) || 0;
+    if (!newUser.name || !newUser.username || !newUser.email || !newUser.department || !newUser.mobileNumber || !newUser.aadhaarNumber || !newUser.bankName || !newUser.bankAccountHolderName || !newUser.bankAccountNumber || !newUser.bankIfscCode) {
+      alert('Please fill all required fields');
+      return;
+    }
+    const accountDigits = newUser.bankAccountNumber.replace(/\D/g, '');
+    if (!/^\d{9,18}$/.test(accountDigits)) {
+      alert('Account number must be 9 to 18 digits');
+      return;
+    }
+    if (newUser.bankIfscCode.trim().length !== 11) {
+      alert('IFSC code must be exactly 11 characters');
+      return;
+    }
+    if (!/^\d{12}$/.test(newUser.aadhaarNumber.replace(/\D/g, ''))) {
+      alert('Aadhaar number must be exactly 12 digits');
+      return;
+    }
+    try {
+      await createUser({
+        ...newUser,
+        aadhaarNumber: newUser.aadhaarNumber.replace(/\D/g, ''),
+        bankAccountNumber: accountDigits,
+        bankIfscCode: newUser.bankIfscCode.trim().toUpperCase(),
+        role: Role.EMPLOYEE,
+        isActive: true,
+        joiningDate: newUser.joiningDate ? convertToDDMMYYYY(newUser.joiningDate) : undefined,
+        bonds: newUser.bonds.filter(b => {
+          // Include bond if periodMonths is provided
+          return b.periodMonths && parseInt(b.periodMonths) > 0;
+        }).map((b, bondIndex, filteredBonds) => {
+          const periodMonths = parseInt(b.periodMonths) || 0;
 
-            // Calculate start date for each bond
-            let bondStartDate: string;
-            if (bondIndex === 0) {
-              // First bond starts from joining date
-              bondStartDate = newUser.joiningDate || '';
-            } else {
-              // Subsequent bonds start from previous bond's end date + 1 day
-              let previousEndDate: Date | null = null;
-              for (let i = 0; i < bondIndex; i++) {
-                const prevBond = filteredBonds[i];
-                const prevPeriodMonths = parseInt(prevBond.periodMonths) || 0;
-                const prevStart = i === 0
-                  ? (parseDDMMYYYY(newUser.joiningDate) || new Date())
-                  : (previousEndDate || new Date());
-                previousEndDate = new Date(prevStart);
-                previousEndDate.setMonth(previousEndDate.getMonth() + prevPeriodMonths);
-              }
-              if (previousEndDate) {
-                previousEndDate.setDate(previousEndDate.getDate() + 1); // Add 1 day
-                bondStartDate = convertToDDMMYYYY(previousEndDate.toISOString().split('T')[0]);
-              } else {
-                bondStartDate = newUser.joiningDate || '';
-              }
+          // Calculate start date for each bond
+          let bondStartDate: string;
+          if (bondIndex === 0) {
+            // First bond starts from joining date
+            bondStartDate = newUser.joiningDate || '';
+          } else {
+            // Subsequent bonds start from previous bond's end date + 1 day
+            let previousEndDate: Date | null = null;
+            for (let i = 0; i < bondIndex; i++) {
+              const prevBond = filteredBonds[i];
+              const prevPeriodMonths = parseInt(prevBond.periodMonths) || 0;
+              const prevStart = i === 0
+                ? (parseDDMMYYYY(newUser.joiningDate) || new Date())
+                : (previousEndDate || new Date());
+              previousEndDate = new Date(prevStart);
+              previousEndDate.setMonth(previousEndDate.getMonth() + prevPeriodMonths);
             }
+            if (previousEndDate) {
+              previousEndDate.setDate(previousEndDate.getDate() + 1); // Add 1 day
+              bondStartDate = convertToDDMMYYYY(previousEndDate.toISOString().split('T')[0]);
+            } else {
+              bondStartDate = newUser.joiningDate || '';
+            }
+          }
 
-            return {
-              type: b.type || 'Job',
-              periodMonths: periodMonths,
-              startDate: bondStartDate,
-              salary: b.salary ? parseFloat(b.salary) : 0
-            };
-          }),
-          salaryBreakdown: salaryBreakdownRows.map(row => ({
-            month: row.month,
-            year: row.year,
-            amount: salaryBreakdownData[`${row.month}-${row.year}`] || row.salary,
-            currency: 'INR'
-          }))
-        });
-        setNewUser({
-          name: '',
-          username: '',
-          email: '',
-          department: '',
-          joiningDate: '',
-          bonds: [],
-          aadhaarNumber: '',
-          guardianName: '',
-          mobileNumber: '',
-          guardianMobileNumber: ''
-        });
-        setIsCreateUserModalOpen(false);
-        setSalaryBreakdownRows([]);
-        setSalaryBreakdownData({});
-        alert("Employee created successfully! Temporary password: tempPassword123");
-      } catch (error: any) {
-        alert(error.message || "Failed to create user");
-      }
-    } else {
-      alert("Please fill all required fields");
+          return {
+            type: b.type || 'Job',
+            periodMonths: periodMonths,
+            startDate: bondStartDate,
+            salary: b.salary ? parseFloat(b.salary) : 0
+          };
+        }),
+        salaryBreakdown: salaryBreakdownRows.map(row => ({
+          month: row.month,
+          year: row.year,
+          amount: salaryBreakdownData[`${row.month}-${row.year}`] || row.salary,
+          currency: 'INR'
+        }))
+      });
+      setNewUser({
+        name: '',
+        username: '',
+        email: '',
+        department: '',
+        joiningDate: '',
+        bonds: [],
+        aadhaarNumber: '',
+        guardianName: '',
+        mobileNumber: '',
+        guardianMobileNumber: '',
+        bankName: '',
+        bankAccountHolderName: '',
+        bankAccountNumber: '',
+        bankIfscCode: ''
+      });
+      setIsCreateUserModalOpen(false);
+      setSalaryBreakdownRows([]);
+      setSalaryBreakdownData({});
+      alert("Employee created successfully! Temporary password: tempPassword123");
+    } catch (error: any) {
+      alert(error.message || "Failed to create user");
     }
   };
 
@@ -1001,6 +1027,15 @@ export const HRDashboard: React.FC = () => {
               </Card>
             ))}
           </div>
+
+          {/* Pending Management OT — HR can approve / reject */}
+          <div>
+            <ManagementOvertimePanel variant="compact" />
+          </div>
+        </div>
+
+        <div className="mt-6">
+          <EarlyOvertimePanel variant="full" />
         </div>
       </section>
 
@@ -1638,7 +1673,7 @@ export const HRDashboard: React.FC = () => {
             })()}
 
             {/* Stats Grid */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
               {/* Days Present */}
               <div className="bg-blue-50 rounded-xl border border-blue-100 p-5">
                 <div className="flex items-center gap-3 mb-3">
@@ -1661,6 +1696,18 @@ export const HRDashboard: React.FC = () => {
                 </div>
                 <p className="text-3xl font-bold text-gray-800">{formatDurationStyled(stats.totalWorkedSeconds)}</p>
                 <p className="text-gray-500 text-sm mt-1">Total Worked</p>
+              </div>
+
+              {/* Total Break */}
+              <div className="bg-amber-50 rounded-xl border border-amber-100 p-5">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="h-10 w-10 rounded-lg bg-amber-100 flex items-center justify-center">
+                    <Coffee className="h-5 w-5 text-amber-600" />
+                  </div>
+                  <span className="text-xs font-semibold text-amber-600 uppercase">Break</span>
+                </div>
+                <p className="text-3xl font-bold text-gray-800">{formatDurationStyled(stats.totalBreakSeconds)}</p>
+                <p className="text-gray-500 text-sm mt-1">Total Break</p>
               </div>
 
               {/* Low Time */}
@@ -3221,23 +3268,28 @@ export const HRDashboard: React.FC = () => {
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Aadhaar Number</label>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Aadhaar Number <span className="text-red-500">*</span></label>
                         <input
                           type="text"
+                          inputMode="numeric"
                           className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
                           value={newUser.aadhaarNumber}
-                          onChange={e => setNewUser({ ...newUser, aadhaarNumber: e.target.value })}
-                          placeholder="Optional"
+                          onChange={e => setNewUser({ ...newUser, aadhaarNumber: e.target.value.replace(/\D/g, '').slice(0, 12) })}
+                          placeholder="12-digit Aadhaar number"
+                          minLength={12}
+                          maxLength={12}
+                          required
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Mobile Number</label>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Mobile Number <span className="text-red-500">*</span></label>
                         <input
                           type="tel"
                           className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
                           value={newUser.mobileNumber}
                           onChange={e => setNewUser({ ...newUser, mobileNumber: e.target.value })}
-                          placeholder="Optional"
+                          placeholder="e.g. 9876543210"
+                          required
                         />
                       </div>
                       <div>
@@ -3258,6 +3310,63 @@ export const HRDashboard: React.FC = () => {
                           value={newUser.guardianMobileNumber}
                           onChange={e => setNewUser({ ...newUser, guardianMobileNumber: e.target.value })}
                           placeholder="Optional"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Section: Bank Details */}
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4 flex items-center gap-2 pb-2 border-b border-gray-100">
+                      <Landmark size={16} className="text-indigo-500" /> Bank Details
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Employee Full Name (as per checkbook) <span className="text-red-500">*</span></label>
+                        <input
+                          type="text"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.bankAccountHolderName}
+                          onChange={e => setNewUser({ ...newUser, bankAccountHolderName: e.target.value })}
+                          placeholder="Name as printed on checkbook"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Bank Name <span className="text-red-500">*</span></label>
+                        <input
+                          type="text"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.bankName}
+                          onChange={e => setNewUser({ ...newUser, bankName: e.target.value })}
+                          placeholder="e.g. State Bank of India"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Account Number <span className="text-red-500">*</span></label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.bankAccountNumber}
+                          onChange={e => setNewUser({ ...newUser, bankAccountNumber: e.target.value.replace(/\D/g, '').slice(0, 18) })}
+                          placeholder="9 to 18 digits"
+                          minLength={9}
+                          maxLength={18}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">IFSC Code <span className="text-red-500">*</span></label>
+                        <input
+                          type="text"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all uppercase"
+                          value={newUser.bankIfscCode}
+                          onChange={e => setNewUser({ ...newUser, bankIfscCode: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11) })}
+                          placeholder="11-character IFSC code"
+                          maxLength={11}
+                          required
                         />
                       </div>
                     </div>
@@ -3516,7 +3625,7 @@ export const HRDashboard: React.FC = () => {
                         type="submit"
                         variant="primary"
                         className="px-6 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 shadow-lg shadow-indigo-200"
-                        disabled={!newUser.name || !newUser.email || !newUser.username || !newUser.department}
+                        disabled={!newUser.name || !newUser.email || !newUser.username || !newUser.department || !newUser.mobileNumber || newUser.aadhaarNumber.replace(/\D/g, '').length !== 12 || !newUser.bankName || !newUser.bankAccountHolderName || !newUser.bankAccountNumber || !newUser.bankIfscCode || newUser.bankAccountNumber.replace(/\D/g, '').length < 9 || newUser.bankIfscCode.trim().length !== 11}
                       >
                         <UserPlus size={16} className="mr-2" />
                         Create Employee Account

@@ -1,9 +1,9 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
-import { getTodayStr, formatTime, ABSENCE_PENALTY_EFFECTIVE_DATE, calculateDailyTimeStats, formatDuration as utilsFormatDuration, getAbsenceStartDate, getLocalISOString } from '../services/utils';
-import { Role } from '../types';
-import { Clock, UserCheck, UserMinus, ShieldAlert, Calendar, AlertCircle, UserPlus, TrendingUp, TrendingDown, Umbrella, ChevronLeft, ChevronRight, Search, X, Check, XCircle } from 'lucide-react';
+import { getTodayStr, formatTime, ABSENCE_PENALTY_EFFECTIVE_DATE, calculateDailyTimeStats, formatDuration as utilsFormatDuration, getAbsenceStartDate, getLocalISOString, calculateTotalBreakSeconds } from '../services/utils';
+import { Attendance, Role } from '../types';
+import { Clock, UserCheck, UserMinus, ShieldAlert, Calendar, AlertCircle, UserPlus, TrendingUp, TrendingDown, Umbrella, ChevronLeft, ChevronRight, Search, X, Check, XCircle, Coffee } from 'lucide-react';
 import { attendanceAPI } from '../services/api';
 
 export const TodayAttendance: React.FC = () => {
@@ -24,12 +24,36 @@ export const TodayAttendance: React.FC = () => {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [showBulkModal, setShowBulkModal] = useState(false);
     const [bulkDept, setBulkDept] = useState('');
+    const [liveTick, setLiveTick] = useState(Date.now());
+
+    const getRecordBreakSeconds = (record: Attendance | undefined, includeLive = false) => {
+        if (!record?.breaks?.length) return 0;
+        let total = calculateTotalBreakSeconds(record.breaks);
+        if (includeLive) {
+            const activeBreak = record.breaks.find(b => !b.end);
+            if (activeBreak) {
+                total += Math.max(0, (liveTick - new Date(activeBreak.start).getTime()) / 1000);
+            }
+        }
+        return total;
+    };
+
+    const isOnBreak = (record: Attendance | undefined) =>
+        Boolean(record?.breaks?.some(b => !b.end));
 
     // Get all employees
     const employees = users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR);
     
     // Status pre-calculations
     const isToday = selectedDate === getTodayStr();
+
+    // Refresh break timers every second when viewing today
+    useEffect(() => {
+        if (!isToday) return;
+        const id = setInterval(() => setLiveTick(Date.now()), 1000);
+        return () => clearInterval(id);
+    }, [isToday]);
+
     const isHoliday = useMemo(() => {
         return companyHolidays.some(h => {
             const hDate = new Date(h.date).toISOString().split('T')[0];
@@ -312,6 +336,11 @@ export const TodayAttendance: React.FC = () => {
                                 <th className="px-6 py-3">Department</th>
                                 <th className="px-6 py-3 text-center">Check In</th>
                                  <th className="px-6 py-3 text-center">Check Out</th>
+                                <th className="px-6 py-3 text-center text-amber-600">
+                                    <div className="flex items-center justify-center gap-1">
+                                        <Coffee size={14} /> Break
+                                    </div>
+                                </th>
                                 <th className="px-6 py-3 text-center">Worked</th>
                                 <th className="px-6 py-3 text-center">Status</th>
                                 <th className="px-6 py-3 text-center">Early Logout Request</th>
@@ -349,6 +378,29 @@ export const TodayAttendance: React.FC = () => {
                                                 <span className="text-purple-400 font-bold italic tracking-widest text-[10px]">OFF</span>
                                             ) : record?.checkOut ? (
                                                 <span className="text-gray-800">{formatTime(record.checkOut, systemSettings.timezone)}</span>
+                                            ) : (
+                                                <span className="text-gray-300">--:--</span>
+                                            )}
+                                        </td>
+                                        <td className="px-6 py-4 text-center font-mono">
+                                            {isFullDayLeave ? (
+                                                <span className="text-purple-400 font-bold italic tracking-widest text-[10px]">--:--</span>
+                                            ) : record && (getRecordBreakSeconds(record, isToday) > 0 || isOnBreak(record)) ? (
+                                                <div className="flex flex-col items-center gap-0.5">
+                                                    <span className="text-amber-600 font-bold">
+                                                        {formatHrmsDuration(getRecordBreakSeconds(record, isToday))}
+                                                    </span>
+                                                    {isOnBreak(record) && (
+                                                        <span className="text-[9px] font-black uppercase tracking-tight text-amber-500 bg-amber-50 px-1.5 py-0.5 rounded animate-pulse">
+                                                            On Break
+                                                        </span>
+                                                    )}
+                                                    {record.breaks?.some(b => b.type === 'Extra' && b.reason) && (
+                                                        <span className="text-[9px] text-purple-500 font-medium max-w-[90px] truncate" title={record.breaks.find(b => b.type === 'Extra' && b.reason)?.reason}>
+                                                            Extra break
+                                                        </span>
+                                                    )}
+                                                </div>
                                             ) : (
                                                 <span className="text-gray-300">--:--</span>
                                             )}
@@ -564,7 +616,7 @@ export const TodayAttendance: React.FC = () => {
                             )})}
                              {filteredStats.length === 0 && (
                                 <tr>
-                                    <td colSpan={10} className="text-center py-12">
+                                    <td colSpan={13} className="text-center py-12">
                                         <div className="flex flex-col items-center justify-center text-gray-500">
                                             <div className="p-4 bg-gray-50 rounded-full mb-3">
                                                 <Search size={32} className="text-gray-300" />

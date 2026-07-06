@@ -6,10 +6,12 @@ import { Button } from '../components/ui/Button';
 import { CheckoutTimeSettings } from '../components/CheckoutTimeSettings';
 import { CheckInTimeSettings } from '../components/CheckInTimeSettings';
 import { Role, LeaveCategory, LeaveStatus, User, Attendance, AuditLog } from '../types';
-import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft, Search, ArrowUp, ArrowDown } from 'lucide-react';
-import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate } from '../services/utils';
+import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft, Search, ArrowUp, ArrowDown, Landmark } from 'lucide-react';
+import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI, auditAPI } from '../services/api';
+import { ManagementOvertimePanel } from '../components/ManagementOvertimePanel';
+import { EarlyOvertimePanel } from '../components/EarlyOvertimePanel';
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
 const formatHoursToHoursMinutes = (hours: number) => {
@@ -126,7 +128,11 @@ export const AdminDashboard: React.FC = () => {
     aadhaarNumber: '',
     guardianName: '',
     mobileNumber: '',
-    guardianMobileNumber: ''
+    guardianMobileNumber: '',
+    bankName: '',
+    bankAccountHolderName: '',
+    bankAccountNumber: '',
+    bankIfscCode: ''
   });
   const [salaryBreakdownRows, setSalaryBreakdownRows] = useState<SalaryBreakdownRow[]>([]);
   const [salaryBreakdownData, setSalaryBreakdownData] = useState<{ [key: string]: number }>({});
@@ -291,7 +297,7 @@ export const AdminDashboard: React.FC = () => {
           id: `virtual-absent-${dateStr}`,
           userId: selectedUserId,
           date: dateStr,
-          status: 'Absent',
+          status: 'Unpaid Leave',
           totalWorkedSeconds: 0,
           isVirtual: true,
           isPenaltyDisabled: false
@@ -820,35 +826,27 @@ export const AdminDashboard: React.FC = () => {
       
       const record = recordsMap.get(dateStr);
       let netWorkedSeconds = record ? (record.totalWorkedSeconds || 0) : 0;
-      
-      // If it's a real record or it's a working day (or holiday) that should be counted
-      if (record || (!leaveDates.has(dateStr) && dayOfWeek !== 0)) {
-        // Holiday rule: all worked time is overtime, never low time
+
+      if (dayOfWeek === 0) {
+        iter.setDate(iter.getDate() + 1);
+        continue;
+      }
+
+      const leaveCredit = (user && typeof user !== 'string')
+        ? getLeaveDayCredit(dateStr, user.id, monthLeaves, holidayDateSet, {
+            hasAttendance: Boolean(record?.checkIn),
+            treatAbsentAsUnpaidLeave: true,
+            todayStr
+          })
+        : { creditSeconds: 0, isFullDayLeave: false, isHalfDayLeave: false, isImplicitUnpaid: false, skipLowTime: false, category: null };
+
+      netWorkedSeconds = applyLeaveCreditToWorkedSeconds(netWorkedSeconds, leaveCredit);
+
+      if (record || leaveCredit.creditSeconds > 0 || !leaveDates.has(dateStr)) {
         if (isHolidayDay) {
           if (netWorkedSeconds > 0) totalExtraTimeSeconds += netWorkedSeconds;
         } else {
-          // Check for approved Extra Time Leave to add to net worked time
-          const extraTimeLeaveForDate = monthLeaves.find(leave => {
-            const status = (leave.status || '').trim();
-            if (!(status === 'Approved' || status === LeaveStatus.APPROVED)) return false;
-            if (leave.category !== LeaveCategory.EXTRA_TIME) return false;
-            const start = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : leave.startDate;
-            const end = typeof leave.endDate === 'string' ? leave.endDate.split('T')[0] : leave.endDate;
-            return dateStr >= start && dateStr <= end;
-          });
-
-          if (extraTimeLeaveForDate) {
-             const leaveHours = extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime 
-               ? calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime)
-               : 8.25;
-             netWorkedSeconds += leaveHours * 3600;
-          }
-
-          // Check for Half Day Leave
-          const hasHalfDay = leaveDates.has(dateStr) && monthLeaves.some(l => 
-            l.category === LeaveCategory.HALF_DAY && 
-            (l.startDate === dateStr || l.endDate === dateStr || (new Date(dateStr) >= new Date(l.startDate) && new Date(dateStr) <= new Date(l.endDate)))
-          );
+          const hasHalfDay = leaveCredit.isHalfDayLeave;
 
           const approvedOT = (record?.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
           const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(
@@ -857,42 +855,21 @@ export const AdminDashboard: React.FC = () => {
             isHolidayDay,
             approvedOT,
             dateStr,
-            systemSettings
+            systemSettings,
+            leaveCredit.skipLowTime || Boolean(record?.isVirtual)
           );
-          
-          // Count late penalties and absence penalties
-          if (!isHolidayDay && !record?.isPenaltyDisabled) {
-              if (record?.lateCheckIn && record.penaltySeconds && !hasHalfDay) {
-                  totalPenaltySeconds += record.penaltySeconds;
-                  penaltyCount++;
-              }
-              // Absence penalty for unexcused absence
-              // Sync: Include today in deficit calculation if record exists or if it's past day
-              const absenceStart = typeof user === 'string' ? ABSENCE_PENALTY_EFFECTIVE_DATE : getAbsenceStartDate(user, firstCheckInDate);
-              if ((!record || netWorkedSeconds === 0) && !leaveDates.has(dateStr) && dayOfWeek !== 0 && dateStr >= absenceStart && dateStr < todayStr) {
-                  totalPenaltySeconds += 29700; // 8h 15m penalty
-                  penaltyCount++;
-              }
+
+          if (!isHolidayDay && record && !record.isPenaltyDisabled) {
+            if (record.lateCheckIn && record.penaltySeconds && !hasHalfDay) {
+              totalPenaltySeconds += record.penaltySeconds;
+              penaltyCount++;
+            }
           }
 
-          if (!record || netWorkedSeconds === 0) {
-            // Absence Deficit: only apply if on or after effective date
-            // AND strictly before today (don't mark today as absent before it's over)
-            // If it's a real record but missing checkOut, treat as IN PROGRESS and ignore
-            const isNoRecord = !record;
-            const absenceStart = typeof user === 'string' ? ABSENCE_PENALTY_EFFECTIVE_DATE : getAbsenceStartDate(user);
-            if (dateStr >= absenceStart && dateStr < todayStr && (isNoRecord || (record && record.checkOut))) {
-              totalLowTimeSeconds += lowTimeSeconds;
-            }
-          } else {
-            // Only count low time if finalized (has checkOut).
-            // This prevents "In Progress" sessions (today or past missed checkouts) 
-            // from showing a full deficit.
-            if (record.checkOut) {
-              totalLowTimeSeconds += lowTimeSeconds;
-            }
-            totalExtraTimeSeconds += extraTimeSeconds;
+          if (record?.checkOut && !leaveCredit.skipLowTime && !record?.isVirtual) {
+            totalLowTimeSeconds += lowTimeSeconds;
           }
+          totalExtraTimeSeconds += extraTimeSeconds;
         }
       }
       iter.setDate(iter.getDate() + 1);
@@ -1134,10 +1111,11 @@ export const AdminDashboard: React.FC = () => {
     // Use same rule as employee dashboard: stored totalWorkedSeconds and same leave-matching (date-in-range)
     monthlyAttendance.forEach(record => {
       // Changed to >= 0 to include virtual absent records and zero-work days
-      if ((record.totalWorkedSeconds || 0) >= 0 || (record.checkIn && !record.checkOut)) {
+        if ((record.totalWorkedSeconds || 0) >= 0 || (record.checkIn && !record.checkOut)) {
         if (!record.isVirtual) daysPresent++;
         const netWorkedRaw = record.totalWorkedSeconds || 0;
         totalWorkedSeconds += netWorkedRaw;
+        totalBreakSeconds += getBreakSeconds(record.breaks) || (record as any).totalBreakDuration || 0;
 
         const recordDateISO = typeof record.date === 'string' ? record.date.split('T')[0] : new Date(record.date).toISOString().split('T')[0];
         const isHolidayDay = holidayDateSet.has(recordDateISO as string);
@@ -1147,33 +1125,16 @@ export const AdminDashboard: React.FC = () => {
           return;
         }
 
-        // Match extra time leave when record date is within leave range (same as employee dashboard)
-        const extraTimeLeaveForDate = approvedLeaves.find(leave => {
-          if (leave.userId !== record.userId) return false;
-          if (leave.category !== LeaveCategory.EXTRA_TIME && !(leave.category === LeaveCategory.HALF_DAY && leave.reason?.includes('[Extra Time Leave]'))) return false;
-          const leaveStart = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : new Date(leave.startDate).toISOString().split('T')[0];
-          const leaveEnd = typeof leave.endDate === 'string' ? leave.endDate.split('T')[0] : new Date(leave.endDate).toISOString().split('T')[0];
-          return recordDateISO >= leaveStart && recordDateISO <= leaveEnd;
-        });
-        let netWorkedSeconds = netWorkedRaw;
-        if (extraTimeLeaveForDate) {
-          if (extraTimeLeaveForDate.category === LeaveCategory.HALF_DAY) {
-            netWorkedSeconds += 4 * 3600; // half-day extra time leave = 4 hours (same as employee)
-          } else if (extraTimeLeaveForDate.startTime && extraTimeLeaveForDate.endTime) {
-            const leaveHours = calculateHoursPerDay(extraTimeLeaveForDate.startTime, extraTimeLeaveForDate.endTime);
-            netWorkedSeconds += leaveHours * 3600;
-          } else {
-            netWorkedSeconds += 8.25 * 3600;
-          }
-        }
+        const leaveCredit = selectedUser
+          ? getLeaveDayCredit(recordDateISO, selectedUser.id, approvedLeaves, holidayDateSet, {
+              hasAttendance: Boolean(record.checkIn),
+              treatAbsentAsUnpaidLeave: true,
+              todayStr
+            })
+          : { creditSeconds: 0, isFullDayLeave: false, isHalfDayLeave: false, isImplicitUnpaid: false, skipLowTime: false, category: null };
 
-        // Half-day: match by exact date (same as employee dashboard)
-        const hasHalfDay = approvedLeaves.some(leave => {
-          if (leave.userId !== record.userId || leave.category !== LeaveCategory.HALF_DAY) return false;
-          if (leave.reason?.includes('[Extra Time Leave]')) return false;
-          const leaveDate = typeof leave.startDate === 'string' ? leave.startDate.split('T')[0] : new Date(leave.startDate).toISOString().split('T')[0];
-          return leaveDate === recordDateISO;
-        });
+        let netWorkedSeconds = applyLeaveCreditToWorkedSeconds(netWorkedRaw, leaveCredit);
+        const hasHalfDay = leaveCredit.isHalfDayLeave;
 
         const approvedOT = (record.overtimeRequest && record.overtimeRequest.status === 'Approved') ? (record.overtimeRequest.durationMinutes || 0) : 0;
         const { lowTimeSeconds, extraTimeSeconds } = calculateDailyTimeStats(
@@ -1182,34 +1143,14 @@ export const AdminDashboard: React.FC = () => {
           isHolidayDay,
           approvedOT,
           recordDateISO,
-          systemSettings
+          systemSettings,
+          leaveCredit.skipLowTime || Boolean(record.isVirtual)
         );
-        
-        // ONLY apply low time deficit for absences if on or after effective date
-        if (record.isVirtual || netWorkedSeconds === 0) {
-          // Only apply low time deficit for absences if on or after effective date 
-          // AND strictly before today.
-          // If it's a real record but missing checkOut, treat as IN PROGRESS and ignore.
-          const firstCheckIn = selectedUser ? attendanceRecords
-            .filter(r => r.userId === selectedUser.id && r.checkIn)
-            .sort((a, b) => {
-              const d1 = typeof a.date === 'string' && !a.date.includes('T') ? a.date : getLocalISOString(new Date(a.date));
-              const d2 = typeof b.date === 'string' && !b.date.includes('T') ? b.date : getLocalISOString(new Date(b.date));
-              return d1.localeCompare(d2);
-            })[0]?.date : undefined;
-          const absenceStart = selectedUser ? getAbsenceStartDate(selectedUser, firstCheckIn) : ABSENCE_PENALTY_EFFECTIVE_DATE;
-          if (recordDateISO >= absenceStart && recordDateISO < todayStr && (record.isVirtual || record.checkOut)) {
-            totalLowTimeSeconds += lowTimeSeconds;
-          }
-        } else {
-          // Only count low time if finalized (has checkOut).
-          // This prevents "In Progress" sessions (today or past missed checkouts) 
-          // from showing a full deficit in the monthly summary.
-          if (record.checkOut) {
-            totalLowTimeSeconds += lowTimeSeconds;
-          }
-          totalExtraTimeSeconds += extraTimeSeconds;
+
+        if (record.checkOut && !leaveCredit.skipLowTime && !record.isVirtual) {
+          totalLowTimeSeconds += lowTimeSeconds;
         }
+        totalExtraTimeSeconds += extraTimeSeconds;
       }
     });
 
@@ -1709,6 +1650,28 @@ export const AdminDashboard: React.FC = () => {
 
           </div>
 
+          {/* Pending Management OT — Admin can approve / reject */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
+            <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
+              <h3 className="text-lg font-bold text-gray-800">Pending Management Overtime</h3>
+              <p className="text-gray-500 text-sm">Approve or reject employee management OT requests</p>
+            </div>
+            <div className="p-6">
+              <ManagementOvertimePanel variant="table" showTitle={false} />
+            </div>
+          </div>
+
+          {/* Pending Early OT — Admin can approve / reject */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
+            <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
+              <h3 className="text-lg font-bold text-gray-800">Pending Early OT</h3>
+              <p className="text-gray-500 text-sm">Approve or reject employee early checkout / early OT requests</p>
+            </div>
+            <div className="p-6">
+              <EarlyOvertimePanel variant="table" showTitle={false} />
+            </div>
+          </div>
+
           {/* Monthly Performance Table */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="px-6 py-5 border-b border-gray-100 bg-indigo-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -1730,6 +1693,7 @@ export const AdminDashboard: React.FC = () => {
                     <th className="px-3 py-3 text-left">Employee</th>
                     <th className="px-2 py-3 text-center">Joined</th>
                     <th className="px-2 py-3 text-center">Worked</th>
+                    <th className="px-2 py-3 text-center text-amber-600">Break</th>
                     <th className="px-1 py-3 text-center">Pres.</th>
                     <th className="px-2 py-3 text-center text-rose-600">Low</th>
                     <th className="px-2 py-3 text-center text-emerald-600">Extra</th>
@@ -1816,6 +1780,12 @@ export const AdminDashboard: React.FC = () => {
                         </td>
                         <td className="px-2 py-3 text-center font-medium whitespace-nowrap">
                           {formatHoursToHoursMinutes(empAttendance.reduce((sum, r) => sum + (r.totalWorkedSeconds || 0), 0) / 3600)}
+                        </td>
+                        <td className="px-2 py-3 text-center text-amber-600 font-bold whitespace-nowrap">
+                          {(() => {
+                            const breakSec = empAttendance.reduce((sum, r) => sum + (getBreakSeconds(r.breaks) || 0), 0);
+                            return breakSec > 0 ? formatDuration(breakSec) : '-';
+                          })()}
                         </td>
                         <td className="px-1 py-3 text-center">
                           <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-bold text-[9px] whitespace-nowrap">
@@ -2106,7 +2076,7 @@ export const AdminDashboard: React.FC = () => {
               )}
 
               {/* Stats Grid - Matching Image 2 */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
                 {/* Days Present */}
                 <div className="bg-[#f0f7ff] rounded-2xl border border-blue-100 p-6 flex flex-col gap-4">
                   <div className="flex items-center gap-3">
@@ -2137,6 +2107,25 @@ export const AdminDashboard: React.FC = () => {
                       <span className="text-sm font-bold text-gray-500">min</span>
                     </div>
                     <p className="text-gray-500 text-sm font-medium mt-1">Total Worked</p>
+                  </div>
+                </div>
+
+                {/* Total Break */}
+                <div className="bg-[#fffbeb] rounded-2xl border border-amber-100 p-6 flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-xl bg-amber-100 flex items-center justify-center">
+                      <Coffee className="h-5 w-5 text-amber-600" />
+                    </div>
+                    <span className="text-xs font-bold text-amber-600 uppercase tracking-wider">Break</span>
+                  </div>
+                  <div>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-2xl font-black text-gray-800">{Math.floor(stats.totalBreakSeconds / 3600)}</span>
+                      <span className="text-sm font-bold text-gray-500">hours</span>
+                      <span className="text-2xl font-black text-gray-800 ml-2">{Math.floor((stats.totalBreakSeconds % 3600) / 60)}</span>
+                      <span className="text-sm font-bold text-gray-500">min</span>
+                    </div>
+                    <p className="text-gray-500 text-sm font-medium mt-1">Total Break</p>
                   </div>
                 </div>
 
@@ -4203,8 +4192,21 @@ export const AdminDashboard: React.FC = () => {
               <div className="p-5 overflow-y-auto custom-scrollbar">
                 <form id="createUserForm" onSubmit={async (e) => {
                   e.preventDefault();
-                  if (!newUser.name || !newUser.username || !newUser.email || !newUser.department) {
+                  if (!newUser.name || !newUser.username || !newUser.email || !newUser.department || !newUser.mobileNumber || !newUser.aadhaarNumber || !newUser.bankName || !newUser.bankAccountHolderName || !newUser.bankAccountNumber || !newUser.bankIfscCode) {
                     alert('Please fill all required fields');
+                    return;
+                  }
+                  const accountDigits = newUser.bankAccountNumber.replace(/\D/g, '');
+                  if (!/^\d{9,18}$/.test(accountDigits)) {
+                    alert('Account number must be 9 to 18 digits');
+                    return;
+                  }
+                  if (newUser.bankIfscCode.trim().length !== 11) {
+                    alert('IFSC code must be exactly 11 characters');
+                    return;
+                  }
+                  if (!/^\d{12}$/.test(newUser.aadhaarNumber.replace(/\D/g, ''))) {
+                    alert('Aadhaar number must be exactly 12 digits');
                     return;
                   }
                   try {
@@ -4214,10 +4216,14 @@ export const AdminDashboard: React.FC = () => {
                       email: newUser.email,
                       department: newUser.department,
                       role: newUser.role,
-                      aadhaarNumber: newUser.aadhaarNumber,
+                      aadhaarNumber: newUser.aadhaarNumber.replace(/\D/g, ''),
                       guardianName: newUser.guardianName,
                       mobileNumber: newUser.mobileNumber,
                       guardianMobileNumber: newUser.guardianMobileNumber,
+                      bankName: newUser.bankName,
+                      bankAccountHolderName: newUser.bankAccountHolderName,
+                      bankAccountNumber: accountDigits,
+                      bankIfscCode: newUser.bankIfscCode.trim().toUpperCase(),
                       joiningDate: newUser.joiningDate ? convertToDDMMYYYY(newUser.joiningDate) : undefined,
                       bonds: newUser.bonds.filter(b => {
                         return b.periodMonths && parseInt(b.periodMonths) > 0;
@@ -4273,7 +4279,11 @@ export const AdminDashboard: React.FC = () => {
                       aadhaarNumber: '',
                       guardianName: '',
                       mobileNumber: '',
-                      guardianMobileNumber: ''
+                      guardianMobileNumber: '',
+                      bankName: '',
+                      bankAccountHolderName: '',
+                      bankAccountNumber: '',
+                      bankIfscCode: ''
                     });
                     setSalaryBreakdownRows([]);
                     setSalaryBreakdownData({});
@@ -4319,12 +4329,12 @@ export const AdminDashboard: React.FC = () => {
                         <input type="date" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''} onChange={e => setNewUser({ ...newUser, joiningDate: e.target.value })} />
                       </div>
                       <div>
-                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Mobile Number</label>
-                        <input type="tel" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.mobileNumber} onChange={e => setNewUser({ ...newUser, mobileNumber: e.target.value })} placeholder="Optional" />
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Mobile Number *</label>
+                        <input type="tel" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.mobileNumber} onChange={e => setNewUser({ ...newUser, mobileNumber: e.target.value })} placeholder="e.g. 9876543210" required />
                       </div>
                       <div>
-                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Aadhaar Number</label>
-                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.aadhaarNumber} onChange={e => setNewUser({ ...newUser, aadhaarNumber: e.target.value })} placeholder="Optional" />
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Aadhaar Number *</label>
+                        <input type="text" inputMode="numeric" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.aadhaarNumber} onChange={e => setNewUser({ ...newUser, aadhaarNumber: e.target.value.replace(/\D/g, '').slice(0, 12) })} placeholder="12-digit Aadhaar number" minLength={12} maxLength={12} required />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Guardian Name</label>
@@ -4333,6 +4343,31 @@ export const AdminDashboard: React.FC = () => {
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Guardian Mobile Number</label>
                         <input type="tel" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.guardianMobileNumber} onChange={e => setNewUser({ ...newUser, guardianMobileNumber: e.target.value })} placeholder="Optional" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Section: Bank Details */}
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4 flex items-center gap-2 pb-2 border-b border-gray-100">
+                      <Landmark size={16} className="text-indigo-500" /> Bank Details
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Employee Full Name (as per checkbook) *</label>
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.bankAccountHolderName} onChange={e => setNewUser({ ...newUser, bankAccountHolderName: e.target.value })} placeholder="Name as printed on checkbook" required />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Bank Name *</label>
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.bankName} onChange={e => setNewUser({ ...newUser, bankName: e.target.value })} placeholder="e.g. State Bank of India" required />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Account Number *</label>
+                        <input type="text" inputMode="numeric" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.bankAccountNumber} onChange={e => setNewUser({ ...newUser, bankAccountNumber: e.target.value.replace(/\D/g, '').slice(0, 18) })} placeholder="9 to 18 digits" minLength={9} maxLength={18} required />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">IFSC Code *</label>
+                        <input type="text" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white uppercase" value={newUser.bankIfscCode} onChange={e => setNewUser({ ...newUser, bankIfscCode: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11) })} placeholder="11-character IFSC code" maxLength={11} required />
                       </div>
                     </div>
                   </div>

@@ -64,6 +64,9 @@ interface AppContextType {
     removeCheckoutOverrideDate?: string;
   }) => Promise<void>;
   reviewEarlyCheckout: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
+  requestEarlyOvertime: (reason: string, durationMinutes: number, date?: string) => Promise<void>;
+  requestManagementOvertime: (reason: string, durationMinutes: number, date?: string) => Promise<void>;
+  reviewManagementOvertime: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
   
   // Refresh functions
   refreshData: (silent?: boolean, scope?: RefreshScope | 'full') => Promise<void>;
@@ -102,6 +105,10 @@ const transformUser = (apiUser: any): User => ({
   guardianName: apiUser.guardianName || undefined,
   mobileNumber: apiUser.mobileNumber || undefined,
   guardianMobileNumber: apiUser.guardianMobileNumber || undefined,
+  bankName: apiUser.bankName || undefined,
+  bankAccountHolderName: apiUser.bankAccountHolderName || undefined,
+  bankAccountNumber: apiUser.bankAccountNumber || undefined,
+  bankIfscCode: apiUser.bankIfscCode || undefined,
   salaryBreakdown: apiUser.salaryBreakdown && Array.isArray(apiUser.salaryBreakdown) ? apiUser.salaryBreakdown.map((s: any) => ({
     month: s.month,
     year: s.year,
@@ -163,6 +170,39 @@ const transformAttendance = (apiAttendance: any): Attendance => {
     manualHours: apiAttendance.manualHours || [],
     earlyLogoutRequest: apiAttendance.earlyLogoutRequest || 'None',
     earlyLogoutRequestNote: apiAttendance.earlyLogoutRequestNote,
+    generalOvertimeMinutes: (() => {
+      const stored = apiAttendance.generalOvertimeMinutes;
+      if (typeof stored === 'number' && stored > 0) return stored;
+      const ot = apiAttendance.overtimeRequest;
+      if (ot?.completedMinutes > 0) return ot.completedMinutes;
+      if (ot?.status === 'Approved' && ot?.durationMinutes > 0) return ot.durationMinutes;
+      return stored ?? 0;
+    })(),
+    managementOvertime: apiAttendance.managementOvertime ?? {
+      reason: '',
+      durationMinutes: 0,
+      status: 'None',
+      completedMinutes: 0
+    },
+    earlyOvertime: (() => {
+      const eo = apiAttendance.earlyOvertime ?? {};
+      const earlyReq = apiAttendance.earlyLogoutRequest;
+      let requestStatus: 'None' | 'Pending' | 'Approved' | 'Rejected' = eo.requestStatus || 'None';
+      if (requestStatus === 'None' && earlyReq && earlyReq !== 'None') {
+        requestStatus = earlyReq as 'Pending' | 'Approved' | 'Rejected';
+      }
+      return {
+        reason: eo.reason || apiAttendance.earlyLogoutRequestNote || '',
+        durationMinutes: eo.durationMinutes || 0,
+        requestStatus,
+        requestedAt: eo.requestedAt,
+        approvedBy: eo.approvedBy,
+        approvedAt: eo.approvedAt,
+        deficitMinutes: eo.deficitMinutes || 0,
+        coveredMinutes: eo.coveredMinutes || 0,
+        status: eo.status || 'None'
+      };
+    })(),
     overtimeRequest: apiAttendance.overtimeRequest
   };
 };
@@ -724,9 +764,60 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setAttendanceRecords(prev => prev.map(r =>
         r.id === recordId ? transformAttendance(data) : r
       ));
-      await refreshData(true); // Silent refresh to update UI consistency
+      await refreshData(true);
     } catch (error) {
       console.error('Review early checkout error:', error);
+      throw error;
+    }
+  };
+
+  const requestEarlyOvertime = async (reason: string, durationMinutes: number, date?: string): Promise<void> => {
+    try {
+      const data = await api.attendanceAPI.requestEarlyOvertime(reason, durationMinutes, date);
+      const transformed = transformAttendance(data);
+      setAttendanceRecords(prev => {
+        const idx = prev.findIndex(r => r.id === transformed.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = transformed;
+          return next;
+        }
+        return [transformed, ...prev];
+      });
+    } catch (error) {
+      console.error('Request early overtime error:', error);
+      throw error;
+    }
+  };
+
+  const requestManagementOvertime = async (reason: string, durationMinutes: number, date?: string): Promise<void> => {
+    try {
+      const data = await api.attendanceAPI.requestOvertime(reason, durationMinutes, date);
+      const transformed = transformAttendance(data);
+      setAttendanceRecords(prev => {
+        const idx = prev.findIndex(r => r.id === transformed.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = transformed;
+          return next;
+        }
+        return [transformed, ...prev];
+      });
+    } catch (error) {
+      console.error('Request management overtime error:', error);
+      throw error;
+    }
+  };
+
+  const reviewManagementOvertime = async (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string): Promise<void> => {
+    try {
+      const data = await api.attendanceAPI.reviewOvertime(recordId, status, adminNote);
+      setAttendanceRecords(prev => prev.map(r =>
+        r.id === recordId ? transformAttendance(data) : r
+      ));
+      await refreshData(true);
+    } catch (error) {
+      console.error('Review management overtime error:', error);
       throw error;
     }
   };
@@ -788,6 +879,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       exportReports,
       updateSystemSettings,
       reviewEarlyCheckout,
+      requestEarlyOvertime,
+      requestManagementOvertime,
+      reviewManagementOvertime,
       refreshData,
       refreshForRoute
     }}>
