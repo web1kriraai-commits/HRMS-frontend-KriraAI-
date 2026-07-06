@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { Clock, TrendingUp, Briefcase, LogOut, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { Card } from './ui/Card';
 import { Attendance, LeaveRequest } from '../types';
@@ -6,6 +6,8 @@ import {
   calculateMonthlyOvertimeSummary,
   formatHoursMinutesShort
 } from '../services/utils';
+import { attendanceAPI } from '../services/api';
+
 interface MonthlyOvertimeSummaryProps {
   monthStr: string;
   monthLabel: string;
@@ -43,6 +45,11 @@ const StatTile: React.FC<{
   </div>
 );
 
+const currentMonthStr = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+};
+
 export const MonthlyOvertimeSummary: React.FC<MonthlyOvertimeSummaryProps> = ({
   monthStr,
   monthLabel,
@@ -54,6 +61,38 @@ export const MonthlyOvertimeSummary: React.FC<MonthlyOvertimeSummaryProps> = ({
   maxMonth,
   showMonthPicker = true
 }) => {
+  const [liveTodayWorkedSeconds, setLiveTodayWorkedSeconds] = useState<number | null>(null);
+  const isCurrentMonth = monthStr === currentMonthStr();
+
+  const fetchLiveWorked = useCallback(async () => {
+    if (!isCurrentMonth) {
+      setLiveTodayWorkedSeconds(null);
+      return;
+    }
+    try {
+      const todayData = await attendanceAPI.getToday() as {
+        checkIn?: string;
+        checkOut?: string;
+        liveWorkedSeconds?: number;
+      } | null;
+      if (todayData?.checkIn && !todayData?.checkOut && typeof todayData.liveWorkedSeconds === 'number') {
+        setLiveTodayWorkedSeconds(todayData.liveWorkedSeconds);
+      } else {
+        setLiveTodayWorkedSeconds(null);
+      }
+    } catch {
+      // Keep last known value on transient errors
+    }
+  }, [isCurrentMonth]);
+
+  useEffect(() => {
+    fetchLiveWorked();
+    if (!isCurrentMonth) return;
+
+    const intervalId = window.setInterval(fetchLiveWorked, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, [fetchLiveWorked, isCurrentMonth, monthStr]);
+
   const summary = useMemo(
     () =>
       calculateMonthlyOvertimeSummary(
@@ -61,9 +100,11 @@ export const MonthlyOvertimeSummary: React.FC<MonthlyOvertimeSummaryProps> = ({
         attendanceRecords,
         leaves,
         holidayDateSet,
-        userId
+        userId,
+        undefined,
+        isCurrentMonth ? liveTodayWorkedSeconds : null
       ),
-    [monthStr, attendanceRecords, leaves, holidayDateSet, userId]
+    [monthStr, attendanceRecords, leaves, holidayDateSet, userId, isCurrentMonth, liveTodayWorkedSeconds]
   );
 
   return (
@@ -128,7 +169,7 @@ export const MonthlyOvertimeSummary: React.FC<MonthlyOvertimeSummaryProps> = ({
           />
           <StatTile
             label="Remaining Time"
-            sublabel="Balance vs required working days"
+            sublabel={isCurrentMonth && liveTodayWorkedSeconds != null ? 'Updates every minute while clocked in' : 'Balance vs required working days'}
             value={formatHoursMinutesShort(summary.remainingSeconds)}
             icon={summary.remainingSeconds > 0 ? <AlertCircle size={12} /> : <CheckCircle2 size={12} />}
             accent={summary.remainingSeconds > 0 ? 'text-rose-700' : 'text-emerald-700'}

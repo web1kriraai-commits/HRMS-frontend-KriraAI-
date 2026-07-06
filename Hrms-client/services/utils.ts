@@ -212,6 +212,72 @@ export const getEffectiveLeaveCategory = (leave: { category?: string; reason?: s
   return cat;
 };
 
+export interface EmployeeBondPeriod {
+  startDate: string;
+  endDate: string;
+  displayEndDate: string;
+  totalMonths: number;
+  label: string;
+  hasBonds: boolean;
+}
+
+/** Bond date range for leave summaries (first bond start → last bond end, capped at today for usage). */
+export const getEmployeeBondPeriod = (user?: User | null): EmployeeBondPeriod => {
+  const todayStr = getTodayStr();
+  const fallbackStart = user?.joiningDate ? convertToYYYYMMDD(user.joiningDate) : todayStr;
+
+  if (!user?.bonds?.length) {
+    return {
+      startDate: fallbackStart,
+      endDate: todayStr,
+      displayEndDate: todayStr,
+      totalMonths: 0,
+      label: 'Employment period',
+      hasBonds: false,
+    };
+  }
+
+  const bondInfo = calculateBondRemaining(user.bonds, user.joiningDate);
+  const { allBonds, currentBond } = bondInfo;
+
+  if (!allBonds.length) {
+    return {
+      startDate: fallbackStart,
+      endDate: todayStr,
+      displayEndDate: todayStr,
+      totalMonths: 0,
+      label: 'Employment period',
+      hasBonds: false,
+    };
+  }
+
+  const first = allBonds[0];
+  const last = allBonds[allBonds.length - 1];
+  const parsedFirstStart = convertToYYYYMMDD(first.startDate);
+  const startDate = parsedFirstStart && parsedFirstStart.length === 10 ? parsedFirstStart : fallbackStart;
+  const bondEndIso = last.endDate ? getLocalISOString(last.endDate) : todayStr;
+  const endDate = bondEndIso > todayStr ? todayStr : bondEndIso;
+  let totalMonths = 0;
+  for (const b of allBonds) totalMonths += b.periodMonths || 0;
+  const activeLabel = currentBond?.type ? `${currentBond.type} Bond` : 'Bond period';
+
+  return {
+    startDate,
+    endDate,
+    displayEndDate: bondEndIso,
+    totalMonths,
+    label: `${activeLabel} · ${totalMonths} month${totalMonths !== 1 ? 's' : ''}`,
+    hasBonds: true,
+  };
+};
+
+/** True when a leave overlaps [startYmd, endYmd] inclusive. */
+export const leaveOverlapsDateRange = (
+  leave: { startDate: string; endDate: string },
+  startYmd: string,
+  endYmd: string
+): boolean => leave.startDate <= endYmd && leave.endDate >= startYmd;
+
 /** Count working-day absences for a user within a calendar month (YYYY-MM). */
 export const calculateAbsentDaysForMonth = (
   userId: string,
@@ -1063,7 +1129,8 @@ export const calculateMonthlyOvertimeSummary = (
   leaves: LeaveRequest[],
   holidayDateSet: Set<string>,
   userId: string,
-  systemSettings?: { checkoutTimeOverrides?: Record<string, string> }
+  systemSettings?: { checkoutTimeOverrides?: Record<string, string> },
+  liveTodayWorkedSeconds?: number | null
 ): MonthlyOvertimeSummary => {
   const [year, month] = monthStr.split('-').map(Number);
   const startDate = new Date(year, month - 1, 1);
@@ -1129,15 +1196,19 @@ export const calculateMonthlyOvertimeSummary = (
     let effectiveWorked = record?.checkOut ? (record.totalWorkedSeconds || 0) : 0;
     effectiveWorked = applyLeaveCreditToWorkedSeconds(effectiveWorked, leaveCredit);
 
-    // Leave-only or absent (implicit unpaid) day — no attendance record
-    if (!record?.checkOut && leaveCredit.creditSeconds > 0) {
-      if (!isHoliday) {
+    if (!record?.checkOut) {
+      if (record?.checkIn && dateStr === todayStr && liveTodayWorkedSeconds != null) {
+        let liveWorked = applyLeaveCreditToWorkedSeconds(liveTodayWorkedSeconds, leaveCredit);
+        if (!isHoliday) {
+          actualWorkedSeconds += liveWorked;
+        } else {
+          actualWorkedSeconds += liveTodayWorkedSeconds;
+        }
+      } else if (leaveCredit.creditSeconds > 0 && !isHoliday) {
         actualWorkedSeconds += effectiveWorked;
       }
       continue;
     }
-
-    if (!record?.checkOut) continue;
 
     if (isHoliday) {
       actualWorkedSeconds += effectiveWorked;

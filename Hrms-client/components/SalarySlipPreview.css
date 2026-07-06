@@ -1,0 +1,214 @@
+.payslip {
+  width: 760px;
+  margin: 0 auto;
+  font-family: "Times New Roman", Times, serif;
+  background: #ffffff;
+  color: #000;
+  box-sizing: border-box;
+}
+
+.payslip * {
+  box-sizing: border-box;
+}
+
+.payslip .box1 {
+  border: 1.6px solid #000;
+}
+
+.payslip .company-name {
+  text-align: center;
+  font-weight: bold;
+  font-size: 14px;
+  padding: 5px 0 2px 0;
+  margin: 0;
+  border-bottom: 1.6px solid #000;
+}
+
+.payslip .company-address {
+  text-align: center;
+  font-weight: bold;
+  font-size: 13px;
+  padding: 4px 0 6px 0;
+  margin: 0;
+  border-bottom: 1.6px solid #000;
+}
+
+.payslip .payslip-title {
+  text-align: center;
+  font-weight: bold;
+  font-size: 13.5px;
+  padding: 4px 0;
+  margin: 0;
+  border-bottom: 1.6px solid #000;
+}
+
+.payslip .info-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.payslip .info-table td {
+  font-size: 13px;
+  padding: 3px 10px;
+}
+
+.payslip .info-table td.label {
+  font-weight: bold;
+  width: 15%;
+  white-space: nowrap;
+}
+
+.payslip .info-table td.value {
+  color: #17307a;
+  font-weight: bold;
+  width: 35%;
+}
+
+.payslip .info-table tr.last-row td {
+  padding-bottom: 6px;
+}
+
+.payslip .gap {
+  height: 16px;
+}
+
+.payslip .earnings-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1.6px solid #000;
+  font-size: 13px;
+  table-layout: fixed;
+}
+
+.payslip .earnings-table col.c1 {
+  width: 27%;
+}
+
+.payslip .earnings-table col.c2 {
+  width: 15%;
+}
+
+.payslip .earnings-table col.c3 {
+  width: 27%;
+}
+
+.payslip .earnings-table col.c4 {
+  width: 31%;
+}
+
+.payslip .earnings-table th {
+  font-weight: bold;
+  text-decoration: underline;
+  text-align: left;
+  padding: 4px 10px;
+  border-bottom: 1.6px solid #000;
+}
+
+.payslip .earnings-table th.amt {
+  text-align: right;
+}
+
+.payslip .earnings-table th.c1,
+.payslip .earnings-table td.c1 {
+  border-right: 1px solid #000;
+}
+
+.payslip .earnings-table th.c2,
+.payslip .earnings-table td.c2 {
+  border-right: 1.6px solid #000;
+}
+
+.payslip .earnings-table th.c3,
+.payslip .earnings-table td.c3 {
+  border-right: 1px solid #000;
+}
+
+.payslip .earnings-table td {
+  padding: 3px 10px;
+  font-weight: bold;
+}
+
+.payslip .earnings-table td.amt {
+  text-align: right;
+  font-weight: normal;
+}
+
+.payslip .earnings-table tr.total-row td {
+  font-weight: bold;
+  border-top: 1.6px solid #000;
+  border-bottom: 1.6px solid #000;
+}
+
+.payslip .earnings-table tr.net-row td {
+  font-weight: bold;
+  border-top: 1.6px solid #000;
+}
+
+.payslip .earnings-table tr.net-row td.net-label {
+  text-align: left;
+}
+
+.payslip .earnings-table tr.net-row td.net-amt {
+  text-align: right;
+}
+
+.payslip .gap2 {
+  height: 16px;
+}
+
+.payslip .footer {
+  border-top: 1.6px solid #000;
+  padding-top: 8px;
+}
+
+.payslip .footer-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.payslip .footer-table td {
+  font-size: 13px;
+  vertical-align: bottom;
+  padding: 0 10px;
+}
+
+.payslip .ceo-name {
+  font-weight: bold;
+  margin: 4px 0 0 0;
+}
+
+.payslip .ceo-title {
+  margin: 2px 0;
+}
+
+.payslip .prepared-by {
+  font-weight: bold;
+  margin: 34px 0 4px 0;
+}
+
+.payslip .sign-cell {
+  width: 30%;
+  text-align: center;
+  position: relative;
+}
+
+.payslip .sign-space {
+  height: 44px;
+  position: relative;
+}
+
+.payslip .sign-label {
+  font-weight: bold;
+  border-top: 1px solid #000;
+  display: block;
+  padding-top: 3px;
+}
+
+.payslip .scribble {
+  position: absolute;
+  bottom: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 90px;
+  height: 46px;
+}

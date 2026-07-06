@@ -37,6 +37,9 @@ export const getRefreshScopeForPath = (pathname: string, role: Role): RefreshSco
     case '/admin-bonds':
       return { users: true };
 
+    case '/salary-management':
+      return { users: true };
+
     case '/admin-guidance':
       return {};
 
