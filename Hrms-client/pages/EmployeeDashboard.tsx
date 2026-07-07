@@ -1993,8 +1993,39 @@ export const EmployeeDashboard: React.FC = () => {
                   ].map(stat => (
                     <div key={stat.label} className={`rounded-xl border p-2.5 sm:p-3.5 text-center min-w-0 ${stat.boxClass}`}>
                       <p className="text-[8px] sm:text-[9px] font-semibold uppercase tracking-wide text-slate-400 mb-1 sm:mb-1.5 leading-tight">{stat.label}</p>
-                      <p className={`text-xl sm:text-2xl font-bold tabular-nums ${stat.valueClass}`}>{stat.value}</p>
+                      <p className={`text-xl sm:text-2xl font-bold tabular-nums ${stat.valueClass}`}>{formatDisplayDays(stat.value)}</p>
                       <p className="text-[8px] sm:text-[9px] text-slate-400 mt-0.5">{stat.value === 1 ? 'day' : 'days'}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-3 gap-2 sm:gap-3 min-w-0 mt-3 pt-3 border-t border-slate-100">
+                  {[
+                    {
+                      label: 'Paid Leave Used',
+                      value: usedPaidLeaves,
+                      sub: `of ${formatDisplayDays(TOTAL_PAID_LEAVES)} allocated`,
+                      valueClass: 'text-violet-600',
+                      boxClass: 'bg-violet-50/60 border-violet-100',
+                    },
+                    {
+                      label: 'Paid Remaining',
+                      value: availablePaidLeaves,
+                      sub: canRequestPaidLeave ? 'available' : 'access disabled',
+                      valueClass: availablePaidLeaves > 0 ? 'text-indigo-500' : 'text-rose-400',
+                      boxClass: 'bg-indigo-50/40 border-indigo-100',
+                    },
+                    {
+                      label: 'Unpaid Leave Used',
+                      value: totalUnpaidUsed,
+                      sub: 'approved',
+                      valueClass: 'text-amber-600',
+                      boxClass: 'bg-amber-50/60 border-amber-100',
+                    },
+                  ].map(stat => (
+                    <div key={stat.label} className={`rounded-xl border p-2.5 sm:p-3 text-center min-w-0 ${stat.boxClass}`}>
+                      <p className="text-[8px] sm:text-[9px] font-semibold uppercase tracking-wide text-slate-400 mb-1 leading-tight">{stat.label}</p>
+                      <p className={`text-lg sm:text-xl font-bold tabular-nums ${stat.valueClass}`}>{formatDisplayDays(stat.value)}</p>
+                      <p className="text-[8px] sm:text-[9px] text-slate-400 mt-0.5">{stat.sub}</p>
                     </div>
                   ))}
                 </div>

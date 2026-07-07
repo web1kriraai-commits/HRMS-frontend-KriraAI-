@@ -418,8 +418,10 @@ export interface BondLeaveSummary {
   remaining: number;
   /** Leave taken beyond bond allocation. */
   extra: number;
+  /** Approved leave + manual adjustments (excludes absent / missing-checkout days). */
   totalTaken: number;
   appliedDays: number;
+  /** Informational only — not deducted from bond pool. */
   absentDays: number;
   countStart: string;
   countEnd: string;
@@ -564,8 +566,9 @@ export const getBondLeaveAllocation = (user?: User | null): number => {
 };
 
 /**
- * Bond leave summary from March 2025: applied full/half-day + absent days (no punch).
- * allocated − totalTaken = remaining; overflow → extra leave.
+ * Bond leave summary from March 2025: used/remaining/extra are based on approved leave
+ * applications (+ manual adjustments) only. absentDays is still computed for reporting
+ * but does not reduce the leave pool (missing check-out / no-punch days are excluded).
  */
 export const calculateBondLeaveSummary = (
   user: User | undefined,
@@ -629,7 +632,7 @@ export const calculateBondLeaveSummary = (
     holidayDateSet
   );
 
-  const totalTaken = appliedDays + absentDays + manualTotal;
+  const totalTaken = appliedDays + manualTotal;
   const allocated = getBondLeaveAllocation(user);
   const remaining = Math.max(0, allocated - totalTaken);
   const extra = Math.max(0, totalTaken - allocated);
