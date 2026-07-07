@@ -70,7 +70,7 @@ export const EmployeeDashboard: React.FC = () => {
   const [todayRecord, setTodayRecord] = useState(attendanceRecords.find(r => r.userId === user?.id && r.date === getTodayStr()));
   const [isResolvingAbsence, setIsResolvingAbsence] = useState(false);
   const [showMgmtOtModal, setShowMgmtOtModal] = useState(false);
-  const [mgmtOtForm, setMgmtOtForm] = useState({ reason: '', durationMinutes: 60 });
+  const [mgmtOtForm, setMgmtOtForm] = useState({ reason: '' });
   const [isSubmittingMgmtOt, setIsSubmittingMgmtOt] = useState(false);
   const [showEarlyOtModal, setShowEarlyOtModal] = useState(false);
   const [earlyOtForm, setEarlyOtForm] = useState({ reason: '', durationMinutes: 60 });
@@ -1697,7 +1697,7 @@ export const EmployeeDashboard: React.FC = () => {
                       {todayRecord?.managementOvertime?.status === 'Pending' ? (
                         <div className="p-3 bg-violet-50 border border-violet-100 rounded-xl text-center h-full">
                           <p className="text-[10px] font-black text-violet-600 uppercase tracking-widest">Management OT Pending</p>
-                          <p className="text-[10px] text-violet-500 font-bold mt-1">Waiting for approval ({todayRecord.managementOvertime.durationMinutes}m)</p>
+                          <p className="text-[10px] text-violet-500 font-bold mt-1">Waiting for approval — OT credited on accept (worked − 8h 15m)</p>
                         </div>
                       ) : todayRecord?.managementOvertime?.status === 'Approved' ? (
                         <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl text-center h-full">
@@ -2059,53 +2059,58 @@ export const EmployeeDashboard: React.FC = () => {
           }
         >
           <p className="text-xs text-indigo-600/80 font-medium mb-4 px-1">
-            General OT is automatic above 8h 15m. Management OT requires admin approval. Early OT tracks early checkout deficits to cover.
+            General OT is automatic above 8h 15m. Management OT and early checkout OT are credited on approval as worked time minus 8h 15m. Early OT repayment tracks deficits to cover.
           </p>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm text-left text-gray-500">
-              <thead className="text-xs text-indigo-700 uppercase bg-indigo-50/50 border-b">
-                <tr>
-                  <th className="px-4 py-3">Date</th>
-                  <th className="px-4 py-3">General OT</th>
-                  <th className="px-4 py-3">Management OT</th>
-                  <th className="px-4 py-3">Early OT</th>
-                  <th className="px-4 py-3">Worked</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredOvertimeHistory.length === 0 ? (
+            <div className="max-h-[26rem] overflow-y-auto custom-scrollbar">
+              <table className="w-full text-sm text-left text-gray-500">
+                <thead className="text-xs text-indigo-700 uppercase bg-indigo-50/50 border-b sticky top-0 z-10">
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-gray-400 italic">
-                      No overtime records for {overtimeHistoryMonthLabel}.
-                    </td>
+                    <th className="px-4 py-3">Date</th>
+                    <th className="px-4 py-3">General OT</th>
+                    <th className="px-4 py-3">Management OT</th>
+                    <th className="px-4 py-3">Early OT</th>
+                    <th className="px-4 py-3">Worked</th>
                   </tr>
-                ) : (
-                  filteredOvertimeHistory.map(r => {
-                    const generalMins = resolveGeneralOvertimeMinutes(r);
-                    const mgmtMins = r.managementOvertime?.status === 'Approved'
-                      ? (r.managementOvertime.completedMinutes ?? 0) : 0;
+                </thead>
+                <tbody>
+                  {filteredOvertimeHistory.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-8 text-center text-gray-400 italic">
+                        No overtime records for {overtimeHistoryMonthLabel}.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredOvertimeHistory.map(r => {
+                      const generalMins = resolveGeneralOvertimeMinutes(r);
+                      const mgmtMins = r.managementOvertime?.status === 'Approved'
+                        ? (r.managementOvertime.completedMinutes ?? 0) : 0;
                     const earlyDeficit = r.earlyOvertime?.deficitMinutes ?? 0;
                     const earlyCovered = r.earlyOvertime?.coveredMinutes ?? 0;
-                    const earlyDisplay = earlyDeficit > 0
-                      ? `${earlyDeficit - earlyCovered}m owed`
-                      : '-';
-                    const workedDisplay = r.checkOut
-                      ? formatDuration(r.totalWorkedSeconds || 0)
-                      : (r.date === getTodayStr() && isCheckedIn ? 'In progress' : '--');
+                    const earlyCompleted = r.earlyOvertime?.completedMinutes ?? 0;
+                    const earlyDisplay = earlyCompleted > 0
+                      ? `${earlyCompleted}m`
+                      : earlyDeficit > 0
+                        ? `${earlyDeficit - earlyCovered}m owed`
+                        : '-';
+                      const workedDisplay = r.checkOut
+                        ? formatDuration(r.totalWorkedSeconds || 0)
+                        : (r.date === getTodayStr() && isCheckedIn ? 'In progress' : '--');
 
-                    return (
-                      <tr key={r.id} className="bg-white border-b hover:bg-indigo-50/30 transition-colors">
-                        <td className="px-4 py-3 font-bold text-gray-900">{formatDate(r.date)}</td>
-                        <td className="px-4 py-3 font-mono text-emerald-600 font-bold">{generalMins > 0 ? `${generalMins}m` : '-'}</td>
-                        <td className="px-4 py-3 font-mono text-violet-600 font-bold">{mgmtMins > 0 ? `${mgmtMins}m` : '-'}</td>
-                        <td className="px-4 py-3 font-mono text-amber-600 font-bold">{earlyDisplay}</td>
-                        <td className="px-4 py-3 text-xs font-medium text-gray-700">{workedDisplay}</td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                      return (
+                        <tr key={r.id} className="bg-white border-b hover:bg-indigo-50/30 transition-colors">
+                          <td className="px-4 py-3 font-bold text-gray-900">{formatDate(r.date)}</td>
+                          <td className="px-4 py-3 font-mono text-emerald-600 font-bold">{generalMins > 0 ? `${generalMins}m` : '-'}</td>
+                          <td className="px-4 py-3 font-mono text-violet-600 font-bold">{mgmtMins > 0 ? `${mgmtMins}m` : '-'}</td>
+                          <td className="px-4 py-3 font-mono text-amber-600 font-bold">{earlyDisplay}</td>
+                          <td className="px-4 py-3 text-xs font-medium text-gray-700">{workedDisplay}</td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </Card>
 
@@ -2575,7 +2580,7 @@ export const EmployeeDashboard: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="font-bold text-gray-900">Request Management Overtime</h3>
-                    <p className="text-xs text-gray-500">Requires Admin/HR approval before OT is credited</p>
+                    <p className="text-xs text-gray-500">OT is calculated when approved: worked time above 8h 15m</p>
                   </div>
                 </div>
 
@@ -2588,9 +2593,9 @@ export const EmployeeDashboard: React.FC = () => {
                     }
                     setIsSubmittingMgmtOt(true);
                     try {
-                      await requestManagementOvertime(mgmtOtForm.reason.trim(), mgmtOtForm.durationMinutes);
+                      await requestManagementOvertime(mgmtOtForm.reason.trim());
                       setShowMgmtOtModal(false);
-                      setMgmtOtForm({ reason: '', durationMinutes: 60 });
+                      setMgmtOtForm({ reason: '' });
                       await refreshData(true);
                     } catch (err: any) {
                       appAlert(err.message || 'Failed to submit request');
@@ -2600,21 +2605,6 @@ export const EmployeeDashboard: React.FC = () => {
                   }}
                   className="space-y-4"
                 >
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                      Duration (minutes)
-                    </label>
-                    <input
-                      type="number"
-                      min={15}
-                      step={15}
-                      required
-                      value={mgmtOtForm.durationMinutes}
-                      onChange={(e) => setMgmtOtForm({ ...mgmtOtForm, durationMinutes: parseInt(e.target.value, 10) || 0 })}
-                      className="w-full p-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-violet-500 outline-none"
-                    />
-                    <p className="text-[10px] text-slate-400 mt-1">{formatHoursMinutesShort(mgmtOtForm.durationMinutes * 60)} requested</p>
-                  </div>
                   <div>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                       Reason

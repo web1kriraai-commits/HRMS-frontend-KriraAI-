@@ -130,7 +130,7 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
               <tr className="bg-violet-50/50 text-violet-700 uppercase text-xs font-bold">
                 <th className="px-4 py-3 text-left">Employee</th>
                 <th className="px-4 py-3 text-left">Date</th>
-                <th className="px-4 py-3 text-center">Duration</th>
+                <th className="px-4 py-3 text-center">OT on approve</th>
                 <th className="px-4 py-3 text-left">Reason</th>
                 <th className="px-4 py-3 text-left">Note</th>
                 <th className="px-4 py-3 text-center">Action</th>
@@ -153,8 +153,8 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
                       )}
                     </td>
                     <td className="px-4 py-3 text-gray-700">{req.date}</td>
-                    <td className="px-4 py-3 text-center font-bold text-violet-700">
-                      {req.durationMinutes}m
+                    <td className="px-4 py-3 text-center text-xs font-medium text-violet-600">
+                      Worked − 8h 15m
                     </td>
                     <td className="px-4 py-3 text-gray-600 max-w-xs truncate" title={req.reason}>
                       {req.reason || '—'}
@@ -249,7 +249,7 @@ export const ManagementOvertimePanel: React.FC<ManagementOvertimePanelProps> = (
                     <p className="text-xs text-gray-500">{req.department}</p>
                   )}
                   <p className="text-sm text-gray-600 mt-1">
-                    {req.date} · <span className="font-bold text-violet-700">{req.durationMinutes}m</span>
+                    {req.date} · <span className="font-bold text-violet-700">OT on approve</span>
                   </p>
                   {req.reason && (
                     <div className="flex items-start gap-1.5 mt-2 bg-violet-50/50 p-2 rounded border border-violet-100/50">

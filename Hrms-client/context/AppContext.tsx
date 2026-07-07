@@ -65,7 +65,7 @@ interface AppContextType {
   }) => Promise<void>;
   reviewEarlyCheckout: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
   requestEarlyOvertime: (reason: string, durationMinutes: number, date?: string) => Promise<void>;
-  requestManagementOvertime: (reason: string, durationMinutes: number, date?: string) => Promise<void>;
+  requestManagementOvertime: (reason: string, date?: string) => Promise<void>;
   reviewManagementOvertime: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
   requestEarlyOtRepayment: (reason: string, durationMinutes: number, date?: string) => Promise<void>;
   reviewEarlyOtRepayment: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
@@ -810,9 +810,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const requestManagementOvertime = async (reason: string, durationMinutes: number, date?: string): Promise<void> => {
+  const requestManagementOvertime = async (reason: string, date?: string): Promise<void> => {
     try {
-      const data = await api.attendanceAPI.requestOvertime(reason, durationMinutes, date);
+      const data = await api.attendanceAPI.requestOvertime(reason, date);
       const transformed = transformAttendance(data);
       setAttendanceRecords(prev => {
         const idx = prev.findIndex(r => r.id === transformed.id);

@@ -139,6 +139,7 @@ export interface Attendance {
     approvedAt?: string;
     deficitMinutes: number;
     coveredMinutes: number;
+    completedMinutes?: number;
     status: 'None' | 'Pending' | 'Partial' | 'Covered';
   };
   /** Explicit request to repay a previous early-checkout deficit with extra minutes worked this day (current month only) */

@@ -94,7 +94,11 @@ export const HRDashboard: React.FC = () => {
     aadhaarNumber: '',
     guardianName: '',
     mobileNumber: '',
-    guardianMobileNumber: ''
+    guardianMobileNumber: '',
+    bankName: '',
+    bankAccountHolderName: '',
+    bankAccountNumber: '',
+    bankIfscCode: ''
   });
 
   // Calculate salary breakdown when joining date or bonds change
@@ -2359,6 +2363,10 @@ export const HRDashboard: React.FC = () => {
                                     guardianName: user.guardianName || '',
                                     mobileNumber: user.mobileNumber || '',
                                     guardianMobileNumber: user.guardianMobileNumber || '',
+                                    bankName: user.bankName || '',
+                                    bankAccountHolderName: user.bankAccountHolderName || '',
+                                    bankAccountNumber: user.bankAccountNumber || '',
+                                    bankIfscCode: user.bankIfscCode || '',
                                     joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
                                     bonds: (user.bonds || []).map(b => ({
                                       type: b.type,
@@ -2483,6 +2491,10 @@ export const HRDashboard: React.FC = () => {
                                   guardianName: user.guardianName || '',
                                   mobileNumber: user.mobileNumber || '',
                                   guardianMobileNumber: user.guardianMobileNumber || '',
+                                  bankName: user.bankName || '',
+                                  bankAccountHolderName: user.bankAccountHolderName || '',
+                                  bankAccountNumber: user.bankAccountNumber || '',
+                                  bankIfscCode: user.bankIfscCode || '',
                                   joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
                                   bonds: (user.bonds || []).map(b => ({
                                     type: b.type,
@@ -2826,7 +2838,7 @@ export const HRDashboard: React.FC = () => {
             className="fixed inset-0 bg-black/50 z-50"
             onClick={() => {
               setEditingUser(null);
-              setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
+              setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], aadhaarNumber: '', guardianName: '', mobileNumber: '', guardianMobileNumber: '', bankName: '', bankAccountHolderName: '', bankAccountNumber: '', bankIfscCode: '' });
             }}
           />
           <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
@@ -2836,7 +2848,7 @@ export const HRDashboard: React.FC = () => {
                 <button
                   onClick={() => {
                     setEditingUser(null);
-                    setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
+                    setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], aadhaarNumber: '', guardianName: '', mobileNumber: '', guardianMobileNumber: '', bankName: '', bankAccountHolderName: '', bankAccountNumber: '', bankIfscCode: '' });
                   }}
                   className="text-gray-400 hover:text-gray-600 transition-colors"
                 >
@@ -2847,6 +2859,16 @@ export const HRDashboard: React.FC = () => {
               <form onSubmit={async (e) => {
                 e.preventDefault();
                 try {
+                  const accountDigits = editUserForm.bankAccountNumber.replace(/\D/g, '');
+                  if (accountDigits && (accountDigits.length < 9 || accountDigits.length > 18)) {
+                    appAlert('Account number must be 9 to 18 digits');
+                    return;
+                  }
+                  if (editUserForm.bankIfscCode.trim() && editUserForm.bankIfscCode.trim().length !== 11) {
+                    appAlert('IFSC code must be exactly 11 characters');
+                    return;
+                  }
+
                   const updates: any = {
                     name: editUserForm.name,
                     email: editUserForm.email,
@@ -2857,6 +2879,10 @@ export const HRDashboard: React.FC = () => {
                     guardianName: editUserForm.guardianName,
                     mobileNumber: editUserForm.mobileNumber,
                     guardianMobileNumber: editUserForm.guardianMobileNumber,
+                    bankName: editUserForm.bankName,
+                    bankAccountHolderName: editUserForm.bankAccountHolderName,
+                    bankAccountNumber: accountDigits,
+                    bankIfscCode: editUserForm.bankIfscCode.trim().toUpperCase(),
                   };
 
                   if (editUserForm.joiningDate) {
@@ -2904,7 +2930,7 @@ export const HRDashboard: React.FC = () => {
                   await userAPI.updateUser(editingUser.id, updates);
                   appAlert('User updated successfully!');
                   setEditingUser(null);
-                  setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
+                  setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], aadhaarNumber: '', guardianName: '', mobileNumber: '', guardianMobileNumber: '', bankName: '', bankAccountHolderName: '', bankAccountNumber: '', bankIfscCode: '' });
                   await refreshData();
                 } catch (error: any) {
                   appAlert(error.message || 'Failed to update user');
@@ -2994,6 +3020,55 @@ export const HRDashboard: React.FC = () => {
                     value={editUserForm.paidLeaveAllocation}
                     onChange={e => setEditUserForm({ ...editUserForm, paidLeaveAllocation: e.target.value })}
                   />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-3 flex items-center gap-2 pb-2 border-b border-gray-100">
+                    <Landmark size={16} className="text-indigo-500" /> Bank Details
+                  </h4>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Employee Full Name (as per checkbook)</label>
+                      <input
+                        type="text"
+                        className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                        value={editUserForm.bankAccountHolderName}
+                        onChange={e => setEditUserForm({ ...editUserForm, bankAccountHolderName: e.target.value })}
+                        placeholder="Name as printed on checkbook"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Bank Name</label>
+                      <input
+                        type="text"
+                        className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                        value={editUserForm.bankName}
+                        onChange={e => setEditUserForm({ ...editUserForm, bankName: e.target.value })}
+                        placeholder="e.g. State Bank of India"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Account Number</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                        value={editUserForm.bankAccountNumber}
+                        onChange={e => setEditUserForm({ ...editUserForm, bankAccountNumber: e.target.value.replace(/\D/g, '').slice(0, 18) })}
+                        placeholder="9 to 18 digits"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 uppercase mb-1">IFSC Code</label>
+                      <input
+                        type="text"
+                        className="w-full p-2.5 border border-gray-200 rounded-lg text-sm uppercase"
+                        value={editUserForm.bankIfscCode}
+                        onChange={e => setEditUserForm({ ...editUserForm, bankIfscCode: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11) })}
+                        placeholder="11-character IFSC code"
+                        maxLength={11}
+                      />
+                    </div>
+                  </div>
                 </div>
                 <div>
                   <div className="flex items-center justify-between mb-2">
@@ -3173,7 +3248,7 @@ export const HRDashboard: React.FC = () => {
                     variant="secondary"
                     onClick={() => {
                       setEditingUser(null);
-                      setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], guardianMobileNumber: '' });
+                      setEditUserForm({ name: '', email: '', department: '', paidLeaveAllocation: '', joiningDate: '', bonds: [], aadhaarNumber: '', guardianName: '', mobileNumber: '', guardianMobileNumber: '', bankName: '', bankAccountHolderName: '', bankAccountNumber: '', bankIfscCode: '' });
                     }}
                   >
                     Cancel

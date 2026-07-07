@@ -255,10 +255,10 @@ export const attendanceAPI = {
   getPendingEarlyOvertime: async () => {
     return apiRequest('/attendance/admin/pending-early-overtime');
   },
-  requestOvertime: async (reason: string, durationMinutes: number, date?: string) => {
+  requestOvertime: async (reason: string, date?: string) => {
     return apiRequest('/attendance/request-overtime', {
       method: 'POST',
-      body: JSON.stringify({ reason, durationMinutes, date }),
+      body: JSON.stringify({ reason, date }),
     });
   },
   getPendingOvertime: async () => {
@@ -376,6 +376,11 @@ export const userAPI = {
     aadhaarNumber?: string;
     guardianName?: string;
     mobileNumber?: string;
+    guardianMobileNumber?: string;
+    bankName?: string;
+    bankAccountHolderName?: string;
+    bankAccountNumber?: string;
+    bankIfscCode?: string;
     password?: string;
     salaryBreakdown?: Array<{
       month: number;
