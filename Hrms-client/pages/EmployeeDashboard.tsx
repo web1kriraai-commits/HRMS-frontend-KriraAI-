@@ -329,7 +329,7 @@ export const EmployeeDashboard: React.FC = () => {
       appAlert(
         checkoutRequestType === 'break'
           ? 'Checkout approval request sent. An admin can approve checkout without the 20-minute break requirement.'
-          : 'Early OT request sent successfully. Admin/HR will review it.'
+          : 'Early checkout request sent successfully. Admin/HR will review it.'
       );
     } catch (err: any) {
       appAlert(err.message || 'Failed to send early checkout request.');
@@ -1984,48 +1984,17 @@ export const EmployeeDashboard: React.FC = () => {
                     Leave counted from {formatDate(BOND_LEAVE_EFFECTIVE_DATE)}
                   </span>
                 </p>
-                <div className="grid grid-cols-4 gap-2 sm:gap-3 min-w-0">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 min-w-0">
                   {[
                     { label: 'Allocated Leave', value: bondLeaveSummary.allocated, valueClass: 'text-slate-600', boxClass: 'bg-white border-slate-100' },
-                    { label: 'Used Leave', value: bondLeaveSummary.used, valueClass: 'text-rose-500', boxClass: 'bg-rose-50/60 border-rose-100' },
-                    { label: 'Remaining Leave', value: bondLeaveSummary.remaining, valueClass: bondLeaveSummary.remaining > 0 ? 'text-indigo-500' : 'text-rose-400', boxClass: 'bg-indigo-50/60 border-indigo-100' },
-                    { label: 'Extra Leave', value: bondLeaveSummary.extra, valueClass: 'text-emerald-600', boxClass: 'bg-emerald-50/60 border-emerald-100' },
+                    { label: 'Paid Leave', value: usedPaidLeaves, valueClass: 'text-violet-600', boxClass: 'bg-violet-50/60 border-violet-100' },
+                    { label: 'Unpaid Leave', value: totalUnpaidUsed, valueClass: 'text-amber-600', boxClass: 'bg-amber-50/60 border-amber-100' },
+                    { label: 'Total Leave', value: usedPaidLeaves + totalUnpaidUsed, valueClass: 'text-rose-500', boxClass: 'bg-rose-50/60 border-rose-100' },
                   ].map(stat => (
                     <div key={stat.label} className={`rounded-xl border p-2.5 sm:p-3.5 text-center min-w-0 ${stat.boxClass}`}>
                       <p className="text-[8px] sm:text-[9px] font-semibold uppercase tracking-wide text-slate-400 mb-1 sm:mb-1.5 leading-tight">{stat.label}</p>
                       <p className={`text-xl sm:text-2xl font-bold tabular-nums ${stat.valueClass}`}>{formatDisplayDays(stat.value)}</p>
                       <p className="text-[8px] sm:text-[9px] text-slate-400 mt-0.5">{stat.value === 1 ? 'day' : 'days'}</p>
-                    </div>
-                  ))}
-                </div>
-                <div className="grid grid-cols-3 gap-2 sm:gap-3 min-w-0 mt-3 pt-3 border-t border-slate-100">
-                  {[
-                    {
-                      label: 'Paid Leave Used',
-                      value: usedPaidLeaves,
-                      sub: `of ${formatDisplayDays(TOTAL_PAID_LEAVES)} allocated`,
-                      valueClass: 'text-violet-600',
-                      boxClass: 'bg-violet-50/60 border-violet-100',
-                    },
-                    {
-                      label: 'Paid Remaining',
-                      value: availablePaidLeaves,
-                      sub: canRequestPaidLeave ? 'available' : 'access disabled',
-                      valueClass: availablePaidLeaves > 0 ? 'text-indigo-500' : 'text-rose-400',
-                      boxClass: 'bg-indigo-50/40 border-indigo-100',
-                    },
-                    {
-                      label: 'Unpaid Leave Used',
-                      value: totalUnpaidUsed,
-                      sub: 'approved',
-                      valueClass: 'text-amber-600',
-                      boxClass: 'bg-amber-50/60 border-amber-100',
-                    },
-                  ].map(stat => (
-                    <div key={stat.label} className={`rounded-xl border p-2.5 sm:p-3 text-center min-w-0 ${stat.boxClass}`}>
-                      <p className="text-[8px] sm:text-[9px] font-semibold uppercase tracking-wide text-slate-400 mb-1 leading-tight">{stat.label}</p>
-                      <p className={`text-lg sm:text-xl font-bold tabular-nums ${stat.valueClass}`}>{formatDisplayDays(stat.value)}</p>
-                      <p className="text-[8px] sm:text-[9px] text-slate-400 mt-0.5">{stat.sub}</p>
                     </div>
                   ))}
                 </div>
@@ -2532,7 +2501,7 @@ export const EmployeeDashboard: React.FC = () => {
                   <AlertCircle size={28} />
                 </div>
                 <h3 className="text-xl font-bold text-slate-900 tracking-tight">
-                  {checkoutRequestType === 'break' ? 'Checkout Approval Request' : 'Early OT Request'}
+                  {checkoutRequestType === 'break' ? 'Checkout Approval Request' : 'Early Checkout Request'}
                 </h3>
                 <div className="mt-2 text-sm text-slate-500 leading-relaxed px-2">
                   {checkoutRequestType === 'break' ? (

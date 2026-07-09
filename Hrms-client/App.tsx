@@ -65,7 +65,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 // Home dashboard based on role
 const HomeDashboard = () => {
   const { auth } = useApp();
-  if (auth.user?.role === Role.ADMIN) {
+  if (auth.user?.role === Role.ADMIN || auth.user?.role === Role.HR) {
     return <AdminDashboard />;
   }
   return <EmployeeDashboard />;
@@ -111,7 +111,7 @@ const AppRoutes = () => {
       } />
 
       <Route path="/admin-dashboard" element={
-        <PrivateRoute roles={[Role.ADMIN]}>
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
           </AppLayout>
@@ -119,7 +119,7 @@ const AppRoutes = () => {
       } />
 
       <Route path="/admin-summary" element={
-        <PrivateRoute roles={[Role.ADMIN]}>
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
           </AppLayout>
@@ -127,7 +127,7 @@ const AppRoutes = () => {
       } />
 
       <Route path="/admin-users" element={
-        <PrivateRoute roles={[Role.ADMIN]}>
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
           </AppLayout>
@@ -135,7 +135,7 @@ const AppRoutes = () => {
       } />
 
       <Route path="/admin-audit" element={
-        <PrivateRoute roles={[Role.ADMIN]}>
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
           </AppLayout>
@@ -143,7 +143,7 @@ const AppRoutes = () => {
       } />
 
       <Route path="/admin-system" element={
-        <PrivateRoute roles={[Role.ADMIN]}>
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
           </AppLayout>
@@ -151,7 +151,7 @@ const AppRoutes = () => {
       } />
 
       <Route path="/admin-settings" element={
-        <PrivateRoute roles={[Role.ADMIN]}>
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
           </AppLayout>
@@ -159,7 +159,7 @@ const AppRoutes = () => {
       } />
 
       <Route path="/admin-guidance" element={
-        <PrivateRoute roles={[Role.ADMIN]}>
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
           </AppLayout>
@@ -167,7 +167,7 @@ const AppRoutes = () => {
       } />
 
       <Route path="/admin-bonds" element={
-        <PrivateRoute roles={[Role.ADMIN]}>
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <AdminDashboard />
           </AppLayout>
@@ -199,7 +199,7 @@ const AppRoutes = () => {
       } />
 
       <Route path="/admin-leaves" element={
-        <PrivateRoute roles={[Role.ADMIN]}>
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <LeaveManagement />
           </AppLayout>

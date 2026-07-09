@@ -56,7 +56,7 @@ export const EarlyOvertimePopup: React.FC = () => {
         <div className="bg-amber-500 p-3 flex items-center justify-between text-white shrink-0">
           <div className="flex items-center gap-2">
             <Clock size={18} />
-            <h3 className="font-bold text-sm">Early OT — Approve / Reject</h3>
+            <h3 className="font-bold text-sm">Early Checkout — Approve / Reject</h3>
           </div>
           <button
             type="button"

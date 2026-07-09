@@ -106,7 +106,7 @@ export const getRefreshScopeForPath = (pathname: string, role: Role): RefreshSco
       };
 
     case '/':
-      if (role === Role.ADMIN) {
+      if (role === Role.ADMIN || role === Role.HR) {
         return {
           today: true,
           attendance: true,

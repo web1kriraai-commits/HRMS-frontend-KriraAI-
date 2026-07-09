@@ -10,6 +10,8 @@ export const Sidebar: React.FC = () => {
 
   if (!user) return null;
 
+  const isAdminOrHr = user.role === Role.ADMIN || user.role === Role.HR;
+
   return (
     <div className="w-64 bg-slate-900 text-white h-screen fixed left-0 top-0 flex flex-col shadow-xl">
       <div className="p-6 border-b border-slate-800 flex items-center gap-2">
@@ -25,6 +27,13 @@ export const Sidebar: React.FC = () => {
           Dashboard
         </NavLink>
 
+        {isAdminOrHr && (
+          <NavLink to="/admin-dashboard" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+            <Activity size={18} />
+            Monthly Performance
+          </NavLink>
+        )}
+
         {user.role === Role.EMPLOYEE && (
           <NavLink to="/profile" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
             <UserCircle size={18} />
@@ -32,7 +41,7 @@ export const Sidebar: React.FC = () => {
           </NavLink>
         )}
 
-        {user.role === Role.ADMIN && (
+        {isAdminOrHr && (
           <div className="space-y-1">
             <NavLink to="/admin-users" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
               <Users size={18} />
@@ -67,14 +76,8 @@ export const Sidebar: React.FC = () => {
           Holidays
         </NavLink>
 
-        {user.role !== Role.EMPLOYEE && (
+        {isAdminOrHr && (
           <>
-            {user.role === Role.HR && (
-              <NavLink to="/salary-management" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
-                <IndianRupee size={18} />
-                Salary Management
-              </NavLink>
-            )}
             <NavLink to="/hr-today" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
               <Calendar size={18} />
               Today

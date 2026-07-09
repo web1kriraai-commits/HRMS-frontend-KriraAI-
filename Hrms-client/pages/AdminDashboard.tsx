@@ -1672,10 +1672,10 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </div>
 
-          {/* Pending Early OT — Admin can approve / reject */}
+          {/* Pending Early Checkout — Admin can approve / reject */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
             <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
-              <h3 className="text-lg font-bold text-gray-800">Pending Early OT</h3>
+              <h3 className="text-lg font-bold text-gray-800">Pending Early Checkout</h3>
               <p className="text-gray-500 text-sm">Approve or reject employee early checkout requests (today only)</p>
             </div>
             <div className="p-6">

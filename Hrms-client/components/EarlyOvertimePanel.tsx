@@ -97,10 +97,10 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
   }, [pending, maxItems, currentMonthOnly, todayOnly]);
 
   const emptyMessage = todayOnly
-    ? 'No pending early OT requests for today'
+    ? 'No pending early checkout requests for today'
     : currentMonthOnly
-      ? 'No pending early OT requests this month'
-      : 'No pending early OT requests';
+      ? 'No pending early checkout requests this month'
+      : 'No pending early checkout requests';
 
   const handleAction = async (
     recordId: string,
@@ -117,7 +117,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
       await loadPending();
       await refreshData(true);
     } catch (error: any) {
-      appAlert(error.message || 'Failed to process early OT request');
+      appAlert(error.message || 'Failed to process early checkout request');
     } finally {
       setSubmittingId(null);
     }
@@ -132,7 +132,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Clock size={18} className="text-amber-600" />
-              <h3 className="text-lg font-bold text-gray-800">Pending Early OT</h3>
+              <h3 className="text-lg font-bold text-gray-800">Pending Early Checkout</h3>
               <span className="bg-amber-100 text-amber-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
                 {visible.length}
               </span>
@@ -154,7 +154,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
               <tr className="bg-amber-50/50 text-amber-700 uppercase text-xs font-bold">
                 <th className="px-4 py-3 text-left">Employee</th>
                 <th className="px-4 py-3 text-left">Date</th>
-                <th className="px-4 py-3 text-center">OT on approve</th>
+                <th className="px-4 py-3 text-center">Request Type</th>
                 <th className="px-4 py-3 text-left">Reason</th>
                 <th className="px-4 py-3 text-left">Note</th>
                 <th className="px-4 py-3 text-center">Action</th>
@@ -178,7 +178,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
                     </td>
                     <td className="px-4 py-3 text-gray-700">{req.date}</td>
                     <td className="px-4 py-3 text-center text-xs font-medium text-amber-600">
-                      Worked − 8h 15m
+                      Early checkout
                     </td>
                     <td className="px-4 py-3 text-gray-600 max-w-xs truncate" title={req.reason}>
                       {req.reason || '—'}
@@ -232,7 +232,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Clock size={18} className="text-amber-600" />
-            <h3 className="text-lg font-bold text-gray-800">Early OT Requests</h3>
+            <h3 className="text-lg font-bold text-gray-800">Early Checkout Requests</h3>
             <span className="bg-amber-100 text-amber-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
               {visible.length}
             </span>
@@ -269,7 +269,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
                   )}
                   <p className="text-sm text-gray-600 mt-1">
                     {req.date}
-                    <> · <span className="font-bold text-amber-700">OT on approve</span></>
+                    <> · <span className="font-bold text-amber-700">Early checkout</span></>
                   </p>
                   {req.reason && (
                     <div className="flex items-start gap-1.5 mt-2 bg-amber-50/50 p-2 rounded border border-amber-100/50">
