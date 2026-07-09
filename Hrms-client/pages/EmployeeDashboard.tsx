@@ -2,7 +2,8 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo } fro
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { BreakType, LeaveCategory, LeaveStatus, User } from '../types';
+import { BreakType, LeaveCategory, LeaveStatus, User, Role } from '../types';
+import { AdminDashboard } from './AdminDashboard';
 import { MonthlyOvertimeSummary } from '../components/MonthlyOvertimeSummary';
 import { resolveGeneralOvertimeMinutes } from '../services/utils';
 import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn, HALF_DAY_EXTRA_THRESHOLD_SECONDS, calculateTotalBreakSeconds, hasMinimumTotalBreakTime, MIN_TOTAL_BREAK_SECONDS, getDateStrInTimezone, resolveCheckInTimeForDate, resolveCheckoutTimeForDate, formatCheckoutTimeLabel, isClockOutTimeAllowed, hasCheckoutOverrideForDate, formatHoursMinutesShort, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, getEffectiveLeaveCategory, getEmployeeBondPeriod, calculateBondLeaveSummary, BOND_LEAVE_EFFECTIVE_DATE, getLateCheckInPenaltyInfo, resolveLatePenaltyStartTime } from '../services/utils';
@@ -2327,6 +2328,10 @@ export const EmployeeDashboard: React.FC = () => {
             </div>
           )}
         </Card>
+
+        {user?.role === Role.HR && (
+          <AdminDashboard embeddedSection="monthly-performance" />
+        )}
 
         {/* Leave Listing */}
         <Card title={`My Leaves${leaveFilterMonth ? ` — ${new Date(leaveFilterMonth + '-01').toLocaleString('en-US', { month: 'long', year: 'numeric' })}` : ''}`} className="w-full">

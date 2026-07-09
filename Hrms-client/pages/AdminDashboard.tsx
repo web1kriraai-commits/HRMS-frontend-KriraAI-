@@ -32,7 +32,11 @@ const formatHoursToHoursMinutes = (hours: number) => {
   return isNegative ? `-${result}` : result;
 };
 
-export const AdminDashboard: React.FC = () => {
+type AdminDashboardProps = {
+  embeddedSection?: 'monthly-performance';
+};
+
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection }) => {
   const { auth, users, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, refreshForRoute, loading, notifications, leaveRequests, updateUser, updateLeaveStatus, deleteAttendance, updateLeaveRequest, deleteLeaveRequest, updateHoliday, deleteHoliday, adminUpdateAttendance } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
@@ -55,6 +59,14 @@ export const AdminDashboard: React.FC = () => {
     if (location.state?.openAddUserModal) {
       setIsCreateUserModalOpen(true);
       // Clear the state to prevent re-opening on manual refresh
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+
+    if (location.state?.selectedUserId) {
+      setSelectedUserId(location.state.selectedUserId);
+      if (location.state?.selectedMonth) {
+        setSelectedMonth(location.state.selectedMonth);
+      }
       navigate(location.pathname, { replace: true, state: {} });
     }
   }, [location.pathname, location.state, navigate]);
@@ -1429,6 +1441,203 @@ export const AdminDashboard: React.FC = () => {
     downloadCSV(`Bond_Status_Report_${new Date().toISOString().split('T')[0]}.csv`, rows);
   };
 
+  const renderMonthlyPerformanceOverview = () => (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+      <div className="px-6 py-5 border-b border-gray-100 bg-indigo-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-bold text-gray-800">Monthly Performance Overview</h3>
+          <p className="text-gray-500 text-sm">Key attendance metrics for the selected month</p>
+        </div>
+        <input
+          type="month"
+          className="bg-white border border-indigo-200 text-indigo-700 px-4 py-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 font-bold"
+          value={selectedMonth}
+          onChange={e => setSelectedMonth(e.target.value)}
+        />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 text-gray-500 uppercase text-[10px] font-bold">
+              <th className="px-3 py-3 text-left">Employee</th>
+              <th className="px-2 py-3 text-center">Joined</th>
+              <th className="px-2 py-3 text-center">Worked</th>
+              <th className="px-2 py-3 text-center text-amber-600">Break</th>
+              <th className="px-1 py-3 text-center">Pres.</th>
+              <th className="px-2 py-3 text-center text-rose-600">Low</th>
+              <th className="px-2 py-3 text-center text-emerald-600">Extra</th>
+              <th className="px-2 py-3 text-center text-blue-600">L(ET)</th>
+              <th className="px-2 py-3 text-center text-purple-600">Prev</th>
+              <th className="px-2 py-3 text-center text-amber-600">Sent</th>
+              <th className="px-2 py-3 text-center bg-indigo-100">Net</th>
+              <th className="px-2 py-3 text-center text-orange-700 bg-orange-100">Cumul.</th>
+              <th className="px-2 py-3 text-center text-blue-600">Leave</th>
+              <th className="px-3 py-3 text-center">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {users
+              .filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR)
+              .slice((performancePage - 1) * ITEMS_PER_PAGE, performancePage * ITEMS_PER_PAGE)
+              .map(emp => {
+                const [year, month] = selectedMonth.split('-').map(Number);
+                const empAttendance = attendanceRecords.filter(r => {
+                  const recDate = new Date(r.date);
+                  return r.userId === emp.id && recDate.getMonth() + 1 === month && recDate.getFullYear() === year;
+                });
+
+                const empLeavesInMonth = leaveRequests.filter(l => {
+                  if (l.userId !== emp.id) return false;
+                  const status = (l.status || '').trim();
+                  if (status !== 'Approved' && status !== LeaveStatus.APPROVED) return false;
+
+                  const startDate = new Date(l.startDate);
+                  const endDate = new Date(l.endDate);
+                  const monthStart = new Date(year, month - 1, 1);
+                  const monthEnd = new Date(year, month, 0);
+
+                  return (startDate <= monthEnd && endDate >= monthStart);
+                });
+
+                const monthStart = new Date(year, month - 1, 1);
+                const monthEnd = new Date(year, month, 0);
+
+                const totalLeavesCount = empLeavesInMonth.reduce((sum, l) => sum + calculateLeaveDays(l.startDate, l.endDate), 0);
+                const balance = calculateEmployeeBalance(
+                  emp,
+                  empAttendance,
+                  empLeavesInMonth,
+                  emp.manualExtraTimeAdjustment || 0,
+                  monthStart,
+                  monthEnd,
+                  selectedMonth === getTodayStr().substring(0, 7)
+                );
+
+                const joinDate = emp.joiningDate ? (parseDDMMYYYY(emp.joiningDate) || new Date(2026, 0, 1)) : new Date(2026, 0, 1);
+                const cumulativeBalance = calculateEmployeeBalance(
+                  emp,
+                  attendanceRecords.filter(r => r.userId === emp.id),
+                  leaveRequests.filter(l => l.userId === emp.id && ((l.status || '').trim() === 'Approved' || (l.status || '').trim() === LeaveStatus.APPROVED)),
+                  0,
+                  joinDate,
+                  new Date(),
+                  false
+                );
+
+                return (
+                  <tr key={emp.id} className="even:bg-gray-50/30 hover:bg-gray-50/50 transition-colors text-[11px]">
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-2">
+                        <div className="h-7 w-7 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-[10px]">
+                          {emp.name.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="font-semibold text-gray-800 truncate max-w-[80px]">{emp.name}</p>
+                          <p className="text-[9px] text-gray-400 uppercase font-medium">{emp.department}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-2 py-3 text-center font-medium text-gray-400 whitespace-nowrap">
+                      {emp.joiningDate ? convertToDDMMYYYY(emp.joiningDate).replace(/-/g, ' ') : '-'}
+                    </td>
+                    <td className="px-2 py-3 text-center font-medium whitespace-nowrap">
+                      {formatHoursToHoursMinutes(empAttendance.reduce((sum, r) => sum + (r.totalWorkedSeconds || 0), 0) / 3600)}
+                    </td>
+                    <td className="px-2 py-3 text-center text-amber-600 font-bold whitespace-nowrap">
+                      {(() => {
+                        const breakSec = empAttendance.reduce((sum, r) => sum + (getBreakSeconds(r.breaks) || 0), 0);
+                        return breakSec > 0 ? formatDuration(breakSec) : '-';
+                      })()}
+                    </td>
+                    <td className="px-1 py-3 text-center">
+                      <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-bold text-[9px] whitespace-nowrap">
+                        {empAttendance.filter(r => (r.totalWorkedSeconds || 0) > 0 || (r.checkIn && r.checkOut)).length}D
+                      </span>
+                    </td>
+                    <td className="px-2 py-3 text-center text-rose-600 font-bold whitespace-nowrap">
+                      {formatDuration(balance.totalLowTimeSeconds)}
+                    </td>
+                    <td className="px-2 py-3 text-center text-emerald-600 font-bold whitespace-nowrap">
+                      {formatDuration(balance.totalExtraTimeSeconds)}
+                    </td>
+                    <td className="px-2 py-3 text-center text-blue-600 font-bold whitespace-nowrap" title="Extra Time Leave taken">
+                      {formatHoursToHoursMinutes(balance.extraTimeLeaveHoursTaken)}
+                    </td>
+                    <td className="px-2 py-3 text-center text-purple-600 font-bold whitespace-nowrap" title="Forwarded from previous month">
+                      {formatHoursToHoursMinutes(balance.forwardedInHours)}
+                    </td>
+                    <td className="px-2 py-3 text-center text-amber-600 font-bold whitespace-nowrap" title="Forwarded to next month">
+                      {formatHoursToHoursMinutes(balance.forwardedOutHours)}
+                    </td>
+                    <td className={`px-2 py-3 text-center font-bold whitespace-nowrap bg-indigo-50/60 ${balance.remainingExtraTimeLeaveHours > 0 ? 'text-emerald-600' :
+                      balance.remainingExtraTimeLeaveHours < 0 ? 'text-rose-600' : 'text-gray-400'
+                      }`}>
+                      {formatHoursToHoursMinutes(balance.remainingExtraTimeLeaveHours)}
+                    </td>
+                    <td className={`px-2 py-3 text-center font-bold whitespace-nowrap bg-orange-50/70 ${cumulativeBalance.remainingExtraTimeLeaveHours > 0 ? 'text-emerald-600' :
+                      cumulativeBalance.remainingExtraTimeLeaveHours < 0 ? 'text-rose-600' : 'text-gray-400'
+                      }`}>
+                      {formatHoursToHoursMinutes(cumulativeBalance.remainingExtraTimeLeaveHours)}
+                    </td>
+                    <td className="px-2 py-3 text-center text-blue-600 font-bold whitespace-nowrap">
+                      {totalLeavesCount}D
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        <button
+                          onClick={() => {
+                            if (embeddedSection === 'monthly-performance') {
+                              navigate('/admin-summary', { state: { selectedUserId: emp.id, selectedMonth } });
+                              return;
+                            }
+                            setSelectedUserId(emp.id);
+                            setActiveTab('summary');
+                          }}
+                          className="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-all font-bold text-[10px]"
+                        >
+                          View
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+        <p className="text-xs text-gray-500">
+          Showing <span className="font-bold text-gray-700">{Math.min((performancePage - 1) * ITEMS_PER_PAGE + 1, users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length)}</span> to <span className="font-bold text-gray-700">{Math.min(performancePage * ITEMS_PER_PAGE, users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length)}</span> of <span className="font-bold text-gray-700">{users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length}</span> employees
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setPerformancePage(p => Math.max(1, p - 1))}
+            disabled={performancePage === 1}
+            className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Previous
+          </button>
+          <button
+            onClick={() => setPerformancePage(p => p + 1)}
+            disabled={performancePage * ITEMS_PER_PAGE >= users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length}
+            className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (embeddedSection === 'monthly-performance') {
+    return (
+      <div className="w-full animate-fade-in">
+        {renderMonthlyPerformanceOverview()}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Notifications Popup */}
@@ -1695,214 +1904,7 @@ export const AdminDashboard: React.FC = () => {
           </div>
 
           {/* Monthly Performance Table */}
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="px-6 py-5 border-b border-gray-100 bg-indigo-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <h3 className="text-lg font-bold text-gray-800">Monthly Performance Overview</h3>
-                <p className="text-gray-500 text-sm">Key attendance metrics for the selected month</p>
-              </div>
-              <input
-                type="month"
-                className="bg-white border border-indigo-200 text-indigo-700 px-4 py-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-200 font-bold"
-                value={selectedMonth}
-                onChange={e => setSelectedMonth(e.target.value)}
-              />
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50 text-gray-500 uppercase text-[10px] font-bold">
-                    <th className="px-3 py-3 text-left">Employee</th>
-                    <th className="px-2 py-3 text-center">Joined</th>
-                    <th className="px-2 py-3 text-center">Worked</th>
-                    <th className="px-2 py-3 text-center text-amber-600">Break</th>
-                    <th className="px-1 py-3 text-center">Pres.</th>
-                    <th className="px-2 py-3 text-center text-rose-600">Low</th>
-                    <th className="px-2 py-3 text-center text-emerald-600">Extra</th>
-                    <th className="px-2 py-3 text-center text-blue-600">L(ET)</th>
-                    <th className="px-2 py-3 text-center text-purple-600">Prev</th>
-                    <th className="px-2 py-3 text-center text-amber-600">Sent</th>
-                    <th className="px-2 py-3 text-center bg-indigo-100">Net</th>
-                    <th className="px-2 py-3 text-center text-orange-700 bg-orange-100">Cumul.</th>
-                    <th className="px-2 py-3 text-center text-blue-600">Leave</th>
-                    <th className="px-3 py-3 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {users
-                    .filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR)
-                    .slice((performancePage - 1) * ITEMS_PER_PAGE, performancePage * ITEMS_PER_PAGE)
-                    .map(emp => {
-                    // Calculate stats for each employee for the selected month
-                    const [year, month] = selectedMonth.split('-').map(Number);
-                    const empAttendance = attendanceRecords.filter(r => {
-                      const recDate = new Date(r.date);
-                      return r.userId === emp.id && recDate.getMonth() + 1 === month && recDate.getFullYear() === year;
-                    });
-
-                    // Filter approved leaves for this specific month ONLY
-                    const empLeavesInMonth = leaveRequests.filter(l => {
-                      if (l.userId !== emp.id) return false;
-                      const status = (l.status || '').trim();
-                      if (status !== 'Approved' && status !== LeaveStatus.APPROVED) return false;
-
-                      const startDate = new Date(l.startDate);
-                      const endDate = new Date(l.endDate);
-                      const monthStart = new Date(year, month - 1, 1);
-                      const monthEnd = new Date(year, month, 0);
-
-                      // Check if leave overlaps with the month
-                      return (startDate <= monthEnd && endDate >= monthStart);
-                    });
-
-                    const monthStart = new Date(year, month - 1, 1);
-                    const monthEnd = new Date(year, month, 0);
-
-                    const totalLeavesCount = empLeavesInMonth.reduce((sum, l) => sum + calculateLeaveDays(l.startDate, l.endDate), 0);
-                    const balance = calculateEmployeeBalance(
-                      emp, 
-                      empAttendance, 
-                      empLeavesInMonth, 
-                      emp.manualExtraTimeAdjustment || 0,
-                      monthStart,
-                      monthEnd,
-                      selectedMonth === getTodayStr().substring(0, 7)
-                    );
-
-                    // Calculate cumulative balance (from joining date to now)
-                    // NOTE: Pass manualExtraAdjustment=0 and forceIncludePool=false so the cumulative
-                    // column shows PURE net (Extra Time - Low Time - ETL taken), completely unaffected
-                    // by the forward extra time / pool feature.
-                    const joinDate = emp.joiningDate ? (parseDDMMYYYY(emp.joiningDate) || new Date(2026, 0, 1)) : new Date(2026, 0, 1);
-                    const cumulativeBalance = calculateEmployeeBalance(
-                      emp,
-                      attendanceRecords.filter(r => r.userId === emp.id),
-                      leaveRequests.filter(l => l.userId === emp.id && ((l.status || '').trim() === 'Approved' || (l.status || '').trim() === LeaveStatus.APPROVED)),
-                      0,         // No pool — cumulative is pure, not affected by forwarding
-                      joinDate,
-                      new Date(),
-                      false      // forceIncludePool = false — pool must NOT affect cumulative total
-                    );
-
-                    return (
-                      <tr key={emp.id} className="even:bg-gray-50/30 hover:bg-gray-50/50 transition-colors text-[11px]">
-                        <td className="px-3 py-3">
-                          <div className="flex items-center gap-2">
-                            <div className="h-7 w-7 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-[10px]">
-                              {emp.name.charAt(0).toUpperCase()}
-                            </div>
-                            <div>
-                              <p className="font-semibold text-gray-800 truncate max-w-[80px]">{emp.name}</p>
-                              <p className="text-[9px] text-gray-400 uppercase font-medium">{emp.department}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-2 py-3 text-center font-medium text-gray-400 whitespace-nowrap">
-                          {emp.joiningDate ? convertToDDMMYYYY(emp.joiningDate).replace(/-/g, ' ') : '-'}
-                        </td>
-                        <td className="px-2 py-3 text-center font-medium whitespace-nowrap">
-                          {formatHoursToHoursMinutes(empAttendance.reduce((sum, r) => sum + (r.totalWorkedSeconds || 0), 0) / 3600)}
-                        </td>
-                        <td className="px-2 py-3 text-center text-amber-600 font-bold whitespace-nowrap">
-                          {(() => {
-                            const breakSec = empAttendance.reduce((sum, r) => sum + (getBreakSeconds(r.breaks) || 0), 0);
-                            return breakSec > 0 ? formatDuration(breakSec) : '-';
-                          })()}
-                        </td>
-                        <td className="px-1 py-3 text-center">
-                          <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 font-bold text-[9px] whitespace-nowrap">
-                            {empAttendance.filter(r => (r.totalWorkedSeconds || 0) > 0 || (r.checkIn && r.checkOut)).length}D
-                          </span>
-                        </td>
-                        <td className="px-2 py-3 text-center text-rose-600 font-bold whitespace-nowrap">
-                          {formatDuration(balance.totalLowTimeSeconds)}
-                        </td>
-                        <td className="px-2 py-3 text-center text-emerald-600 font-bold whitespace-nowrap">
-                          {formatDuration(balance.totalExtraTimeSeconds)}
-                        </td>
-                        <td className="px-2 py-3 text-center text-blue-600 font-bold whitespace-nowrap" title="Extra Time Leave taken">
-                          {formatHoursToHoursMinutes(balance.extraTimeLeaveHoursTaken)}
-                        </td>
-                        <td className="px-2 py-3 text-center text-purple-600 font-bold whitespace-nowrap" title="Forwarded from previous month">
-                          {formatHoursToHoursMinutes(balance.forwardedInHours)}
-                        </td>
-                        <td className="px-2 py-3 text-center text-amber-600 font-bold whitespace-nowrap" title="Forwarded to next month">
-                          {formatHoursToHoursMinutes(balance.forwardedOutHours)}
-                        </td>
-                        <td className={`px-2 py-3 text-center font-bold whitespace-nowrap bg-indigo-50/60 ${balance.remainingExtraTimeLeaveHours > 0 ? 'text-emerald-600' :
-                          balance.remainingExtraTimeLeaveHours < 0 ? 'text-rose-600' : 'text-gray-400'
-                          }`}>
-                          {formatHoursToHoursMinutes(balance.remainingExtraTimeLeaveHours)}
-                        </td>
-                        <td className={`px-2 py-3 text-center font-bold whitespace-nowrap bg-orange-50/70 ${cumulativeBalance.remainingExtraTimeLeaveHours > 0 ? 'text-emerald-600' :
-                          cumulativeBalance.remainingExtraTimeLeaveHours < 0 ? 'text-rose-600' : 'text-gray-400'
-                          }`}>
-                          {formatHoursToHoursMinutes(cumulativeBalance.remainingExtraTimeLeaveHours)}
-                        </td>
-                        <td className="px-2 py-3 text-center text-blue-600 font-bold whitespace-nowrap">
-                          {totalLeavesCount}D
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          <div className="flex items-center justify-center gap-2">
-                            <button
-                              onClick={() => {
-                                setSelectedUserId(emp.id);
-                                setActiveTab('summary');
-                              }}
-                              className="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-all font-bold text-[10px]"
-                            >
-                              View
-                            </button>
-                              {/* {emp.lastForwardedMonth === selectedMonth ? (
-                                  <span className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-600 font-bold text-[9px] flex items-center gap-1">
-                                      <CheckCircle size={10} /> Done
-                                  </span>
-                              ) : (
-                                  <button
-                                      onClick={() => handleForwardOvertime(emp, selectedMonth)}
-                                      disabled={isForwarding || balance.remainingExtraTimeLeaveHours === 0}
-                                      className={`px-2 py-1 rounded-lg font-bold text-[10px] transition-all ${
-                                          balance.remainingExtraTimeLeaveHours === 0 
-                                              ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
-                                              : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm'
-                                      }`}
-                                      title={balance.remainingExtraTimeLeaveHours > 0 ? `Forward ${Math.round(balance.remainingExtraTimeLeaveHours * 100) / 100}h to next month` : 'Net deficit will be deducted if forwarded'}
-                                  >
-                                      {isForwarding ? '...' : 'Forward'}
-                                  </button>
-                              )} */}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Pagination Controls */}
-            <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
-              <p className="text-xs text-gray-500">
-                Showing <span className="font-bold text-gray-700">{Math.min((performancePage - 1) * ITEMS_PER_PAGE + 1, users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length)}</span> to <span className="font-bold text-gray-700">{Math.min(performancePage * ITEMS_PER_PAGE, users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length)}</span> of <span className="font-bold text-gray-700">{users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length}</span> employees
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setPerformancePage(p => Math.max(1, p - 1))}
-                  disabled={performancePage === 1}
-                  className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  Previous
-                </button>
-                <button
-                  onClick={() => setPerformancePage(p => p + 1)}
-                  disabled={performancePage * ITEMS_PER_PAGE >= users.filter(u => u.role === Role.EMPLOYEE || u.role === Role.HR).length}
-                  className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  Next
-                </button>
-              </div>
-            </div>
-          </div>
+          {renderMonthlyPerformanceOverview()}
 
         </div>
       )}

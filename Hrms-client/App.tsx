@@ -65,7 +65,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 // Home dashboard based on role
 const HomeDashboard = () => {
   const { auth } = useApp();
-  if (auth.user?.role === Role.ADMIN || auth.user?.role === Role.HR) {
+  if (auth.user?.role === Role.ADMIN) {
     return <AdminDashboard />;
   }
   return <EmployeeDashboard />;
