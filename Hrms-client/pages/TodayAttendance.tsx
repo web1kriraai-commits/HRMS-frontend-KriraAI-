@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
-import { getTodayStr, formatTime, ABSENCE_PENALTY_EFFECTIVE_DATE, calculateDailyTimeStats, formatDuration as utilsFormatDuration, getAbsenceStartDate, getLocalISOString, calculateTotalBreakSeconds } from '../services/utils';
+import { getTodayStr, formatTime, ABSENCE_PENALTY_EFFECTIVE_DATE, calculateDailyTimeStats, formatDuration as utilsFormatDuration, getAbsenceStartDate, getLocalISOString, calculateTotalBreakSeconds, getLateCheckInPenaltyInfo, formatPenaltyDisplay } from '../services/utils';
 import { Attendance, Role } from '../types';
 import { Clock, UserCheck, UserMinus, Calendar, AlertCircle, TrendingUp, TrendingDown, Umbrella, ChevronLeft, ChevronRight, Search, X, Coffee } from 'lucide-react';
 import { attendanceAPI } from '../services/api';
@@ -323,6 +323,11 @@ export const TodayAttendance: React.FC = () => {
                         </thead>
                         <tbody>
                             {paginatedStats.map(({ user, record, status, isHalfDay, isFullDayLeave, approvedLeave }) => {
+                                const { isLate: isLateCheckIn, penaltySeconds: livePenaltySeconds } = record?.checkIn
+                                    ? getLateCheckInPenaltyInfo(record, systemSettings, isHalfDay)
+                                    : { isLate: false, penaltySeconds: 0 };
+                                const showLatePenalty = isLateCheckIn && livePenaltySeconds > 0 && !record?.isPenaltyDisabled;
+                                const penaltyLabel = formatPenaltyDisplay(livePenaltySeconds);
                                 return (
                                     <tr key={user.id} className="bg-white border-b hover:bg-gray-50 transition-colors">
                                         <td className="px-6 py-4 font-medium text-gray-900">{user.name}</td>
@@ -336,9 +341,9 @@ export const TodayAttendance: React.FC = () => {
                                                 ) : (
                                                     <span className="text-gray-300">--:--</span>
                                                 )}
-                                                {record?.lateCheckIn && record.penaltySeconds > 0 && !record.isPenaltyDisabled && (
-                                                    <div className="text-[10px] text-red-500 font-bold mt-0.5 flex items-center gap-0.5" title="Late Check-in Penalty (15m)">
-                                                        <AlertCircle size={10} /> 15m pen.
+                                                {showLatePenalty && (
+                                                    <div className="text-[10px] text-red-500 font-bold mt-0.5 flex items-center gap-0.5" title={`Late Check-in Penalty (${penaltyLabel})`}>
+                                                        <AlertCircle size={10} /> {penaltyLabel} pen.
                                                     </div>
                                                 )}
                                             </div>
@@ -501,8 +506,8 @@ export const TodayAttendance: React.FC = () => {
                                     <td className="px-6 py-4 text-center">
                                         {status === 'Absent' && selectedDate >= getAbsenceStartDate(user, (attendanceRecords.filter(r => r.userId === user.id && r.checkIn).sort((a, b) => (typeof a.date === 'string' ? a.date : getLocalISOString(new Date(a.date))).localeCompare(typeof b.date === 'string' ? b.date : getLocalISOString(new Date(b.date))))[0]?.date)) ? (
                                             <span className="text-xs font-black text-rose-600 bg-rose-50 px-2 py-1 rounded border border-rose-100">8h 15m</span>
-                                        ) : record?.lateCheckIn && record.penaltySeconds > 0 && !record.isPenaltyDisabled ? (
-                                            <span className="text-xs font-black text-rose-600 bg-rose-50 px-2 py-1 rounded border border-rose-100">15m</span>
+                                        ) : showLatePenalty ? (
+                                            <span className="text-xs font-black text-rose-600 bg-rose-50 px-2 py-1 rounded border border-rose-100">{penaltyLabel}</span>
                                         ) : (
                                             <span className="text-gray-300">--</span>
                                         )}

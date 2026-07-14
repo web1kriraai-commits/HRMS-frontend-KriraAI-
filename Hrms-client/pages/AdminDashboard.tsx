@@ -8,7 +8,7 @@ import { CheckInTimeSettings } from '../components/CheckInTimeSettings';
 import { LatePenaltySettings } from '../components/LatePenaltySettings';
 import { Role, LeaveCategory, LeaveStatus, User, Attendance, AuditLog } from '../types';
 import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft, Search, ArrowUp, ArrowDown, Landmark } from 'lucide-react';
-import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, resolveLatePenaltyStartTime } from '../services/utils';
+import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, resolveLatePenaltyStartTime, getLateCheckInPenaltyInfo, formatPenaltyDisplay } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI, auditAPI } from '../services/api';
 import { ManagementOvertimePanel } from '../components/ManagementOvertimePanel';
@@ -2531,6 +2531,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                           }
 
                           let isLateCheckIn = false;
+                          let latePenaltySeconds = 0;
                           let isHolidayDay = false;
                           let isLowTime = false;
                           let isExtraTime = false;
@@ -2540,8 +2541,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                             return hDate === recordDateISO;
                           });
 
+                          const penaltyInfo = getLateCheckInPenaltyInfo(record, systemSettings, !!halfDayLeave || isHolidayDay);
+                          isLateCheckIn = penaltyInfo.isLate;
+                          latePenaltySeconds = penaltyInfo.penaltySeconds;
+
                           if (record.checkIn && record.checkOut) {
-                            isLateCheckIn = !!record.lateCheckIn;
                             if (record.isManualFlag) {
                               isLowTime = !!record.lowTimeFlag;
                               isExtraTime = !!record.extraTimeFlag;
@@ -2567,9 +2571,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                                 <span className="text-emerald-600 font-black text-xs tabular-nums">
                                   {formatTime(record.checkIn)}
                                 </span>
-                                {isLateCheckIn && record.penaltySeconds > 0 && isPenaltyEffective(record.date) && !halfDayLeave && (
+                                {isLateCheckIn && latePenaltySeconds > 0 && isPenaltyEffective(record.date) && !halfDayLeave && (
                                   <div className="text-[9px] text-rose-500 font-black mt-1 flex items-center gap-1 uppercase italic tracking-tight">
-                                    <AlertCircle size={10} /> Late Penalty
+                                    <AlertCircle size={10} /> Late Penalty: {formatPenaltyDisplay(latePenaltySeconds)}
                                   </div>
                                 )}
                               </td>
@@ -2610,9 +2614,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                                 <span className="font-black text-slate-800 text-xs tabular-nums">
                                   {storedWorked > 0 ? formatDuration(storedWorked) : '-'}
                                 </span>
-                                {isLateCheckIn && (record.penaltySeconds || 0) > 0 && isPenaltyEffective(record.date) && !halfDayLeave && (
+                                {isLateCheckIn && latePenaltySeconds > 0 && isPenaltyEffective(record.date) && !halfDayLeave && (
                                   <div className="text-[9px] text-slate-400 font-bold italic">
-                                    ( penalty applied )
+                                    (-{formatPenaltyDisplay(latePenaltySeconds)} penalty applied)
                                   </div>
                                 )}
                               </td>

@@ -98,11 +98,13 @@ export const getRefreshScopeForPath = (pathname: string, role: Role): RefreshSco
 
     case '/admin-analytics':
     case '/admin-monthly':
+    case '/admin-employee-summary':
       return {
         attendance: true,
         users: true,
         leaves: true,
         holidays: true,
+        settings: true,
       };
 
     case '/':

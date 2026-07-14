@@ -494,7 +494,7 @@ export const EmployeeDashboard: React.FC = () => {
     return dateB - dateA; // Most recent first
   });
 
-  // Get current month leaves (all statuses - pending, approved, rejected)
+  // Get current calendar month bounds (used by leave filters / time summary)
   const now = new Date();
   const currentMonth = now.getMonth();
   const currentYear = now.getFullYear();
@@ -504,14 +504,13 @@ export const EmployeeDashboard: React.FC = () => {
   const currentMonthLeaves = myLeaves.filter(l => {
     const startDate = new Date(l.startDate);
     const endDate = new Date(l.endDate);
-    // Check if leave overlaps with current month (start or end date falls within current month)
     return (startDate >= monthStart && startDate <= monthEnd) ||
       (endDate >= monthStart && endDate <= monthEnd) ||
       (startDate <= monthStart && endDate >= monthEnd);
   }).sort((a, b) => {
     const dateA = new Date(a.startDate).getTime();
     const dateB = new Date(b.startDate).getTime();
-    return dateA - dateB; // Earliest first
+    return dateA - dateB;
   });
 
   // Leave filters & helpers
@@ -520,6 +519,7 @@ export const EmployeeDashboard: React.FC = () => {
   const [leaveFilterMonth, setLeaveFilterMonth] = useState(
     `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`
   );
+  const [leaveShowAll, setLeaveShowAll] = useState(false);
 
 
   const attendanceMap = useMemo(() => {
@@ -635,15 +635,17 @@ export const EmployeeDashboard: React.FC = () => {
     return diffMinutes / 60; // Convert to hours
   };
 
-  // Overtime history by type
+  // Overtime history by type — only finalized check-out days (or approved Mgmt/Early OT)
   const overtimeHistory = useMemo(() => {
     return myAttendanceHistory
-      .filter(r =>
-        (resolveGeneralOvertimeMinutes(r) > 0) ||
-        (r.managementOvertime?.status === 'Approved' && (r.managementOvertime.completedMinutes ?? 0) > 0) ||
-        (r.earlyOvertime?.deficitMinutes ?? 0) > 0 ||
-        r.extraTimeFlag
-      )
+      .filter(r => {
+        const hasMgmt =
+          r.managementOvertime?.status === 'Approved' &&
+          (r.managementOvertime.completedMinutes ?? 0) > 0;
+        const hasEarlyDeficit = (r.earlyOvertime?.deficitMinutes ?? 0) > 0;
+        const hasGeneral = r.checkOut && resolveGeneralOvertimeMinutes(r) > 0;
+        return hasGeneral || hasMgmt || hasEarlyDeficit;
+      })
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [myAttendanceHistory]);
 
@@ -661,7 +663,14 @@ export const EmployeeDashboard: React.FC = () => {
 
   // Compute leaves to show based on date/month filters
   const leavesForPeriod = (() => {
-    // If month filter selected, show leaves overlapping that month (any year)
+    // All button: show every leave for this employee
+    if (leaveShowAll) {
+      return [...myLeaves].sort(
+        (a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime()
+      );
+    }
+
+    // If month filter selected, show leaves overlapping that month
     if (leaveFilterMonth) {
       const [yearStr, monthStr] = leaveFilterMonth.split('-');
       const y = parseInt(yearStr, 10);
@@ -771,15 +780,10 @@ export const EmployeeDashboard: React.FC = () => {
       return sum + calculateLeaveDays(leave.startDate, leave.endDate);
     }, 0);
 
-  // Incorporate manual adjustments from user object
-  const manualPaidAdjustment = user?.manualPaidLeaveAdjustment || 0;
-  const manualHalfDayAdjustment = user?.manualHalfDayLeaveAdjustment || 0;
-  const manualExtraAdjustment = user?.manualExtraTimeAdjustment || 0;
-  const manualUnpaidAdjustment = user?.manualUnpaidLeaveAdjustment || 0;
-  
-  const usedPaidLeaves = baseUsedPaidLeaves + manualPaidAdjustment + manualHalfDayAdjustment;
-  const totalExtraTimeUsed = baseExtraTimeLeaveDays + manualExtraAdjustment;
-  const totalUnpaidUsed = baseUnpaidLeaveDays + manualUnpaidAdjustment;
+  // Leave Summary shows approved applications only (manual adjustments are admin offsets, not shown here)
+  const usedPaidLeaves = baseUsedPaidLeaves;
+  const totalExtraTimeUsed = baseExtraTimeLeaveDays;
+  const totalUnpaidUsed = baseUnpaidLeaveDays;
 
   // Get total paid leaves allocation (custom or default)
   const TOTAL_PAID_LEAVES = getTotalPaidLeaves(user);
@@ -789,21 +793,8 @@ export const EmployeeDashboard: React.FC = () => {
   const bondPeriod = useMemo(() => getEmployeeBondPeriod(user), [user?.bonds, user?.joiningDate]);
 
   const bondLeaveSummary = useMemo(
-    () =>
-      calculateBondLeaveSummary(user, myLeaves, myAttendanceHistory, holidayDateSet, {
-        paid: manualPaidAdjustment,
-        halfDay: manualHalfDayAdjustment,
-        unpaid: manualUnpaidAdjustment,
-      }),
-    [
-      user,
-      myLeaves,
-      myAttendanceHistory,
-      holidayDateSet,
-      manualPaidAdjustment,
-      manualHalfDayAdjustment,
-      manualUnpaidAdjustment,
-    ]
+    () => calculateBondLeaveSummary(user, myLeaves, myAttendanceHistory, holidayDateSet),
+    [user, myLeaves, myAttendanceHistory, holidayDateSet]
   );
 
 
@@ -925,6 +916,9 @@ export const EmployeeDashboard: React.FC = () => {
     }
   }
 
+  // Manual Extra Time Leave adjustment (days) from admin/HR
+  const manualExtraAdjustment = user?.manualExtraTimeAdjustment || 0;
+
   // Calculate Extra Time Leave tracking
   // Calculate approved Extra Time Leave days (only approved ones)
   // Includes full extra time leaves and half-day leaves marked as extra time
@@ -1025,7 +1019,7 @@ export const EmployeeDashboard: React.FC = () => {
         return sum + 4;
       }
       return sum;
-    }, 0);
+    }, 0) + (manualExtraAdjustment * 8.25);
 
   // Forwarding: forwardedOut = time sent out from this month, forwardedIn = time received into this month
   const forwardedOutSeconds = (user?.forwardedMonths?.[timeSummaryMonth] || 0);
@@ -2235,12 +2229,12 @@ export const EmployeeDashboard: React.FC = () => {
                               );
                             }
 
-                            // Use half-day threshold if applicable
+                            // Match backend General OT: surplus above 8h 15m (4h 15m half-day),
+                            // using totalWorkedSeconds which is already net of late-check-in penalty.
                             const MIN_NORMAL = halfDayLeave ? (255 * 60) : ((8 * 3600) + (15 * 60)); // 4h15m or 8h15m
-                            const MAX_NORMAL = halfDayLeave ? (262 * 60) : ((8 * 3600) + (22 * 60)); // 4h22m or 8h22m
 
-                            if (effectiveWorked > MAX_NORMAL) {
-                              const diff = effectiveWorked - MAX_NORMAL;
+                            if (effectiveWorked > MIN_NORMAL) {
+                              const diff = effectiveWorked - MIN_NORMAL;
                               return (
                                 <div className="flex flex-col gap-1 items-center">
                                   {halfDayLeave && (
@@ -2334,7 +2328,7 @@ export const EmployeeDashboard: React.FC = () => {
         )}
 
         {/* Leave Listing */}
-        <Card title={`My Leaves${leaveFilterMonth ? ` — ${new Date(leaveFilterMonth + '-01').toLocaleString('en-US', { month: 'long', year: 'numeric' })}` : ''}`} className="w-full">
+        <Card title={`My Leaves${leaveShowAll ? ' — All' : leaveFilterMonth ? ` — ${new Date(leaveFilterMonth + '-01').toLocaleString('en-US', { month: 'long', year: 'numeric' })}` : ''}`} className="w-full">
           {myLeaves.length === 0 ? (
             <p className="text-gray-400 text-center py-4 text-sm">No leaves found.</p>
           ) : (
@@ -2363,16 +2357,37 @@ export const EmployeeDashboard: React.FC = () => {
                     type="date"
                     className="text-xs bg-white border border-gray-200 text-gray-700 px-2.5 py-1.5 rounded-lg"
                     value={leaveFilterDate}
-                    onChange={e => setLeaveFilterDate(e.target.value)}
+                    onChange={e => {
+                      setLeaveShowAll(false);
+                      setLeaveFilterDate(e.target.value);
+                    }}
                     placeholder="Filter by date"
                   />
                   <input
                     type="month"
                     className="text-xs bg-white border border-gray-200 text-gray-700 px-2.5 py-1.5 rounded-lg"
-                    value={leaveFilterMonth}
-                    onChange={e => setLeaveFilterMonth(e.target.value)}
+                    value={leaveShowAll ? '' : leaveFilterMonth}
+                    onChange={e => {
+                      setLeaveShowAll(false);
+                      setLeaveFilterMonth(e.target.value);
+                    }}
                     placeholder="Filter by month"
                   />
+                  <button
+                    type="button"
+                    className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors ${
+                      leaveShowAll
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200'
+                    }`}
+                    onClick={() => {
+                      setLeaveShowAll(true);
+                      setLeaveFilterMonth('');
+                      setLeaveFilterDate('');
+                    }}
+                  >
+                    All
+                  </button>
                 </div>
               </div>
               {statusFilteredLeaves.length === 0 ? (

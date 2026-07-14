@@ -12,6 +12,7 @@ const HALF_DAY_EXTRA_THRESHOLD_MINUTES = 262; // (8h 22m - 4h) = 4h 22m
 /** Upper bound of “normal” for a half-day leave day (extra time is above this) — same as `calculateDailyTimeStats` and attendance status column. */
 export const HALF_DAY_EXTRA_THRESHOLD_SECONDS = HALF_DAY_EXTRA_THRESHOLD_MINUTES * 60;
 export const PENALTY_EFFECTIVE_DATE = '2026-03-01';
+/** Flat 15m penalty for late check-in inside the buffer window after cutoff. */
 export const LATE_PENALTY_SECONDS = 900; // 15 minutes
 export const LEGACY_LATE_PENALTY_START_TIME = '09:00';
 export const CURRENT_LATE_PENALTY_START_TIME = '09:15';
@@ -115,8 +116,9 @@ export const getAbsenceStartDate = (user?: User | null, firstCheckInDate?: strin
 };
 
 /**
- * Seconds late relative to the configured penalty start time (default 09:15).
- * Minimum penalty is 15 minutes (900s).
+ * Late check-in penalty seconds relative to cutoff (e.g. 09:05):
+ * - After cutoff up through ~10 minutes (e.g. 09:05–09:15): flat 15 minutes
+ * - Later than that: exact minutes past cutoff (09:25 → 20m, 09:30 → 25m)
  */
 export const calculateLatenessPenaltySeconds = (
   checkInIso?: string,
@@ -138,7 +140,16 @@ export const calculateLatenessPenaltySeconds = (
   return 0;
 };
 
-/** Late check-in penalty for display — only when check-in is after the configured cutoff (company timezone). */
+/** Format penalty seconds for badges (e.g. 120 → "2m", 1560 → "26m", 3720 → "1h 2m"). */
+export const formatPenaltyDisplay = (seconds: number): string => {
+  const mins = Math.floor(Math.max(0, seconds) / 60);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return `${m}m`;
+};
+
+/** Late check-in penalty for display — always recomputed from check-in vs current cutoff. */
 export const getLateCheckInPenaltyInfo = (
   record: { checkIn?: string; penaltySeconds?: number; isPenaltyDisabled?: boolean; date: string },
   settings?: { latePenaltyStartTime?: string; timezone?: string } | null,
@@ -152,9 +163,7 @@ export const getLateCheckInPenaltyInfo = (
     isPenaltyEffective(record.date) &&
     isLateCheckIn(record.checkIn, cutoff, timeZone);
   const penaltySeconds = isLate
-    ? (record.penaltySeconds && record.penaltySeconds > 0
-        ? record.penaltySeconds
-        : calculateLatenessPenaltySeconds(record.checkIn, cutoff, timeZone))
+    ? calculateLatenessPenaltySeconds(record.checkIn, cutoff, timeZone)
     : 0;
   return { isLate, penaltySeconds };
 };
@@ -321,12 +330,12 @@ export const leaveOverlapsDateRange = (
   endYmd: string
 ): boolean => leave.startDate <= endYmd && leave.endDate >= startYmd;
 
-/** Present for absent-day counting: both check-in & check-out, or admin manual hours without punch. */
+/** Present for absent-day counting: any check-in (missing checkout is not unpaid leave), manual hours, or admin-entered worked time. */
 const isPresentForAbsentCount = (record?: Attendance): boolean => {
   if (!record) return false;
-  if (record.checkIn && record.checkOut) return true;
+  if (record.checkIn) return true;
   if (record.manualHours && record.manualHours.length > 0) return true;
-  if (!record.checkIn && !record.checkOut && (record.totalWorkedSeconds || 0) > 0) return true;
+  if ((record.totalWorkedSeconds || 0) > 0) return true;
   return false;
 };
 
@@ -651,7 +660,7 @@ export const calculateBondLeaveSummary = (
   };
 };
 
-/** Approved leave credit for a calendar day (paid/unpaid/half-day/ETL). Absent days → implicit unpaid leave. */
+/** Approved leave credit for a calendar day (paid/unpaid/half-day/ETL). No check-in → implicit unpaid leave; check-in alone does not. */
 export const getLeaveDayCredit = (
   dateStr: string,
   userId: string,

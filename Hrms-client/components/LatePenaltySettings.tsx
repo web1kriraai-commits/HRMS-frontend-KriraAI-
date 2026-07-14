@@ -36,9 +36,11 @@ export const LatePenaltySettings: React.FC<Props> = ({ systemSettings, updateSys
       <div>
         <label className="block text-sm font-bold text-gray-700 mb-1">Penalty starts from</label>
         <p className="text-xs text-gray-500 mb-3">
-          Employees who check in after this time receive a late check-in penalty (minimum 15 minutes deducted from
-          worked time). Check-in at or before this time is not penalized. Applies from 6 Jul 2026 onward; earlier
-          dates used 09:00. Current cutoff:{' '}
+          Employees who check in after this time are penalized. From the cutoff through the next 10
+          minutes (e.g. 09:05–09:15) a flat <span className="font-semibold">15 minutes</span> is
+          deducted. After that, penalty equals exact minutes past the cutoff (e.g. 09:25 → 20m,
+          09:30 → 25m). Check-in at or before this time is not penalized. Applies from 6 Jul 2026
+          onward; earlier dates used 09:00. Current cutoff:{' '}
           <span className="font-semibold">{formatCheckoutTimeLabel(hour, minute)}</span> (24h: {penaltyStartTime}).
         </p>
         <div className="flex flex-wrap items-center gap-3">

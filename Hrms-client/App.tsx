@@ -12,6 +12,7 @@ import { Holidays } from '@/pages/Holidays';
 import { Profile } from '@/pages/Profile';
 import { Analytics } from '@/pages/Analytics';
 import { MonthlySummary } from '@/pages/MonthlySummary';
+import { EmployeeSummary } from '@/pages/EmployeeSummary';
 import { SalaryManagement } from '@/pages/SalaryManagement';
 import { Sidebar } from './components/Sidebar';
 import { EarlyOvertimePopup } from './components/EarlyOvertimePopup';
@@ -186,6 +187,14 @@ const AppRoutes = () => {
         <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
           <AppLayout>
             <MonthlySummary />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/admin-employee-summary" element={
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
+          <AppLayout>
+            <EmployeeSummary />
           </AppLayout>
         </PrivateRoute>
       } />

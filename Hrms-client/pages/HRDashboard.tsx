@@ -4,7 +4,7 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { LeaveStatus, Role, LeaveCategory, User } from '../types';
-import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds } from '../services/utils';
+import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, resolveLatePenaltyStartTime, formatPenaltyDisplay, getLateCheckInPenaltyInfo } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, RotateCcw, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2, Key, Loader2, Landmark } from 'lucide-react';
 import { attendanceAPI, holidayAPI, userAPI } from '../services/api';
@@ -34,7 +34,7 @@ const MIN_NORMAL_SECONDS = (8 * 3600) + (15 * 60); // 8h 15m = 29700 seconds
 const MAX_NORMAL_SECONDS = (8 * 3600) + (22 * 60); // 8h 22m = 30120 seconds
 
 export const HRDashboard: React.FC = () => {
-  const { auth, leaveRequests, updateLeaveStatus, users, attendanceRecords, companyHolidays, addCompanyHoliday, createUser, updateUser, refreshData, loading } = useApp();
+  const { auth, leaveRequests, updateLeaveStatus, users, attendanceRecords, companyHolidays, addCompanyHoliday, createUser, updateUser, refreshData, loading, systemSettings } = useApp();
   const navigate = useNavigate();
 
   const [newHoliday, setNewHoliday] = useState({ date: '', description: '' });
@@ -869,10 +869,18 @@ export const HRDashboard: React.FC = () => {
         const recordDateISO = new Date(record.date).toISOString().split('T')[0];
         const isHolidayDay = holidayDateSet.has(recordDateISO);
 
-        // Late check-in penalty: 15 minutes if check-in > 9:00 AM (skip if admin disabled penalty)
-        const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
-        const isLateCheckIn = !isHolidayDay && !record.isPenaltyDisabled && checkInSeconds > 9 * 3600;
-        const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+        // Late check-in penalty: exact minutes after configured cutoff
+        const hasHalfDayLeave = monthlyLeaves.some(leave =>
+          leave.userId === record.userId &&
+          new Date(leave.startDate).toDateString() === recordDateStr &&
+          leave.category === 'Half Day Leave' &&
+          leave.status === 'Approved'
+        );
+        const { isLate: isLateCheckIn, penaltySeconds } = getLateCheckInPenaltyInfo(
+          record,
+          systemSettings,
+          hasHalfDayLeave || isHolidayDay
+        );
         let netWorkedSeconds = Math.max(0, netWorkedRaw - penaltySeconds);
 
         // Check if this day is a company holiday — all worked time is overtime
@@ -1353,10 +1361,13 @@ export const HRDashboard: React.FC = () => {
                                   const recordDateISO = typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0];
                                   const isHolidayDay = companyHolidays.some(h => (typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0]) === recordDateISO);
 
-                                  // Late check-in penalty: 15 minutes if check-in > 9:00 AM (skip if admin disabled penalty)
-                                  const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
-                                  const isLateCheckIn = !isHolidayDay && !r.isPenaltyDisabled && checkInSeconds > 9 * 3600;
-                                  const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+                                  // Late check-in penalty: exact minutes after configured cutoff
+                                  const hasHalfDayForPenalty = stat.allLeaves.some(leave =>
+                                    new Date(leave.startDate).toDateString() === new Date(r.date).toDateString() &&
+                                    leave.category === 'Half Day Leave' &&
+                                    leave.status === 'Approved'
+                                  );
+                                  const { penaltySeconds } = getLateCheckInPenaltyInfo(r, systemSettings, hasHalfDayForPenalty || isHolidayDay);
                                   let netWorked = Math.max(0, netWorkedRaw - penaltySeconds);
 
                                   // Holiday rule: never flag as low time on holidays
@@ -1419,10 +1430,13 @@ export const HRDashboard: React.FC = () => {
                                           const recordDateISO = typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0];
                                           const isHolidayDay = companyHolidays.some(h => (typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0]) === recordDateISO);
 
-                                          // Late check-in penalty: 15 minutes if check-in > 9:00 AM (skip if admin disabled penalty)
-                                          const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
-                                          const isLateCheckIn = !isHolidayDay && !r.isPenaltyDisabled && checkInSeconds > 9 * 3600;
-                                          const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+                                          // Late check-in penalty: exact minutes after configured cutoff
+                                          const hasHalfDayForPenalty = stat.allLeaves.some(leave =>
+                                            new Date(leave.startDate).toDateString() === new Date(r.date).toDateString() &&
+                                            leave.category === 'Half Day Leave' &&
+                                            leave.status === 'Approved'
+                                          );
+                                          const { penaltySeconds } = getLateCheckInPenaltyInfo(r, systemSettings, hasHalfDayForPenalty || isHolidayDay);
                                           let netWorked = Math.max(0, netWorkedRaw - penaltySeconds);
 
                                           const recordDateStr = new Date(r.date).toDateString();
@@ -1479,10 +1493,13 @@ export const HRDashboard: React.FC = () => {
                                   const recordDateISO = typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0];
                                   const isHolidayDay = companyHolidays.some(h => (typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0]) === recordDateISO);
 
-                                  // Late check-in penalty: 15 minutes if check-in > 9:00 AM (skip if admin disabled penalty)
-                                  const checkInSeconds = checkInDateObj.getHours() * 3600 + checkInDateObj.getMinutes() * 60 + checkInDateObj.getSeconds();
-                                  const isLateCheckIn = !isHolidayDay && !r.isPenaltyDisabled && checkInSeconds > 9 * 3600;
-                                  const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+                                  // Late check-in penalty: exact minutes after configured cutoff
+                                  const hasHalfDayForPenalty = stat.allLeaves.some(leave =>
+                                    new Date(leave.startDate).toDateString() === new Date(r.date).toDateString() &&
+                                    leave.category === 'Half Day Leave' &&
+                                    leave.status === 'Approved'
+                                  );
+                                  const { penaltySeconds } = getLateCheckInPenaltyInfo(r, systemSettings, hasHalfDayForPenalty || isHolidayDay);
                                   let netWorked = Math.max(0, netWorkedRaw - penaltySeconds);
 
                                   const recordDateStr = new Date(r.date).toDateString();
@@ -1533,10 +1550,13 @@ export const HRDashboard: React.FC = () => {
                                           const recordDateISO = typeof r.date === 'string' ? r.date.split('T')[0] : new Date(r.date).toISOString().split('T')[0];
                                           const isHolidayDay = companyHolidays.some(h => (typeof h.date === 'string' ? h.date.split('T')[0] : new Date(h.date).toISOString().split('T')[0]) === recordDateISO);
 
-                                          // Late check-in penalty: 15 minutes if check-in > 9:00 AM (skip if admin disabled penalty)
-                                          const checkInSeconds = checkInDate.getHours() * 3600 + checkInDate.getMinutes() * 60 + checkInDate.getSeconds();
-                                          const isLateCheckIn = !isHolidayDay && !r.isPenaltyDisabled && checkInSeconds > 9 * 3600;
-                                          const penaltySeconds = isLateCheckIn ? (15 * 60) : 0;
+                                          // Late check-in penalty: exact minutes after configured cutoff
+                                          const hasHalfDayForPenalty = stat.allLeaves.some(leave =>
+                                            new Date(leave.startDate).toDateString() === new Date(r.date).toDateString() &&
+                                            leave.category === 'Half Day Leave' &&
+                                            leave.status === 'Approved'
+                                          );
+                                          const { penaltySeconds } = getLateCheckInPenaltyInfo(r, systemSettings, hasHalfDayForPenalty || isHolidayDay);
                                           let netWorked = Math.max(0, netWorkedRaw - penaltySeconds);
 
                                           const recordDateStr = new Date(r.date).toDateString();
@@ -1945,6 +1965,7 @@ export const HRDashboard: React.FC = () => {
                           let netWorkedSeconds = 0;
                           let netWorkedRawSeconds = 0;
                           let isLateCheckIn = false;
+                          let latePenaltySeconds = 0;
                           let isHolidayDay = false;
                           let isLowTime = false;
                           let isExtraTime = false;
@@ -1958,8 +1979,9 @@ export const HRDashboard: React.FC = () => {
                             return hDate === recordDateISO;
                           });
 
-                          // Use pre-calculated penalty fields from the record
-                          isLateCheckIn = !!record.lateCheckIn;
+                          const penaltyInfo = getLateCheckInPenaltyInfo(record, systemSettings, !!halfDayLeave || isHolidayDay);
+                          isLateCheckIn = penaltyInfo.isLate;
+                          latePenaltySeconds = penaltyInfo.penaltySeconds;
                           netWorkedSeconds = netWorkedRawSeconds;
 
                           // On holidays: never Low Time, always Extra Time if worked
@@ -1977,9 +1999,9 @@ export const HRDashboard: React.FC = () => {
                               <span className="text-emerald-600 font-semibold">
                                 {formatTime(record.checkIn)}
                               </span>
-                              {isLateCheckIn && record.penaltySeconds > 0 && !halfDayLeave && (
+                              {isLateCheckIn && latePenaltySeconds > 0 && !halfDayLeave && (
                                 <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
-                                  <AlertCircle size={10} /> Late Penalty: 15m
+                                  <AlertCircle size={10} /> Late Penalty: {formatPenaltyDisplay(latePenaltySeconds)}
                                 </div>
                               )}
                             </td>
@@ -2010,9 +2032,9 @@ export const HRDashboard: React.FC = () => {
                               <span className="font-bold text-gray-800">
                                 {netWorkedRawSeconds > 0 ? formatDuration(netWorkedRawSeconds) : '-'}
                               </span>
-                              {isLateCheckIn && record.penaltySeconds > 0 && !halfDayLeave && (
+                              {isLateCheckIn && latePenaltySeconds > 0 && !halfDayLeave && (
                                 <div className="text-[10px] text-gray-400 font-normal">
-                                  (-15m penalty applied)
+                                  (-{formatPenaltyDisplay(latePenaltySeconds)} penalty applied)
                                 </div>
                               )}
                             </td>
