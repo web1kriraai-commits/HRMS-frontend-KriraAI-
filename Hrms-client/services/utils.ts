@@ -14,6 +14,8 @@ export const HALF_DAY_EXTRA_THRESHOLD_SECONDS = HALF_DAY_EXTRA_THRESHOLD_MINUTES
 export const PENALTY_EFFECTIVE_DATE = '2026-03-01';
 /** Flat 15m penalty for late check-in inside the buffer window after cutoff. */
 export const LATE_PENALTY_SECONDS = 900; // 15 minutes
+/** Grace period after resolved check-in time before late penalty applies. */
+export const LATE_CHECK_IN_BUFFER_MINUTES = 15;
 export const LEGACY_LATE_PENALTY_START_TIME = '09:00';
 export const CURRENT_LATE_PENALTY_START_TIME = '09:15';
 /** From this date penalty starts after 09:15; before uses 09:00. */
@@ -51,16 +53,40 @@ export const hasApprovedHalfDayLeaveOnDate = (
   });
 };
 
-/** Penalty cutoff for attendance date — before 2026-07-06 uses 09:00, on/after uses 09:15. */
+/** Penalty cutoff for attendance date — before 2026-07-06 uses 09:00, on/after uses max(configured penalty, check-in + 15m buffer). */
+const addMinutesToTime = (hour: number, minute: number, minutesToAdd: number) => {
+  let total = hour * 60 + minute + minutesToAdd;
+  total = ((total % (24 * 60)) + (24 * 60)) % (24 * 60);
+  return { hour: Math.floor(total / 60), minute: total % 60 };
+};
+
+const laterOfTimes = (a: { hour: number; minute: number }, b: { hour: number; minute: number }) => {
+  const aMins = a.hour * 60 + a.minute;
+  const bMins = b.hour * 60 + b.minute;
+  return aMins >= bMins ? a : b;
+};
+
+const formatTimeHHmm = ({ hour, minute }: { hour: number; minute: number }) =>
+  `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+
 export const resolveLatePenaltyStartTime = (
   settings?: { latePenaltyStartTime?: string; timezone?: string } | null,
-  dateStr?: string | null
+  dateStr?: string | null,
+  employeeSchedule?: EmployeeSchedule | null
 ): string => {
   const normalizedDate = dateStr ? String(dateStr).slice(0, 10) : null;
   if (normalizedDate && normalizedDate < LATE_PENALTY_915_EFFECTIVE_DATE) {
     return LEGACY_LATE_PENALTY_START_TIME;
   }
-  return settings?.latePenaltyStartTime || CURRENT_LATE_PENALTY_START_TIME;
+  const configured = settings?.latePenaltyStartTime || CURRENT_LATE_PENALTY_START_TIME;
+  const checkIn = resolveCheckInTimeForDate(
+    settings || {},
+    normalizedDate || getTodayStr(),
+    employeeSchedule
+  );
+  const checkInWithBuffer = addMinutesToTime(checkIn.hour, checkIn.minute, LATE_CHECK_IN_BUFFER_MINUTES);
+  const configuredTime = parseCheckInTime(configured);
+  return formatTimeHHmm(laterOfTimes(checkInWithBuffer, configuredTime));
 };
 
 export const isLateCheckIn = (
@@ -153,10 +179,11 @@ export const formatPenaltyDisplay = (seconds: number): string => {
 export const getLateCheckInPenaltyInfo = (
   record: { checkIn?: string; penaltySeconds?: number; isPenaltyDisabled?: boolean; date: string },
   settings?: { latePenaltyStartTime?: string; timezone?: string } | null,
-  hasHalfDayLeave = false
+  hasHalfDayLeave = false,
+  employeeSchedule?: EmployeeSchedule | null
 ): { isLate: boolean; penaltySeconds: number } => {
   const timeZone = settings?.timezone || 'Asia/Kolkata';
-  const cutoff = resolveLatePenaltyStartTime(settings, record.date);
+  const cutoff = resolveLatePenaltyStartTime(settings, record.date, employeeSchedule);
   const isLate =
     !record.isPenaltyDisabled &&
     !hasHalfDayLeave &&
@@ -912,39 +939,66 @@ export const parseCheckInTime = (timeStr?: string): { hour: number; minute: numb
 };
 
 export const getCheckInOverrideForDate = (
-  settings: { checkInTimeOverrides?: Record<string, string> },
+  settings: { checkInTimeOverrides?: Record<string, string> } | null | undefined,
   dateStr: string
 ): string | null => settings?.checkInTimeOverrides?.[dateStr] ?? null;
 
 export const hasCheckInOverrideForDate = (
-  settings: { checkInTimeOverrides?: Record<string, string> },
+  settings: { checkInTimeOverrides?: Record<string, string> } | null | undefined,
   dateStr: string
 ): boolean => Boolean(getCheckInOverrideForDate(settings, dateStr));
 
+export type EmployeeSchedule = {
+  defaultCheckInTime?: string | null;
+  checkInTimeOverrides?: Record<string, string>;
+  defaultCheckoutTime?: string | null;
+  checkoutTimeOverrides?: Record<string, string>;
+};
+
+/** Priority: employee day → company day → employee default → company default */
 export const resolveCheckInTimeForDate = (
   settings: { defaultCheckInTime?: string; checkInTimeOverrides?: Record<string, string> },
-  dateStr: string
+  dateStr: string,
+  employeeSchedule?: EmployeeSchedule | null
 ): { hour: number; minute: number } => {
-  const override = getCheckInOverrideForDate(settings, dateStr);
-  return parseCheckInTime(override || settings?.defaultCheckInTime || DEFAULT_CHECK_IN_TIME);
+  const employeeDay = getCheckInOverrideForDate(employeeSchedule, dateStr);
+  if (employeeDay) return parseCheckInTime(employeeDay);
+  const companyDay = getCheckInOverrideForDate(settings, dateStr);
+  if (companyDay) return parseCheckInTime(companyDay);
+  if (employeeSchedule?.defaultCheckInTime) {
+    return parseCheckInTime(employeeSchedule.defaultCheckInTime);
+  }
+  return parseCheckInTime(settings?.defaultCheckInTime || DEFAULT_CHECK_IN_TIME);
 };
 
 export const getCheckoutOverrideForDate = (
-  settings: { checkoutTimeOverrides?: Record<string, string> },
+  settings: { checkoutTimeOverrides?: Record<string, string> } | null | undefined,
   dateStr: string
 ): string | null => settings?.checkoutTimeOverrides?.[dateStr] ?? null;
 
 export const hasCheckoutOverrideForDate = (
-  settings: { checkoutTimeOverrides?: Record<string, string> },
-  dateStr: string
-): boolean => Boolean(getCheckoutOverrideForDate(settings, dateStr));
+  settings: { checkoutTimeOverrides?: Record<string, string> } | null | undefined,
+  dateStr: string,
+  employeeSchedule?: EmployeeSchedule | null
+): boolean =>
+  Boolean(
+    getCheckoutOverrideForDate(employeeSchedule, dateStr) || getCheckoutOverrideForDate(settings, dateStr)
+  );
 
+/** Priority: employee day → company day → employee default → company default */
 export const resolveCheckoutTimeForDate = (
   settings: { defaultCheckoutTime?: string; checkoutTimeOverrides?: Record<string, string> },
-  dateStr: string
+  dateStr: string,
+  employeeSchedule?: EmployeeSchedule | null
 ): { hour: number; minute: number } => {
-  const override = getCheckoutOverrideForDate(settings, dateStr);
-  return parseCheckoutTime(override || settings?.defaultCheckoutTime || DEFAULT_CHECKOUT_TIME);
+  const employeeDay = getCheckoutOverrideForDate(employeeSchedule, dateStr);
+  if (employeeDay) return parseCheckoutTime(employeeDay);
+  const companyDay = getCheckoutOverrideForDate(settings, dateStr);
+  if (companyDay) return parseCheckoutTime(companyDay);
+  if (employeeSchedule?.defaultCheckoutTime) {
+    return parseCheckoutTime(employeeSchedule.defaultCheckoutTime);
+  }
+  return parseCheckoutTime(settings?.defaultCheckoutTime || DEFAULT_CHECKOUT_TIME);
 };
 
 export const formatCheckoutTimeLabel = (hour: number, minute: number): string => {
@@ -1431,6 +1485,8 @@ export interface MonthlyOvertimeSummary {
   earlyLeaveTimeNetSeconds: number;
   earlyOvertimeOutstandingSeconds: number;
   earlyOvertimeCoveredSeconds: number;
+  /** Early Request OT allocated via Admin/HR manage (completed / Custom early minutes). */
+  earlyRequestOvertimeSeconds: number;
   remainingSeconds: number;
 }
 
@@ -1480,6 +1536,7 @@ export const calculateMonthlyOvertimeSummary = (
   let managementOvertimeSeconds = 0;
   let earlyLeaveTimeTotalSeconds = 0;
   let earlyOvertimeCoveredSeconds = 0;
+  let earlyRequestOvertimeSeconds = 0;
 
   const todayStr = getTodayStr();
 
@@ -1552,6 +1609,14 @@ export const calculateMonthlyOvertimeSummary = (
       earlyLeaveTimeTotalSeconds += eo.deficitMinutes * 60;
       earlyOvertimeCoveredSeconds += (eo.coveredMinutes || 0) * 60;
     }
+
+    const earlyRequestMins = Math.max(
+      eo?.completedMinutes || 0,
+      record.overtimeManageRequest?.allocations?.earlyRequestMinutes || 0
+    );
+    if (earlyRequestMins > 0) {
+      earlyRequestOvertimeSeconds += earlyRequestMins * 60;
+    }
   }
 
   const earlyLeaveTimeNetSeconds = Math.max(0, earlyLeaveTimeTotalSeconds - earlyOvertimeCoveredSeconds);
@@ -1568,6 +1633,7 @@ export const calculateMonthlyOvertimeSummary = (
     earlyLeaveTimeNetSeconds,
     earlyOvertimeOutstandingSeconds: earlyLeaveTimeNetSeconds,
     earlyOvertimeCoveredSeconds,
+    earlyRequestOvertimeSeconds,
     remainingSeconds
   };
 };

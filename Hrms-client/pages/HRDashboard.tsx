@@ -8,9 +8,8 @@ import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYY
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, RotateCcw, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2, Key, Loader2, Landmark } from 'lucide-react';
 import { attendanceAPI, holidayAPI, userAPI } from '../services/api';
-import { ManagementOvertimePanel } from '../components/ManagementOvertimePanel';
 import { EarlyOvertimePanel } from '../components/EarlyOvertimePanel';
-import { EarlyOvertimeRepaymentPanel } from '../components/EarlyOvertimeRepaymentPanel';
+import { OvertimeManagePanel } from '../components/OvertimeManagePanel';
 import { appAlert } from '../services/appAlert';
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
@@ -996,17 +995,18 @@ export const HRDashboard: React.FC = () => {
         </section>
       )}
 
-      {/* Approvals Section */}
-      <section>
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-bold text-gray-800">Pending Requests</h2>
-          <span className="bg-blue-100 text-blue-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">{pendingLeaves.length}</span>
-        </div>
+      {/* Approvals Section — 3 lists: Leave, Early Checkout, Overtime */}
+      <section className="space-y-6">
+        <h2 className="text-xl font-bold text-gray-800">Pending Requests</h2>
 
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-6 mb-6">
-          {/* Pending Leave Requests */}
+        {/* 1. Leave Requests */}
+        <div>
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg font-bold text-gray-800">1. Leave Requests</h3>
+            <span className="bg-blue-100 text-blue-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">{pendingLeaves.length}</span>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {pendingLeaves.length === 0 && <p className="text-gray-400 text-sm italic col-span-2">No pending requests.</p>}
+            {pendingLeaves.length === 0 && <p className="text-gray-400 text-sm italic col-span-2">No pending leave requests.</p>}
             {pendingLeaves.map(req => (
               <Card key={req.id} className="border-l-4 border-l-yellow-400">
                 <div className="flex flex-col gap-4">
@@ -1041,19 +1041,21 @@ export const HRDashboard: React.FC = () => {
               </Card>
             ))}
           </div>
-
-          {/* Pending Management OT — HR can approve / reject */}
-          <div>
-            <ManagementOvertimePanel variant="compact" />
-          </div>
         </div>
 
-        <div className="mt-6">
-          <EarlyOvertimePanel variant="full" />
+        {/* 2. Early Checkout Requests */}
+        <div>
+          <h3 className="text-lg font-bold text-gray-800 mb-4">2. Early Checkout Requests</h3>
+          <EarlyOvertimePanel variant="full" showTitle={false} />
         </div>
 
-        <div className="mt-6">
-          <EarlyOvertimeRepaymentPanel variant="full" />
+        {/* 3. Overtime Requests */}
+        <div>
+          <h3 className="text-lg font-bold text-gray-800 mb-1">3. Overtime Requests</h3>
+          <p className="text-sm text-gray-500 mb-4">
+            Extra time from completed working hours to checkout — Manage to allocate OT buckets
+          </p>
+          <OvertimeManagePanel variant="full" showTitle={false} />
         </div>
       </section>
 

@@ -132,7 +132,7 @@ export const EarlyOvertimePanel: React.FC<EarlyOvertimePanelProps> = ({
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Clock size={18} className="text-amber-600" />
-              <h3 className="text-lg font-bold text-gray-800">Pending Early Checkout</h3>
+              <h3 className="text-lg font-bold text-gray-800">Early Checkout Requests</h3>
               <span className="bg-amber-100 text-amber-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
                 {visible.length}
               </span>

@@ -23,6 +23,47 @@ export enum BreakType {
   EXTRA = 'Extra',
 }
 
+/** Persisted salary slip details (Admin/HR enters; employee previews/downloads) */
+export interface SalarySlipRecord {
+  month: number;
+  year: number;
+  companyName?: string;
+  companyAddress?: string;
+  preparedByName?: string;
+  preparedByTitle?: string;
+  empName?: string;
+  empNo?: string;
+  department?: string;
+  doj?: string;
+  bank?: string;
+  bankAccountNo?: string;
+  designation?: string;
+  pfNo?: string;
+  esicNo?: string;
+  stdDays?: number;
+  workedDays?: number;
+  leaveBalance?: number;
+  basic?: number;
+  da?: number;
+  totalWage?: number;
+  hra?: number;
+  medicalReimbursement?: number;
+  conveyance?: number;
+  lta?: number;
+  education?: number;
+  specialAllowance?: number;
+  pf?: number;
+  esic?: number;
+  pTax?: number;
+  lwf?: number;
+  tds?: number;
+  advance?: number;
+  exGratia?: number;
+  lessAdvance?: number;
+  savedAt?: string;
+  savedBy?: string;
+}
+
 export interface User {
   id: string;
   name: string;
@@ -65,9 +106,19 @@ export interface User {
     paidAt?: string; // ISO string - when it was marked as paid
     paidBy?: string; // Name of admin/HR who marked it as paid
   }>;
+  /** Detailed salary slips saved by Admin/HR for employee preview/download */
+  salarySlips?: SalarySlipRecord[];
   lastForwardedMonth?: string; // Format "YYYY-MM" to track and prevent duplicate forwarding
   forwardedMonths?: Record<string, number>; // Maps month (YYYY-MM) to amount forwarded out (in seconds)
   forwardedInMonths?: Record<string, number>; // Maps month (YYYY-MM) to amount forwarded IN (in seconds)
+  /** Employee-specific default check-in HH:mm; null = use company default */
+  defaultCheckInTime?: string | null;
+  /** Per-employee day check-in overrides YYYY-MM-DD → HH:mm */
+  checkInTimeOverrides?: Record<string, string>;
+  /** Employee-specific default checkout HH:mm; null = use company default */
+  defaultCheckoutTime?: string | null;
+  /** Per-employee day checkout overrides YYYY-MM-DD → HH:mm */
+  checkoutTimeOverrides?: Record<string, string>;
   createdAt?: string; // ISO String
   updatedAt?: string; // ISO String
 }
@@ -151,6 +202,25 @@ export interface Attendance {
     approvedBy?: string;
     approvedAt?: string;
     appliedMinutes: number;
+  };
+  /**
+   * Early Leave OT — surplus from completed working hours to checkout.
+   * Admin/HR allocate via Manage (General / Management / Early Request / Custom).
+   */
+  overtimeManageRequest?: {
+    status: 'None' | 'Pending' | 'Managed' | 'Rejected';
+    requestedAt?: string;
+    note?: string;
+    extraMinutes?: number;
+    managedBy?: string;
+    managedAt?: string;
+    allocationType?: 'None' | 'General' | 'Management' | 'EarlyRequest' | 'Custom';
+    allocations?: {
+      generalMinutes: number;
+      managementMinutes: number;
+      earlyRequestMinutes: number;
+    };
+    adminNote?: string;
   };
   /** @deprecated Legacy — mirrors general OT */
   overtimeRequest?: {

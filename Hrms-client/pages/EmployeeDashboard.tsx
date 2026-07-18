@@ -7,10 +7,12 @@ import { AdminDashboard } from './AdminDashboard';
 import { MonthlyOvertimeSummary } from '../components/MonthlyOvertimeSummary';
 import { resolveGeneralOvertimeMinutes } from '../services/utils';
 import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn, HALF_DAY_EXTRA_THRESHOLD_SECONDS, calculateTotalBreakSeconds, hasMinimumTotalBreakTime, MIN_TOTAL_BREAK_SECONDS, getDateStrInTimezone, resolveCheckInTimeForDate, resolveCheckoutTimeForDate, formatCheckoutTimeLabel, isClockOutTimeAllowed, hasCheckoutOverrideForDate, formatHoursMinutesShort, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, getEffectiveLeaveCategory, getEmployeeBondPeriod, calculateBondLeaveSummary, BOND_LEAVE_EFFECTIVE_DATE, getLateCheckInPenaltyInfo, resolveLatePenaltyStartTime } from '../services/utils';
-import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare, Briefcase, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare, ChevronDown, ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { appAlert } from '../services/appAlert';
+import { EarlyOvertimePanel } from '../components/EarlyOvertimePanel';
+import { OvertimeManagePanel } from '../components/OvertimeManagePanel';
 
 /** Half-day minimum net worked time (matches server: Math.floor(495/2)*60). */
 const HALF_DAY_MIN_SHIFT_SECONDS = Math.floor(495 / 2) * 60;
@@ -61,7 +63,7 @@ const formatDisplayDays = (val: number) => {
 };
 
 export const EmployeeDashboard: React.FC = () => {
-  const { auth, attendanceRecords, clockIn, clockOut, startBreak, endBreak, requestLeave, leaveRequests, notifications, companyHolidays, systemSettings, refreshData, updateLeaveStatus, requestManagementOvertime, requestEarlyOtRepayment } = useApp();
+  const { auth, attendanceRecords, clockIn, clockOut, startBreak, endBreak, requestLeave, leaveRequests, notifications, companyHolidays, systemSettings, refreshData, updateLeaveStatus, requestEarlyLeaveOvertime, users } = useApp();
   const user = auth.user;
   const canRequestPaidLeave = user ? user.paidLeaveAccess !== false : true;
 
@@ -70,12 +72,7 @@ export const EmployeeDashboard: React.FC = () => {
   const [breakElapsed, setBreakElapsed] = useState(0); // Break duration timer
   const [todayRecord, setTodayRecord] = useState(attendanceRecords.find(r => r.userId === user?.id && r.date === getTodayStr()));
   const [isResolvingAbsence, setIsResolvingAbsence] = useState(false);
-  const [showMgmtOtModal, setShowMgmtOtModal] = useState(false);
-  const [mgmtOtForm, setMgmtOtForm] = useState({ reason: '' });
-  const [isSubmittingMgmtOt, setIsSubmittingMgmtOt] = useState(false);
-  const [showEarlyOtModal, setShowEarlyOtModal] = useState(false);
-  const [earlyOtForm, setEarlyOtForm] = useState({ reason: '', durationMinutes: 60 });
-  const [isSubmittingEarlyOt, setIsSubmittingEarlyOt] = useState(false);
+  const [isSubmittingEarlyLeaveOt, setIsSubmittingEarlyLeaveOt] = useState(false);
   const [showNotificationsPopup, setShowNotificationsPopup] = useState(false);
   // Local state to track check-in time immediately when clicked
   const [localCheckInTime, setLocalCheckInTime] = useState<Date | null>(null);
@@ -370,6 +367,17 @@ export const EmployeeDashboard: React.FC = () => {
   const myNotifications = notifications.filter(n => n.userId === user?.id);
   const myAttendanceHistory = attendanceRecords.filter(r => r.userId === user?.id).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
+  /** HR can approve Employee leave requests (not their own / not Admin). */
+  const pendingLeaveApprovals = useMemo(() => {
+    if (user?.role !== Role.HR) return [];
+    return leaveRequests.filter(l => {
+      if (l.status !== LeaveStatus.PENDING && l.status !== 'Pending') return false;
+      const requester = users.find(u => u.id === l.userId);
+      if (!requester) return true;
+      return requester.role === Role.EMPLOYEE;
+    });
+  }, [user?.role, leaveRequests, users]);
+
   const attendanceHistoryTotalPages = Math.max(1, Math.ceil(myAttendanceHistory.length / ATTENDANCE_HISTORY_PAGE_SIZE));
   const paginatedAttendanceHistory = useMemo(() => {
     const start = (attendanceHistoryPage - 1) * ATTENDANCE_HISTORY_PAGE_SIZE;
@@ -381,17 +389,6 @@ export const EmployeeDashboard: React.FC = () => {
       setAttendanceHistoryPage(attendanceHistoryTotalPages);
     }
   }, [attendanceHistoryPage, attendanceHistoryTotalPages]);
-
-  // Early-checkout deficit outstanding THIS calendar month only — repayment (Early OT) can only
-  // ever apply against deficits incurred in the current month.
-  const currentMonthKey = getTodayStr().slice(0, 7);
-  const outstandingEarlyOtDeficitMinutes = myAttendanceHistory.reduce((sum, r) => {
-    if (!r.date.startsWith(currentMonthKey)) return sum;
-    const eo = r.earlyOvertime;
-    if (!eo) return sum;
-    return sum + Math.max(0, (eo.deficitMinutes || 0) - (eo.coveredMinutes || 0));
-  }, 0);
-  const hasOutstandingEarlyOtDeficit = outstandingEarlyOtDeficitMinutes > 0;
 
   // Check if user is on approved leave today
   const today = getTodayStr();
@@ -417,9 +414,22 @@ export const EmployeeDashboard: React.FC = () => {
     [wallClockNow, systemSettings.timezone]
   );
 
+  const employeeSchedule = useMemo(
+    () =>
+      user
+        ? {
+            defaultCheckInTime: user.defaultCheckInTime,
+            checkInTimeOverrides: user.checkInTimeOverrides,
+            defaultCheckoutTime: user.defaultCheckoutTime,
+            checkoutTimeOverrides: user.checkoutTimeOverrides
+          }
+        : null,
+    [user]
+  );
+
   const checkInTimeToday = useMemo(
-    () => resolveCheckInTimeForDate(systemSettings, todayDateStr),
-    [systemSettings, todayDateStr]
+    () => resolveCheckInTimeForDate(systemSettings, todayDateStr, employeeSchedule),
+    [systemSettings, todayDateStr, employeeSchedule]
   );
 
   const checkInAvailableLabel = useMemo(
@@ -428,8 +438,8 @@ export const EmployeeDashboard: React.FC = () => {
   );
 
   const checkoutTimeToday = useMemo(
-    () => resolveCheckoutTimeForDate(systemSettings, todayDateStr),
-    [systemSettings, todayDateStr]
+    () => resolveCheckoutTimeForDate(systemSettings, todayDateStr, employeeSchedule),
+    [systemSettings, todayDateStr, employeeSchedule]
   );
 
   const checkoutAvailableLabel = useMemo(
@@ -438,8 +448,8 @@ export const EmployeeDashboard: React.FC = () => {
   );
 
   const hasTodayCheckoutOverride = useMemo(
-    () => hasCheckoutOverrideForDate(systemSettings, todayDateStr),
-    [systemSettings, todayDateStr]
+    () => hasCheckoutOverrideForDate(systemSettings, todayDateStr, employeeSchedule),
+    [systemSettings, todayDateStr, employeeSchedule]
   );
 
   const checkoutTimeReached = useMemo(() => {
@@ -457,15 +467,16 @@ export const EmployeeDashboard: React.FC = () => {
 
   const shiftCompleteForCheckout = elapsed >= minShiftSecondsForTodayCheckout;
   const earlyLogoutStatus = todayRecord?.earlyLogoutRequest ?? 'None';
-  const earlyOtRepaymentStatus = todayRecord?.earlyOvertimeRepayment?.status ?? 'None';
-  const hasEarlyOtRepaymentActivity =
-    earlyOtRepaymentStatus === 'Pending' || earlyOtRepaymentStatus === 'Approved';
-  const hasMgmtOtRequestActivity =
-    todayRecord?.managementOvertime?.status === 'Pending' ||
-    todayRecord?.managementOvertime?.status === 'Approved';
-  const canShowOvertimeRequests =
-    shiftCompleteForCheckout || hasEarlyOtRepaymentActivity || hasMgmtOtRequestActivity;
+  const earlyLeaveOtStatus = todayRecord?.overtimeManageRequest?.status ?? 'None';
+  const hasEarlyLeaveOtActivity =
+    earlyLeaveOtStatus === 'Pending' || earlyLeaveOtStatus === 'Managed';
+  const canShowOvertimeRequests = shiftCompleteForCheckout || hasEarlyLeaveOtActivity;
   const canSubmitOvertimeRequests = shiftCompleteForCheckout;
+  const canRequestEarlyLeaveOt =
+    (user?.role === Role.EMPLOYEE || user?.role === Role.HR) &&
+    canSubmitOvertimeRequests &&
+    earlyLeaveOtStatus !== 'Pending' &&
+    earlyLeaveOtStatus !== 'Managed';
   const isEarlyReleaseCheckout =
     hasTodayCheckoutOverride && checkoutTimeReached;
   const canCheckoutDirectly =
@@ -520,6 +531,7 @@ export const EmployeeDashboard: React.FC = () => {
     `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`
   );
   const [leaveShowAll, setLeaveShowAll] = useState(false);
+  const [approvalComments, setApprovalComments] = useState<Record<string, string>>({});
 
 
   const attendanceMap = useMemo(() => {
@@ -643,8 +655,11 @@ export const EmployeeDashboard: React.FC = () => {
           r.managementOvertime?.status === 'Approved' &&
           (r.managementOvertime.completedMinutes ?? 0) > 0;
         const hasEarlyDeficit = (r.earlyOvertime?.deficitMinutes ?? 0) > 0;
+        const hasEarlyCompleted = (r.earlyOvertime?.completedMinutes ?? 0) > 0;
+        const hasManagedEarly =
+          (r.overtimeManageRequest?.allocations?.earlyRequestMinutes ?? 0) > 0;
         const hasGeneral = r.checkOut && resolveGeneralOvertimeMinutes(r) > 0;
-        return hasGeneral || hasMgmt || hasEarlyDeficit;
+        return hasGeneral || hasMgmt || hasEarlyDeficit || hasEarlyCompleted || hasManagedEarly;
       })
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [myAttendanceHistory]);
@@ -1325,10 +1340,10 @@ export const EmployeeDashboard: React.FC = () => {
                         const checkInTime = localCheckInTime || (todayRecord?.checkIn ? new Date(todayRecord.checkIn) : null);
                         let livePenaltySeconds = 0;
                         if (!isOnBreak && checkInTime && !todayRecord?.checkOut && !todayRecord?.isPenaltyDisabled && !approvedHalfDayToday) {
-                          if (isPenaltyEffective(getTodayStr())) {
+                          if (isPenaltyEffective(todayDateStr)) {
                             livePenaltySeconds = calculateLatenessPenaltySeconds(
                               checkInTime.toISOString(),
-                              resolveLatePenaltyStartTime(systemSettings, getTodayStr()),
+                              resolveLatePenaltyStartTime(systemSettings, todayDateStr, employeeSchedule),
                               systemSettings.timezone
                             );
                           }
@@ -1644,73 +1659,101 @@ export const EmployeeDashboard: React.FC = () => {
                 </div>
               </div>
 
-              {/* Overtime requests — available after 8h 15m worked (or if a request is already active) */}
-              {isCheckedIn && !isCheckedOut && canShowOvertimeRequests && (
+              {/* Overtime request — Early Leave after 8h 15m (surplus managed by Admin/HR) */}
+              {isCheckedIn && !isCheckedOut && (canShowOvertimeRequests || canRequestEarlyLeaveOt) &&
+                (user?.role === Role.EMPLOYEE || user?.role === Role.HR) && (
                 <div className="mt-4 pt-4 border-t border-gray-100 space-y-3">
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Overtime Requests</p>
-                  {!canSubmitOvertimeRequests && (
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Overtime Request</p>
+                  {!canSubmitOvertimeRequests && !hasEarlyLeaveOtActivity && (
                     <p className="text-[10px] text-slate-400 text-center italic">
-                      Complete 8h 15m to submit new overtime requests
+                      Complete 8h 15m to submit an overtime request
                     </p>
                   )}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* Early OT (repay a previous early-checkout deficit, current month only) */}
-                    <div>
-                      {earlyOtRepaymentStatus === 'Pending' ? (
-                        <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-center h-full">
-                          <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Early OT Pending</p>
-                          <p className="text-[10px] text-amber-500 font-bold mt-1">
-                            Waiting for approval
-                            {(todayRecord?.earlyOvertimeRepayment?.requestedMinutes ?? 0) > 0 && ` (${todayRecord.earlyOvertimeRepayment.requestedMinutes}m)`}
-                          </p>
-                        </div>
-                      ) : earlyOtRepaymentStatus === 'Approved' ? (
-                        <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl text-center h-full">
-                          <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Early OT Approved</p>
-                          <p className="text-[10px] text-emerald-500 font-bold mt-1">
-                            Repaying deficit — not counted as General OT
-                          </p>
-                        </div>
-                      ) : canSubmitOvertimeRequests && hasOutstandingEarlyOtDeficit ? (
-                        <Button
-                          variant="secondary"
-                          onClick={() => setShowEarlyOtModal(true)}
-                          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 font-bold text-sm h-full"
-                        >
-                          <Clock size={16} />
-                          Request Early OT
-                        </Button>
-                      ) : canSubmitOvertimeRequests ? (
-                        <div className="p-3 bg-slate-50 border border-slate-100 rounded-xl text-center h-full flex items-center justify-center">
-                          <p className="text-[10px] text-slate-400 font-bold">No early-checkout deficit to repay this month</p>
-                        </div>
-                      ) : null}
-                    </div>
 
-                    {/* Management OT */}
-                    <div>
-                      {todayRecord?.managementOvertime?.status === 'Pending' ? (
-                        <div className="p-3 bg-violet-50 border border-violet-100 rounded-xl text-center h-full">
-                          <p className="text-[10px] font-black text-violet-600 uppercase tracking-widest">Management OT Pending</p>
-                          <p className="text-[10px] text-violet-500 font-bold mt-1">Waiting for approval — OT credited on accept (worked − 8h 15m)</p>
-                        </div>
-                      ) : todayRecord?.managementOvertime?.status === 'Approved' ? (
-                        <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl text-center h-full">
-                          <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Management OT Approved</p>
-                          <p className="text-[10px] text-emerald-500 font-bold mt-1">+{todayRecord.managementOvertime.completedMinutes}m added</p>
-                        </div>
-                      ) : canSubmitOvertimeRequests ? (
-                        <Button
-                          variant="secondary"
-                          onClick={() => setShowMgmtOtModal(true)}
-                          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 font-bold text-sm h-full"
-                        >
-                          <Briefcase size={16} />
-                          Request Management OT
-                        </Button>
-                      ) : null}
+                  {earlyLeaveOtStatus === 'Pending' ? (
+                    <div className="p-3 bg-teal-50 border border-teal-100 rounded-xl text-center">
+                      <p className="text-[10px] font-black text-teal-600 uppercase tracking-widest">Overtime Request Pending</p>
+                      <p className="text-[10px] text-teal-500 font-bold mt-1">
+                        Extra time (completed hours → checkout) awaits Admin/HR allocation
+                        {(todayRecord?.overtimeManageRequest?.extraMinutes ?? 0) > 0 &&
+                          ` · ${formatHoursMinutesShort((todayRecord.overtimeManageRequest?.extraMinutes ?? 0) * 60)}`}
+                      </p>
                     </div>
-                  </div>
+                  ) : earlyLeaveOtStatus === 'Managed' ? (
+                    <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl text-center">
+                      <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Overtime Managed</p>
+                      <p className="text-[10px] text-emerald-500 font-bold mt-1">
+                        Allocated as {todayRecord?.overtimeManageRequest?.allocationType || 'OT'}
+                      </p>
+                    </div>
+                  ) : canRequestEarlyLeaveOt ? (
+                    <Button
+                      variant="secondary"
+                      disabled={isSubmittingEarlyLeaveOt}
+                      onClick={async () => {
+                        setIsSubmittingEarlyLeaveOt(true);
+                        try {
+                          await requestEarlyLeaveOvertime();
+                          appAlert('Overtime request submitted. Extra time will be counted from completed working hours to checkout.');
+                        } catch (error: any) {
+                          appAlert(error.message || 'Failed to submit overtime request');
+                        } finally {
+                          setIsSubmittingEarlyLeaveOt(false);
+                        }
+                      }}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100 font-bold text-sm"
+                    >
+                      <Clock size={16} />
+                      {isSubmittingEarlyLeaveOt ? 'Submitting...' : 'Overtime Request'}
+                    </Button>
+                  ) : null}
+                </div>
+              )}
+
+              {/* Overtime after checkout — claim surplus if not yet requested */}
+              {isCheckedOut &&
+                (user?.role === Role.EMPLOYEE || user?.role === Role.HR) &&
+                (earlyLeaveOtStatus === 'Pending' ||
+                  earlyLeaveOtStatus === 'Managed' ||
+                  (canRequestEarlyLeaveOt &&
+                    (todayRecord?.extraTimeFlag ||
+                      resolveGeneralOvertimeMinutes(todayRecord) > 0))) && (
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  {earlyLeaveOtStatus === 'Pending' ? (
+                    <div className="p-3 bg-teal-50 border border-teal-100 rounded-xl text-center">
+                      <p className="text-[10px] font-black text-teal-600 uppercase tracking-widest">Overtime Request Pending</p>
+                      <p className="text-[10px] text-teal-500 font-bold mt-1">
+                        Extra {formatHoursMinutesShort((todayRecord?.overtimeManageRequest?.extraMinutes ?? 0) * 60)} awaiting Admin/HR allocation
+                      </p>
+                    </div>
+                  ) : earlyLeaveOtStatus === 'Managed' ? (
+                    <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl text-center">
+                      <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Overtime Managed</p>
+                      <p className="text-[10px] text-emerald-500 font-bold mt-1">
+                        Allocated as {todayRecord?.overtimeManageRequest?.allocationType || 'OT'}
+                      </p>
+                    </div>
+                  ) : (
+                    <Button
+                      variant="secondary"
+                      disabled={isSubmittingEarlyLeaveOt}
+                      onClick={async () => {
+                        setIsSubmittingEarlyLeaveOt(true);
+                        try {
+                          await requestEarlyLeaveOvertime();
+                          appAlert('Overtime request submitted for today\'s surplus.');
+                        } catch (error: any) {
+                          appAlert(error.message || 'Failed to submit overtime request');
+                        } finally {
+                          setIsSubmittingEarlyLeaveOt(false);
+                        }
+                      }}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100 font-bold text-sm"
+                    >
+                      <Clock size={16} />
+                      {isSubmittingEarlyLeaveOt ? 'Submitting...' : 'Overtime Request'}
+                    </Button>
+                  )}
                 </div>
               )}
             </>
@@ -2080,14 +2123,17 @@ export const EmployeeDashboard: React.FC = () => {
                       const generalMins = resolveGeneralOvertimeMinutes(r);
                       const mgmtMins = r.managementOvertime?.status === 'Approved'
                         ? (r.managementOvertime.completedMinutes ?? 0) : 0;
-                    const earlyDeficit = r.earlyOvertime?.deficitMinutes ?? 0;
-                    const earlyCovered = r.earlyOvertime?.coveredMinutes ?? 0;
-                    const earlyCompleted = r.earlyOvertime?.completedMinutes ?? 0;
-                    const earlyDisplay = earlyCompleted > 0
-                      ? `${earlyCompleted}m`
-                      : earlyDeficit > 0
-                        ? `${earlyDeficit - earlyCovered}m owed`
-                        : '-';
+                      const earlyDeficit = r.earlyOvertime?.deficitMinutes ?? 0;
+                      const earlyCovered = r.earlyOvertime?.coveredMinutes ?? 0;
+                      const earlyCompleted = Math.max(
+                        r.earlyOvertime?.completedMinutes ?? 0,
+                        r.overtimeManageRequest?.allocations?.earlyRequestMinutes ?? 0
+                      );
+                      const earlyDisplay = earlyCompleted > 0
+                        ? `${earlyCompleted}m`
+                        : earlyDeficit > 0
+                          ? `${earlyDeficit - earlyCovered}m owed`
+                          : '-';
                       const workedDisplay = r.checkOut
                         ? formatDuration(r.totalWorkedSeconds || 0)
                         : (r.date === getTodayStr() && isCheckedIn ? 'In progress' : '--');
@@ -2161,7 +2207,12 @@ export const EmployeeDashboard: React.FC = () => {
                         <td className="px-4 py-3 font-mono text-xs">
                           <div>{formatTime(r.checkIn, systemSettings.timezone)}</div>
                           {(() => {
-                            const { isLate, penaltySeconds } = getLateCheckInPenaltyInfo(r, systemSettings, !!halfDayThisDate);
+                            const { isLate, penaltySeconds } = getLateCheckInPenaltyInfo(
+                              r,
+                              systemSettings,
+                              !!halfDayThisDate,
+                              employeeSchedule
+                            );
                             return isLate && penaltySeconds > 0 ? (
                               <div className="text-[10px] text-red-500 font-bold mt-1 flex items-center gap-1">
                                 <AlertCircle size={10} /> Late check-in penalty: {formatPenaltyDisplay(penaltySeconds)}
@@ -2180,7 +2231,12 @@ export const EmployeeDashboard: React.FC = () => {
                               : r.totalWorkedSeconds || 0
                           )}
                           {(() => {
-                            const { isLate, penaltySeconds } = getLateCheckInPenaltyInfo(r, systemSettings, !!halfDayThisDate);
+                            const { isLate, penaltySeconds } = getLateCheckInPenaltyInfo(
+                              r,
+                              systemSettings,
+                              !!halfDayThisDate,
+                              employeeSchedule
+                            );
                             return isLate && penaltySeconds > 0 ? (
                               <div className="text-[10px] text-gray-400 font-normal">
                                 (-{formatPenaltyDisplay(penaltySeconds)} late check-in penalty)
@@ -2220,7 +2276,7 @@ export const EmployeeDashboard: React.FC = () => {
                             }
 
                             const recordDateNorm = r.date?.includes('T') ? r.date.split('T')[0] : r.date;
-                            if (hasCheckoutOverrideForDate(systemSettings, recordDateNorm)) {
+                            if (hasCheckoutOverrideForDate(systemSettings, recordDateNorm, employeeSchedule)) {
                               return (
                                 <div className="flex flex-col gap-1 items-center">
                                   <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-tight">Admin early release</span>
@@ -2500,6 +2556,112 @@ export const EmployeeDashboard: React.FC = () => {
             </div>
           )}
         </Card>
+
+        {/* HR: 3 lists — Leave, Early Checkout, Overtime */}
+        {user?.role === Role.HR && (
+          <section className="w-full space-y-6">
+            <h2 className="text-xl font-bold text-gray-800">Pending Requests</h2>
+
+            {/* 1. Leave Requests */}
+            <div>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold text-gray-800">1. Leave Requests</h3>
+                <span className="bg-blue-100 text-blue-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
+                  {pendingLeaveApprovals.length}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {pendingLeaveApprovals.length === 0 && (
+                  <p className="text-gray-400 text-sm italic col-span-2">No pending leave requests.</p>
+                )}
+                {pendingLeaveApprovals.map(req => (
+                  <Card key={req.id} className="border-l-4 border-l-yellow-400">
+                    <div className="flex flex-col gap-4">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h4 className="font-bold text-gray-900">{req.userName}</h4>
+                          <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded mt-1 inline-block">
+                            {req.category}
+                          </span>
+                          <p className="text-sm text-gray-600 mt-2">
+                            {formatDate(req.startDate)} - {formatDate(req.endDate)}
+                          </p>
+                          <p className="text-sm text-gray-500 mt-2 italic">"{req.reason}"</p>
+                          {req.attachmentUrl && (
+                            <a
+                              href={req.attachmentUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-blue-500 underline mt-1 block"
+                            >
+                              View Attachment
+                            </a>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="border-t pt-3">
+                        <input
+                          type="text"
+                          className="w-full text-xs p-2 border rounded mb-2"
+                          placeholder="Optional HR Comment..."
+                          value={approvalComments[req.id] || ''}
+                          onChange={(e) =>
+                            setApprovalComments({ ...approvalComments, [req.id]: e.target.value })
+                          }
+                        />
+                        <div className="flex gap-2 justify-end">
+                          <Button
+                            size="sm"
+                            variant="success"
+                            onClick={() =>
+                              updateLeaveStatus(
+                                req.id,
+                                LeaveStatus.APPROVED,
+                                approvalComments[req.id] || 'Approved by HR'
+                              )
+                            }
+                          >
+                            <Check size={16} className="mr-1" /> Approve
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() =>
+                              updateLeaveStatus(
+                                req.id,
+                                LeaveStatus.REJECTED,
+                                approvalComments[req.id] || 'Rejected by HR'
+                              )
+                            }
+                          >
+                            <X size={16} className="mr-1" /> Reject
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            </div>
+
+            {/* 2. Early Checkout Requests */}
+            <div>
+              <h3 className="text-lg font-bold text-gray-800 mb-4">2. Early Checkout Requests</h3>
+              <EarlyOvertimePanel variant="full" showTitle={false} />
+            </div>
+
+            {/* 3. Overtime Requests */}
+            <div>
+              <h3 className="text-lg font-bold text-gray-800 mb-1">3. Overtime Requests</h3>
+              <p className="text-sm text-gray-500 mb-4">
+                Extra time from completed working hours to checkout — Manage to allocate OT buckets
+              </p>
+              <OvertimeManagePanel variant="full" showTitle={false} />
+            </div>
+          </section>
+        )}
+
       {/* Early Checkout Request Modal */}
       {showCheckoutRequestModal && (
         <>
@@ -2583,156 +2745,6 @@ export const EmployeeDashboard: React.FC = () => {
               </form>
             </div>
           </Card>
-          </div>
-        </>
-      )}
-
-      {/* Management Overtime Request Modal */}
-      {showMgmtOtModal && (
-        <>
-          <div className="fixed inset-0 bg-black/40 z-50" onClick={() => setShowMgmtOtModal(false)} />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-            <Card className="w-full max-w-md pointer-events-auto shadow-2xl border-2 border-violet-100">
-              <div className="p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-10 h-10 bg-violet-100 rounded-xl flex items-center justify-center">
-                    <Briefcase className="text-violet-600" size={20} />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-900">Request Management Overtime</h3>
-                    <p className="text-xs text-gray-500">OT is calculated when approved: worked time above 8h 15m</p>
-                  </div>
-                </div>
-
-                <form
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    if (!mgmtOtForm.reason.trim()) {
-                      appAlert('Please provide a reason');
-                      return;
-                    }
-                    setIsSubmittingMgmtOt(true);
-                    try {
-                      await requestManagementOvertime(mgmtOtForm.reason.trim());
-                      setShowMgmtOtModal(false);
-                      setMgmtOtForm({ reason: '' });
-                      await refreshData(true);
-                    } catch (err: any) {
-                      appAlert(err.message || 'Failed to submit request');
-                    } finally {
-                      setIsSubmittingMgmtOt(false);
-                    }
-                  }}
-                  className="space-y-4"
-                >
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                      Reason
-                    </label>
-                    <textarea
-                      required
-                      value={mgmtOtForm.reason}
-                      onChange={(e) => setMgmtOtForm({ ...mgmtOtForm, reason: e.target.value })}
-                      placeholder="e.g. Client meeting extended, project deadline..."
-                      className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-violet-500 outline-none resize-none min-h-[100px]"
-                    />
-                  </div>
-                  <div className="flex gap-3">
-                    <Button type="button" variant="secondary" onClick={() => setShowMgmtOtModal(false)} className="flex-1">
-                      Cancel
-                    </Button>
-                    <Button type="submit" disabled={isSubmittingMgmtOt} className="flex-1 bg-violet-600 hover:bg-violet-700 text-white">
-                      {isSubmittingMgmtOt ? 'Submitting...' : 'Submit Request'}
-                    </Button>
-                  </div>
-                </form>
-              </div>
-            </Card>
-          </div>
-        </>
-      )}
-
-      {/* Early OT Request Modal */}
-      {showEarlyOtModal && (
-        <>
-          <div className="fixed inset-0 bg-black/40 z-50" onClick={() => setShowEarlyOtModal(false)} />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-            <Card className="w-full max-w-md pointer-events-auto shadow-2xl border-2 border-amber-100">
-              <div className="p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center">
-                    <Clock className="text-amber-600" size={20} />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-900">Request Early OT</h3>
-                    <p className="text-xs text-gray-500">Repay an earlier early-checkout deficit — requires Admin/HR approval</p>
-                  </div>
-                </div>
-
-                <div className="mb-4 p-2.5 bg-amber-50 border border-amber-100 rounded-xl text-[11px] text-amber-700 font-semibold text-center">
-                  Outstanding deficit this month: {formatHoursMinutesShort(outstandingEarlyOtDeficitMinutes * 60)}
-                </div>
-
-                <form
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    if (!earlyOtForm.reason.trim()) {
-                      appAlert('Please provide a reason');
-                      return;
-                    }
-                    setIsSubmittingEarlyOt(true);
-                    try {
-                      await requestEarlyOtRepayment(earlyOtForm.reason.trim(), earlyOtForm.durationMinutes);
-                      setShowEarlyOtModal(false);
-                      setEarlyOtForm({ reason: '', durationMinutes: 60 });
-                      await refreshData(true);
-                    } catch (err: any) {
-                      appAlert(err.message || 'Failed to submit request');
-                    } finally {
-                      setIsSubmittingEarlyOt(false);
-                    }
-                  }}
-                  className="space-y-4"
-                >
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                      Minutes to repay
-                    </label>
-                    <input
-                      type="number"
-                      min={15}
-                      step={15}
-                      max={outstandingEarlyOtDeficitMinutes || undefined}
-                      required
-                      value={earlyOtForm.durationMinutes}
-                      onChange={(e) => setEarlyOtForm({ ...earlyOtForm, durationMinutes: parseInt(e.target.value, 10) || 0 })}
-                      className="w-full p-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-amber-500 outline-none"
-                    />
-                    <p className="text-[10px] text-slate-400 mt-1">{formatHoursMinutesShort(earlyOtForm.durationMinutes * 60)} — this time will not count as General OT once approved</p>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                      Reason
-                    </label>
-                    <textarea
-                      required
-                      value={earlyOtForm.reason}
-                      onChange={(e) => setEarlyOtForm({ ...earlyOtForm, reason: e.target.value })}
-                      placeholder="e.g. Repaying early checkout from [date]..."
-                      className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-amber-500 outline-none resize-none min-h-[100px]"
-                    />
-                  </div>
-                  <div className="flex gap-3">
-                    <Button type="button" variant="secondary" onClick={() => setShowEarlyOtModal(false)} className="flex-1">
-                      Cancel
-                    </Button>
-                    <Button type="submit" disabled={isSubmittingEarlyOt} className="flex-1 bg-amber-500 hover:bg-amber-600 text-white">
-                      {isSubmittingEarlyOt ? 'Submitting...' : 'Submit Request'}
-                    </Button>
-                  </div>
-                </form>
-              </div>
-            </Card>
           </div>
         </>
       )}

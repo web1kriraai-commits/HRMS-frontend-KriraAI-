@@ -6,14 +6,14 @@ import { Button } from '../components/ui/Button';
 import { CheckoutTimeSettings } from '../components/CheckoutTimeSettings';
 import { CheckInTimeSettings } from '../components/CheckInTimeSettings';
 import { LatePenaltySettings } from '../components/LatePenaltySettings';
+import { EmployeeScheduleSettings } from '../components/EmployeeScheduleSettings';
 import { Role, LeaveCategory, LeaveStatus, User, Attendance, AuditLog } from '../types';
 import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft, Search, ArrowUp, ArrowDown, Landmark } from 'lucide-react';
 import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, resolveLatePenaltyStartTime, getLateCheckInPenaltyInfo, formatPenaltyDisplay } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI, auditAPI } from '../services/api';
-import { ManagementOvertimePanel } from '../components/ManagementOvertimePanel';
 import { EarlyOvertimePanel } from '../components/EarlyOvertimePanel';
-import { EarlyOvertimeRepaymentPanel } from '../components/EarlyOvertimeRepaymentPanel';
+import { OvertimeManagePanel } from '../components/OvertimeManagePanel';
 import { appAlert } from '../services/appAlert';
 
 // Format hours to hours and minutes format (e.g., 8.25 hours = 8h 15m)
@@ -40,14 +40,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
   const { auth, users, exportReports, companyHolidays, addCompanyHoliday, attendanceRecords, systemSettings, updateSystemSettings, refreshData, refreshForRoute, loading, notifications, leaveRequests, updateUser, updateLeaveStatus, deleteAttendance, updateLeaveRequest, deleteLeaveRequest, updateHoliday, deleteHoliday, adminUpdateAttendance } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'consolidated' | 'summary' | 'users' | 'audit' | 'reports' | 'settings' | 'guidance' | 'bonds' | 'overtime'>(
-    location.pathname === '/admin-dashboard' ? 'consolidated' : 
+  const [activeTab, setActiveTab] = useState<'consolidated' | 'performance' | 'summary' | 'users' | 'audit' | 'reports' | 'settings' | 'guidance' | 'bonds' | 'overtime'>(
+    location.pathname === '/' ? 'consolidated' :
+    location.pathname === '/admin-dashboard' ? 'performance' :
     location.pathname === '/admin-overtime' ? 'overtime' : 'summary'
   );
 
   useEffect(() => {
     const path = location.pathname;
-    if (path === '/admin-dashboard' || path === '/') setActiveTab('consolidated');
+    if (path === '/') setActiveTab('consolidated');
+    else if (path === '/admin-dashboard') setActiveTab('performance');
     else if (path === '/admin-summary') setActiveTab('summary');
     else if (path === '/admin-users') setActiveTab('users');
     else if (path === '/admin-audit') setActiveTab('audit');
@@ -70,6 +72,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
       navigate(location.pathname, { replace: true, state: {} });
     }
   }, [location.pathname, location.state, navigate]);
+
+  // Settings needs the employee list for per-employee schedule — load if missing
+  useEffect(() => {
+    if (activeTab !== 'settings' || users.length > 0) return;
+    refreshForRoute('/admin-settings', true);
+  }, [activeTab, users.length, refreshForRoute]);
 
   // Pagination for Users table
   const USERS_PER_PAGE = 15;
@@ -1586,12 +1594,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                       <div className="flex items-center justify-center gap-2">
                         <button
                           onClick={() => {
-                            if (embeddedSection === 'monthly-performance') {
-                              navigate('/admin-summary', { state: { selectedUserId: emp.id, selectedMonth } });
-                              return;
-                            }
-                            setSelectedUserId(emp.id);
-                            setActiveTab('summary');
+                            navigate('/admin-summary', { state: { selectedUserId: emp.id, selectedMonth } });
                           }}
                           className="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-all font-bold text-[10px]"
                         >
@@ -1799,11 +1802,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
             </div>
           </div>
 
-          {/* Pending Leave Requests */}
+          {/* 1. Pending Leave Requests */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="px-6 py-5 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
               <div>
-                <h3 className="text-lg font-bold text-gray-800">Pending Leave Requests</h3>
+                <h3 className="text-lg font-bold text-gray-800">1. Leave Requests</h3>
                 <p className="text-gray-500 text-sm">{leaveRequests.filter(l => l.status === 'Pending').length} requests needing approval</p>
               </div>
             </div>
@@ -1870,42 +1873,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
 
           </div>
 
-          {/* Pending Management OT — Admin can approve / reject */}
+          {/* 2. Early Checkout Requests */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
             <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
-              <h3 className="text-lg font-bold text-gray-800">Pending Management Overtime</h3>
-              <p className="text-gray-500 text-sm">Approve or reject employee management OT requests</p>
+              <h3 className="text-lg font-bold text-gray-800">2. Early Checkout Requests</h3>
+              <p className="text-gray-500 text-sm">Approve or reject employee early checkout requests</p>
             </div>
             <div className="p-6">
-              <ManagementOvertimePanel variant="table" showTitle={false} />
+              <EarlyOvertimePanel variant="table" showTitle={false} />
             </div>
           </div>
 
-          {/* Pending Early Checkout — Admin can approve / reject */}
+          {/* 3. Overtime Requests — allocate surplus via Manage */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
             <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
-              <h3 className="text-lg font-bold text-gray-800">Pending Early Checkout</h3>
-              <p className="text-gray-500 text-sm">Approve or reject employee early checkout requests (today only)</p>
+              <h3 className="text-lg font-bold text-gray-800">3. Overtime Requests</h3>
+              <p className="text-gray-500 text-sm">
+                Extra time from completed working hours to checkout — Manage to allocate General OT, Management OT, Early Request OT, or Custom OT
+              </p>
             </div>
             <div className="p-6">
-              <EarlyOvertimePanel variant="table" showTitle={false} todayOnly />
+              <OvertimeManagePanel variant="table" showTitle={false} />
             </div>
           </div>
 
-          {/* Pending Early OT Repayment — Admin can approve / reject */}
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6">
-            <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
-              <h3 className="text-lg font-bold text-gray-800">Pending Early OT Repayment</h3>
-              <p className="text-gray-500 text-sm">Approve or reject employee requests to repay a previous early-checkout deficit (current month only)</p>
-            </div>
-            <div className="p-6">
-              <EarlyOvertimeRepaymentPanel variant="table" showTitle={false} />
-            </div>
-          </div>
+        </div>
+      )}
 
-          {/* Monthly Performance Table */}
+      {/* MONTHLY PERFORMANCE — performance metrics & overtime balances only */}
+      {activeTab === 'performance' && (
+        <div className="space-y-5">
           {renderMonthlyPerformanceOverview()}
-
         </div>
       )}
 
@@ -1952,12 +1950,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
               <button
                 onClick={() => {
                   setSelectedUserId('');
-                  setActiveTab('consolidated');
                   navigate('/admin-dashboard');
                 }}
                 className="flex items-center gap-2 text-gray-600 hover:text-indigo-600 font-medium transition-colors mb-2"
               >
-                <span className="text-lg">←</span> Back to All Employees
+                <span className="text-lg">←</span> Back to Monthly Performance
               </button>
 
               {/* User Profile Card */}
@@ -3648,44 +3645,60 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
 
       {/* SETTINGS TAB */}
       {activeTab === 'settings' && (
-        <div className="space-y-6 max-w-2xl">
-          <Card title="Global System Settings">
-            <div>
-              <label className="block text-sm font-bold text-gray-700 mb-2">Company Timezone</label>
-              <p className="text-xs text-gray-500 mb-2">Affects how timestamps are displayed and when check-in / checkout unlock.</p>
-              <select
-                className="w-full p-2 border rounded-lg"
-                value={systemSettings.timezone}
-                onChange={(e) => updateSystemSettings({ timezone: e.target.value })}
-              >
-                {timezones.map(tz => <option key={tz} value={tz}>{tz}</option>)}
-              </select>
-              <div className="mt-4 p-4 bg-gray-50 rounded border border-gray-200">
-                <p className="text-sm font-mono">Current Time in Zone: {new Date().toLocaleTimeString('en-US', { timeZone: systemSettings.timezone })}</p>
-              </div>
+        <div className="w-full">
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
+            {/* Left column */}
+            <div className="space-y-6 min-w-0">
+              <Card title="Global System Settings">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Company Timezone</label>
+                  <p className="text-xs text-gray-500 mb-2">Affects how timestamps are displayed and when check-in / checkout unlock.</p>
+                  <select
+                    className="w-full p-2 border rounded-lg"
+                    value={systemSettings.timezone}
+                    onChange={(e) => updateSystemSettings({ timezone: e.target.value })}
+                  >
+                    {timezones.map(tz => <option key={tz} value={tz}>{tz}</option>)}
+                  </select>
+                  <div className="mt-4 p-4 bg-gray-50 rounded border border-gray-200">
+                    <p className="text-sm font-mono">Current Time in Zone: {new Date().toLocaleTimeString('en-US', { timeZone: systemSettings.timezone })}</p>
+                  </div>
+                </div>
+              </Card>
+
+              <Card title="Late Check-in Penalty (All Employees)">
+                <LatePenaltySettings
+                  systemSettings={systemSettings}
+                  updateSystemSettings={updateSystemSettings}
+                />
+              </Card>
+
+              <Card title="Employee Check-in / Checkout Times">
+                <EmployeeScheduleSettings
+                  users={users}
+                  systemSettings={systemSettings}
+                  updateUser={updateUser}
+                />
+              </Card>
             </div>
-          </Card>
 
-          <Card title="Check-in Time (All Employees)">
-            <CheckInTimeSettings
-              systemSettings={systemSettings}
-              updateSystemSettings={updateSystemSettings}
-            />
-          </Card>
+            {/* Right column — check-in / checkout */}
+            <div className="space-y-6 min-w-0">
+              <Card title="Check-in Time (All Employees)">
+                <CheckInTimeSettings
+                  systemSettings={systemSettings}
+                  updateSystemSettings={updateSystemSettings}
+                />
+              </Card>
 
-          <Card title="Late Check-in Penalty (All Employees)">
-            <LatePenaltySettings
-              systemSettings={systemSettings}
-              updateSystemSettings={updateSystemSettings}
-            />
-          </Card>
-
-          <Card title="Checkout Time (All Employees)">
-            <CheckoutTimeSettings
-              systemSettings={systemSettings}
-              updateSystemSettings={updateSystemSettings}
-            />
-          </Card>
+              <Card title="Checkout Time (All Employees)">
+                <CheckoutTimeSettings
+                  systemSettings={systemSettings}
+                  updateSystemSettings={updateSystemSettings}
+                />
+              </Card>
+            </div>
+          </div>
         </div>
       )
       }

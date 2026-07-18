@@ -285,6 +285,32 @@ export const attendanceAPI = {
       body: JSON.stringify({ status, adminNote }),
     });
   },
+  requestEarlyLeaveOvertime: async (note?: string, date?: string) => {
+    return apiRequest('/attendance/request-early-leave-overtime', {
+      method: 'POST',
+      body: JSON.stringify({ note, date }),
+    });
+  },
+  getPendingOvertimeManage: async () => {
+    return apiRequest('/attendance/admin/pending-overtime-manage');
+  },
+  manageOvertime: async (
+    recordId: string,
+    data: {
+      allocationType: 'General' | 'Management' | 'EarlyRequest' | 'Custom';
+      allocations?: {
+        generalMinutes: number;
+        managementMinutes: number;
+        earlyRequestMinutes: number;
+      };
+      adminNote?: string;
+    }
+  ) => {
+    return apiRequest(`/attendance/admin/manage-overtime/${recordId}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
   recalculateHolidayFlags: async () => {
     return apiRequest<{ message: string; total: number; updated: number }>('/attendance/admin/recalculate-holiday-flags', {
       method: 'POST',
@@ -395,6 +421,14 @@ export const userAPI = {
     forwardedMonths?: Record<string, number>;
     forwardedInMonths?: Record<string, number>;
     paidLeaveAction?: 'set' | 'add';
+    defaultCheckInTime?: string | null;
+    defaultCheckoutTime?: string | null;
+    setCheckInOverride?: { date: string; time: string };
+    removeCheckInOverrideDate?: string;
+    setCheckoutOverride?: { date: string; time: string };
+    removeCheckoutOverrideDate?: string;
+    clearCheckInSchedule?: boolean;
+    clearCheckoutSchedule?: boolean;
   }) => {
     return apiRequest(`/users/${id}`, {
       method: 'PUT',
@@ -423,6 +457,27 @@ export const userAPI = {
       method: 'PATCH',
       body: JSON.stringify({ isPaid }),
     });
+  },
+
+  saveSalarySlip: async (userId: string, slipData: Record<string, unknown>) => {
+    return apiRequest<{ message: string; salarySlip: any }>(`/users/${userId}/salary-slip`, {
+      method: 'PUT',
+      body: JSON.stringify(slipData),
+    });
+  },
+
+  getMySalarySlips: async () => {
+    return apiRequest<{ salarySlips: any[] }>('/users/me/salary-slips');
+  },
+
+  getMySalarySlip: async (month: number, year: number) => {
+    return apiRequest<{ salarySlip: any }>(`/users/me/salary-slips/${month}/${year}`);
+  },
+
+  getUserSalarySlips: async (userId: string) => {
+    return apiRequest<{ userId: string; name: string; salarySlips: any[] }>(
+      `/users/${userId}/salary-slips`
+    );
   },
 };
 

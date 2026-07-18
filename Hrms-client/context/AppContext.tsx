@@ -50,6 +50,14 @@ interface AppContextType {
     lastForwardedMonth?: string;
     forwardedMonths?: Record<string, number>;
     forwardedInMonths?: Record<string, number>;
+    defaultCheckInTime?: string | null;
+    defaultCheckoutTime?: string | null;
+    setCheckInOverride?: { date: string; time: string };
+    removeCheckInOverrideDate?: string;
+    setCheckoutOverride?: { date: string; time: string };
+    removeCheckoutOverrideDate?: string;
+    clearCheckInSchedule?: boolean;
+    clearCheckoutSchedule?: boolean;
   }) => Promise<void>;
 
   // Admin/HR Actions
@@ -69,6 +77,19 @@ interface AppContextType {
   reviewManagementOvertime: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
   requestEarlyOtRepayment: (reason: string, durationMinutes: number, date?: string) => Promise<void>;
   reviewEarlyOtRepayment: (recordId: string, status: 'Approved' | 'Rejected', adminNote?: string) => Promise<void>;
+  requestEarlyLeaveOvertime: (note?: string, date?: string) => Promise<void>;
+  manageOvertimeRequest: (
+    recordId: string,
+    data: {
+      allocationType: 'General' | 'Management' | 'EarlyRequest' | 'Custom';
+      allocations?: {
+        generalMinutes: number;
+        managementMinutes: number;
+        earlyRequestMinutes: number;
+      };
+      adminNote?: string;
+    }
+  ) => Promise<void>;
   
   // Refresh functions
   refreshData: (silent?: boolean, scope?: RefreshScope | 'full') => Promise<void>;
@@ -123,9 +144,22 @@ const transformUser = (apiUser: any): User => ({
     paidAt: s.paidAt,
     paidBy: s.paidBy
   })) : undefined,
+  salarySlips: apiUser.salarySlips && Array.isArray(apiUser.salarySlips) ? apiUser.salarySlips : undefined,
   lastForwardedMonth: apiUser.lastForwardedMonth,
   forwardedMonths: apiUser.forwardedMonths,
   forwardedInMonths: apiUser.forwardedInMonths,
+  defaultCheckInTime: apiUser.defaultCheckInTime || null,
+  checkInTimeOverrides: apiUser.checkInTimeOverrides
+    ? (apiUser.checkInTimeOverrides instanceof Map
+        ? Object.fromEntries(apiUser.checkInTimeOverrides.entries())
+        : { ...apiUser.checkInTimeOverrides })
+    : {},
+  defaultCheckoutTime: apiUser.defaultCheckoutTime || null,
+  checkoutTimeOverrides: apiUser.checkoutTimeOverrides
+    ? (apiUser.checkoutTimeOverrides instanceof Map
+        ? Object.fromEntries(apiUser.checkoutTimeOverrides.entries())
+        : { ...apiUser.checkoutTimeOverrides })
+    : {},
   createdAt: apiUser.createdAt,
   updatedAt: apiUser.updatedAt
 });
@@ -145,13 +179,15 @@ const transformAttendance = (
   const penaltyEffective = isPenaltyEffective(apiAttendance.date);
   const late = isLateCheckIn(apiAttendance.checkIn, penaltyCutoff, timeZone);
 
-  // Penalty applies only for late check-in (after configured cutoff in company timezone).
+  // Prefer server-calculated penalty (includes per-employee schedule + buffer rules).
   const penaltySeconds =
-    penaltyDisabled || !late || !penaltyEffective
+    penaltyDisabled || !penaltyEffective
       ? 0
-      : apiAttendance.penaltySeconds && apiAttendance.penaltySeconds > 0
+      : typeof apiAttendance.penaltySeconds === 'number'
         ? apiAttendance.penaltySeconds
-        : calculateLatenessPenaltySeconds(apiAttendance.checkIn, penaltyCutoff, timeZone);
+        : !late
+          ? 0
+          : calculateLatenessPenaltySeconds(apiAttendance.checkIn, penaltyCutoff, timeZone);
 
   return {
     id: apiAttendance.id || apiAttendance._id,
@@ -211,6 +247,7 @@ const transformAttendance = (
         approvedAt: eo.approvedAt,
         deficitMinutes: eo.deficitMinutes || 0,
         coveredMinutes: eo.coveredMinutes || 0,
+        completedMinutes: eo.completedMinutes || 0,
         status: eo.status || 'None'
       };
     })(),
@@ -220,6 +257,17 @@ const transformAttendance = (
       reason: '',
       status: 'None',
       appliedMinutes: 0
+    },
+    overtimeManageRequest: apiAttendance.overtimeManageRequest ?? {
+      status: 'None',
+      note: '',
+      extraMinutes: 0,
+      allocationType: 'None',
+      allocations: {
+        generalMinutes: 0,
+        managementMinutes: 0,
+        earlyRequestMinutes: 0
+      }
     }
   };
 };
@@ -645,7 +693,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     aadhaarNumber?: string; 
     guardianName?: string; 
     mobileNumber?: string; 
-    guardianMobileNumber?: string 
+    guardianMobileNumber?: string;
+    defaultCheckInTime?: string | null;
+    defaultCheckoutTime?: string | null;
+    setCheckInOverride?: { date: string; time: string };
+    removeCheckInOverrideDate?: string;
+    setCheckoutOverride?: { date: string; time: string };
+    removeCheckoutOverrideDate?: string;
+    clearCheckInSchedule?: boolean;
+    clearCheckoutSchedule?: boolean;
   }): Promise<void> => {
     try {
       console.log('Context updateUser called with:', updates);
@@ -874,6 +930,49 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const requestEarlyLeaveOvertime = async (note?: string, date?: string): Promise<void> => {
+    try {
+      const data = await api.attendanceAPI.requestEarlyLeaveOvertime(note, date);
+      const transformed = transformAttendance(data);
+      setAttendanceRecords(prev => {
+        const idx = prev.findIndex(r => r.id === transformed.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = transformed;
+          return next;
+        }
+        return [transformed, ...prev];
+      });
+    } catch (error) {
+      console.error('Request early leave overtime error:', error);
+      throw error;
+    }
+  };
+
+  const manageOvertimeRequestFn = async (
+    recordId: string,
+    data: {
+      allocationType: 'General' | 'Management' | 'EarlyRequest' | 'Custom';
+      allocations?: {
+        generalMinutes: number;
+        managementMinutes: number;
+        earlyRequestMinutes: number;
+      };
+      adminNote?: string;
+    }
+  ): Promise<void> => {
+    try {
+      const result = await api.attendanceAPI.manageOvertime(recordId, data);
+      setAttendanceRecords(prev => prev.map(r =>
+        r.id === recordId ? transformAttendance(result) : r
+      ));
+      await refreshData(true);
+    } catch (error) {
+      console.error('Manage overtime request error:', error);
+      throw error;
+    }
+  };
+
   const exportReports = async (filters?: { start?: string; end?: string; department?: string }): Promise<void> => {
     try {
       const data = await api.reportAPI.exportAttendanceReport({
@@ -936,6 +1035,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       reviewManagementOvertime,
       requestEarlyOtRepayment,
       reviewEarlyOtRepayment,
+      requestEarlyLeaveOvertime,
+      manageOvertimeRequest: manageOvertimeRequestFn,
       refreshData,
       refreshForRoute
     }}>

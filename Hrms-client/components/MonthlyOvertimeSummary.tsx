@@ -155,12 +155,12 @@ export const MonthlyOvertimeSummary: React.FC<MonthlyOvertimeSummaryProps> = ({
           />
           <StatTile
             label="Early Leave OT"
-            sublabel="Deducted from early leave"
-            value={formatHoursMinutesShort(summary.earlyOvertimeCoveredSeconds)}
+            sublabel="Admin allocated early request OT"
+            value={formatHoursMinutesShort(summary.earlyRequestOvertimeSeconds)}
             icon={<Timer size={12} />}
-            accent={summary.earlyOvertimeCoveredSeconds > 0 ? 'text-teal-700' : 'text-slate-600'}
-            bg={summary.earlyOvertimeCoveredSeconds > 0 ? 'bg-teal-50/60' : 'bg-slate-50/60'}
-            border={summary.earlyOvertimeCoveredSeconds > 0 ? 'border-teal-100' : 'border-slate-100'}
+            accent={summary.earlyRequestOvertimeSeconds > 0 ? 'text-teal-700' : 'text-slate-600'}
+            bg={summary.earlyRequestOvertimeSeconds > 0 ? 'bg-teal-50/60' : 'bg-slate-50/60'}
+            border={summary.earlyRequestOvertimeSeconds > 0 ? 'border-teal-100' : 'border-slate-100'}
           />
         </div>
 

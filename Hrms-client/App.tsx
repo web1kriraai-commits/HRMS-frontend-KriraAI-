@@ -14,6 +14,7 @@ import { Analytics } from '@/pages/Analytics';
 import { MonthlySummary } from '@/pages/MonthlySummary';
 import { EmployeeSummary } from '@/pages/EmployeeSummary';
 import { SalaryManagement } from '@/pages/SalaryManagement';
+import { EmployeeSalarySlip } from '@/pages/EmployeeSalarySlip';
 import { Sidebar } from './components/Sidebar';
 import { EarlyOvertimePopup } from './components/EarlyOvertimePopup';
 import { ManagementOvertimePopup } from './components/ManagementOvertimePopup';
@@ -91,6 +92,14 @@ const AppRoutes = () => {
         <PrivateRoute>
           <AppLayout>
             <Profile />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/my-salary-slip" element={
+        <PrivateRoute roles={[Role.EMPLOYEE]}>
+          <AppLayout>
+            <EmployeeSalarySlip />
           </AppLayout>
         </PrivateRoute>
       } />

@@ -35,10 +35,16 @@ export const Sidebar: React.FC = () => {
         )}
 
         {user.role === Role.EMPLOYEE && (
-          <NavLink to="/profile" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
-            <UserCircle size={18} />
-            My Profile
-          </NavLink>
+          <>
+            <NavLink to="/profile" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+              <UserCircle size={18} />
+              My Profile
+            </NavLink>
+            <NavLink to="/my-salary-slip" className={({ isActive }) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}>
+              <IndianRupee size={18} />
+              My Salary Slip
+            </NavLink>
+          </>
         )}
 
         {isAdminOrHr && (
