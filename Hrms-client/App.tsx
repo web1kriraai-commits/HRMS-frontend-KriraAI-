@@ -64,7 +64,9 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   );
 };
 
-// Home dashboard based on role
+// Home dashboard based on role:
+// Admin → admin consolidated dashboard
+// HR / Employee → employee dashboard (HR also has /hr-dashboard for admin-style view)
 const HomeDashboard = () => {
   const { auth } = useApp();
   if (auth.user?.role === Role.ADMIN) {
@@ -100,6 +102,14 @@ const AppRoutes = () => {
         <PrivateRoute roles={[Role.EMPLOYEE]}>
           <AppLayout>
             <EmployeeSalarySlip />
+          </AppLayout>
+        </PrivateRoute>
+      } />
+
+      <Route path="/hr-dashboard" element={
+        <PrivateRoute roles={[Role.HR, Role.ADMIN]}>
+          <AppLayout>
+            <AdminDashboard />
           </AppLayout>
         </PrivateRoute>
       } />

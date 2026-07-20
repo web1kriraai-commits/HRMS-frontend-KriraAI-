@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useApp } from '../context/AppContext';
+import { useApp, transformUser } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { CheckoutTimeSettings } from '../components/CheckoutTimeSettings';
@@ -8,7 +8,8 @@ import { CheckInTimeSettings } from '../components/CheckInTimeSettings';
 import { LatePenaltySettings } from '../components/LatePenaltySettings';
 import { EmployeeScheduleSettings } from '../components/EmployeeScheduleSettings';
 import { Role, LeaveCategory, LeaveStatus, User, Attendance, AuditLog } from '../types';
-import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft, Search, ArrowUp, ArrowDown, Landmark } from 'lucide-react';
+import { Download, FileText, Activity, Users, Calendar, Plus, PenTool, Globe, Clock, LogIn, LogOut, Coffee, TrendingUp, TrendingDown, CheckCircle, Timer, Bell, X, UserPlus, Trash2, Edit2, AlertCircle, Mail, BookOpen, HelpCircle, ArrowRight, DollarSign, Key, RotateCcw, LayoutDashboard, ChevronLeft, ChevronRight, Scroll, History, CheckCircle2, ArrowRightLeft, Search, ArrowUp, ArrowDown, Landmark, UserCheck, UserX, Trophy } from 'lucide-react';
+import { computeTopPerformers } from '../services/analyticsUtils';
 import { formatDate, getTodayStr, getLocalISOString, formatDuration, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, downloadCSV, getAbsenceStartDate, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, resolveLatePenaltyStartTime, getLateCheckInPenaltyInfo, formatPenaltyDisplay } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
 import { attendanceAPI, notificationAPI, userAPI, authAPI, holidayAPI, auditAPI } from '../services/api';
@@ -41,14 +42,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
   const location = useLocation();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'consolidated' | 'performance' | 'summary' | 'users' | 'audit' | 'reports' | 'settings' | 'guidance' | 'bonds' | 'overtime'>(
-    location.pathname === '/' ? 'consolidated' :
+    location.pathname === '/' || location.pathname === '/hr-dashboard' ? 'consolidated' :
     location.pathname === '/admin-dashboard' ? 'performance' :
     location.pathname === '/admin-overtime' ? 'overtime' : 'summary'
   );
 
   useEffect(() => {
     const path = location.pathname;
-    if (path === '/') setActiveTab('consolidated');
+    if (path === '/' || path === '/hr-dashboard') setActiveTab('consolidated');
     else if (path === '/admin-dashboard') setActiveTab('performance');
     else if (path === '/admin-summary') setActiveTab('summary');
     else if (path === '/admin-users') setActiveTab('users');
@@ -80,11 +81,47 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
   }, [activeTab, users.length, refreshForRoute]);
 
   // Pagination for Users table
-  const USERS_PER_PAGE = 15;
+  const USERS_PER_PAGE = 10;
   const [userPage, setUserPage] = useState(1);
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [userSortField, setUserSortField] = useState<'name' | 'joiningDate' | null>(null);
   const [userSortDir, setUserSortDir] = useState<'asc' | 'desc'>('asc');
+
+  // Full employee list (active + inactive) for management, plus an active/inactive filter
+  const [manageUsers, setManageUsers] = useState<User[]>([]);
+  const [userStatusFilter, setUserStatusFilter] = useState<'active' | 'inactive' | 'all'>('active');
+
+  const loadManageUsers = React.useCallback(async () => {
+    try {
+      const data = await userAPI.getAllUsersForManagement();
+      setManageUsers((Array.isArray(data) ? data : []).map(transformUser));
+    } catch (error) {
+      console.error('Failed to load users for management:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'users') {
+      loadManageUsers();
+      refreshForRoute('/admin-users', true);
+    }
+  }, [activeTab, loadManageUsers, refreshForRoute]);
+
+  const userManagementList = manageUsers.length > 0 ? manageUsers : users;
+
+  const handleToggleUserStatus = async (user: User) => {
+    const nextActive = !user.isActive;
+    const actionLabel = nextActive ? 'activate' : 'deactivate';
+    if (!confirm(`Are you sure you want to ${actionLabel} ${user.name}?`)) return;
+    try {
+      await userAPI.toggleUserStatus(user.id, nextActive);
+      appAlert(`${user.name} ${nextActive ? 'activated' : 'deactivated'} successfully`);
+      await loadManageUsers();
+      await refreshData();
+    } catch (error: any) {
+      appAlert(error.message || 'Failed to update employee status');
+    }
+  };
 
   // Server-side audit logs
   const AUDIT_LOGS_PER_PAGE = 10;
@@ -334,16 +371,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
 
   // Filter + pagination for All Users table
   const filteredUsers = useMemo(() => {
+    let list = userManagementList;
+    if (userStatusFilter === 'active') list = list.filter(u => u.isActive);
+    else if (userStatusFilter === 'inactive') list = list.filter(u => !u.isActive);
+
     const q = userSearchQuery.trim().toLowerCase();
-    if (!q) return users;
-    return users.filter(u =>
+    if (!q) return list;
+    return list.filter(u =>
       u.name.toLowerCase().includes(q) ||
       (u.email || '').toLowerCase().includes(q) ||
       (u.username || '').toLowerCase().includes(q) ||
       (u.department || '').toLowerCase().includes(q) ||
       u.role.toLowerCase().includes(q)
     );
-  }, [users, userSearchQuery]);
+  }, [userManagementList, userSearchQuery, userStatusFilter]);
 
   const sortedFilteredUsers = useMemo(() => {
     if (!userSortField) return filteredUsers;
@@ -377,11 +418,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
 
   useEffect(() => {
     setUserPage(1);
-  }, [userSearchQuery, userSortField, userSortDir]);
+  }, [userSearchQuery, userSortField, userSortDir, userStatusFilter]);
 
   useEffect(() => {
     if (userPage > totalUserPages) setUserPage(Math.max(1, totalUserPages));
   }, [sortedFilteredUsers.length, totalUserPages, userPage]);
+
+  const topPerformers = useMemo(
+    () =>
+      computeTopPerformers(
+        '3month',
+        attendanceRecords,
+        userManagementList,
+        leaveRequests,
+        holidayDateSet,
+        systemSettings,
+        10
+      ),
+    [attendanceRecords, userManagementList, leaveRequests, holidayDateSet, systemSettings]
+  );
 
   // Get leaves for selected user in selected month
   const monthlyLeaves = useMemo(() => {
@@ -2942,12 +2997,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                   <h3 className="text-sm font-bold text-gray-800 leading-tight">All Users</h3>
                   <p className="text-[11px] text-gray-500">
                     {userSearchQuery.trim()
-                      ? `${sortedFilteredUsers.length} of ${users.length} users`
-                      : `${users.length} users`}
+                      ? `${sortedFilteredUsers.length} of ${userManagementList.length} users`
+                      : `${sortedFilteredUsers.length} users`}
                   </p>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                <div className="inline-flex items-center rounded-lg border border-gray-200 bg-white p-0.5 shrink-0">
+                  {(['active', 'inactive', 'all'] as const).map(status => (
+                    <button
+                      key={status}
+                      type="button"
+                      onClick={() => setUserStatusFilter(status)}
+                      className={`px-2.5 py-1 rounded-md text-xs font-semibold capitalize transition-colors ${userStatusFilter === status
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-gray-500 hover:bg-gray-100'
+                        }`}
+                    >
+                      {status}
+                    </button>
+                  ))}
+                </div>
                 <div className="relative group flex-1 sm:flex-none min-w-[200px] sm:w-64">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                     <Search size={16} className="text-gray-400 group-focus-within:text-indigo-500 transition-colors" />
@@ -3137,21 +3207,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                               </button>
                               {user.id !== auth.user?.id && (
                                 <button
-                                  onClick={async () => {
-                                    if (confirm(`Are you sure you want to delete ${user.name}?`)) {
-                                      try {
-                                        await userAPI.deleteUser(user.id);
-                                        appAlert(`User ${user.name} deleted successfully`);
-                                        await refreshData();
-                                      } catch (error: any) {
-                                        appAlert(error.message || 'Failed to delete user');
-                                      }
-                                    }
-                                  }}
-                                  className="text-gray-400 hover:text-red-600 p-1.5 rounded-md hover:bg-red-50 transition-colors"
-                                  title="Delete User"
+                                  onClick={() => handleToggleUserStatus(user)}
+                                  className={`p-1.5 rounded-md transition-colors ${user.isActive
+                                    ? 'text-gray-400 hover:text-red-600 hover:bg-red-50'
+                                    : 'text-gray-400 hover:text-green-600 hover:bg-green-50'
+                                    }`}
+                                  title={user.isActive ? 'Deactivate Employee' : 'Activate Employee'}
                                 >
-                                  <Trash2 size={15} />
+                                  {user.isActive ? <UserX size={15} /> : <UserCheck size={15} />}
                                 </button>
                               )}
                             </div>
@@ -3202,6 +3265,101 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                     )}
                 </div>
             )}
+          </Card>
+
+          <Card className="overflow-hidden shadow-sm w-full mt-4" bodyClassName="p-0">
+            <div className="px-4 py-2.5 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 bg-white">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="h-8 w-8 shrink-0 rounded-lg bg-amber-100 flex items-center justify-center">
+                  <Trophy className="h-4 w-4 text-amber-600" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-gray-800 leading-tight">Top 10 Best Employees</h3>
+                  <p className="text-[11px] text-gray-500">
+                    Overall performance · last 3 months (work hours, OT, punctuality, leave & breaks)
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead className="bg-slate-50 border-b border-gray-200">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide w-12">#</th>
+                    <th className="px-4 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Employee</th>
+                    <th className="px-4 py-2 text-center text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Score</th>
+                    <th className="px-4 py-2 text-center text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Worked</th>
+                    <th className="px-4 py-2 text-center text-[11px] font-semibold text-gray-600 uppercase tracking-wide">OT</th>
+                    <th className="px-4 py-2 text-center text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Present</th>
+                    <th className="px-4 py-2 text-center text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Late</th>
+                    <th className="px-4 py-2 text-center text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Leave</th>
+                    <th className="px-4 py-2 text-center text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Break</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 bg-white">
+                  {topPerformers.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="px-4 py-6 text-center text-gray-400 text-sm">
+                        Not enough attendance data to rank employees yet
+                      </td>
+                    </tr>
+                  ) : (
+                    topPerformers.map((performer, index) => (
+                      <tr key={performer.userId} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="px-4 py-2">
+                          <span className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold ${
+                            index === 0 ? 'bg-amber-100 text-amber-700' :
+                            index === 1 ? 'bg-gray-200 text-gray-700' :
+                            index === 2 ? 'bg-orange-100 text-orange-700' :
+                            'bg-slate-100 text-gray-600'
+                          }`}>
+                            {index + 1}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex items-center gap-2.5">
+                            <div className="h-8 w-8 shrink-0 rounded-md bg-indigo-500 flex items-center justify-center text-white font-bold text-xs">
+                              {performer.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="font-medium text-gray-800 text-sm leading-tight truncate">{performer.name}</p>
+                              <p className="text-[11px] text-gray-400 truncate">{performer.department}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-2 text-center">
+                          <span className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-bold ${
+                            performer.score >= 80 ? 'bg-emerald-100 text-emerald-700' :
+                            performer.score >= 60 ? 'bg-blue-100 text-blue-700' :
+                            'bg-amber-100 text-amber-700'
+                          }`}>
+                            {performer.score}/100
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-center text-gray-600 text-xs whitespace-nowrap">
+                          {formatHoursToHoursMinutes(performer.workedHours)}
+                        </td>
+                        <td className="px-4 py-2 text-center text-emerald-600 text-xs font-medium whitespace-nowrap">
+                          {performer.overtimeHours > 0 ? formatHoursToHoursMinutes(performer.overtimeHours) : '-'}
+                        </td>
+                        <td className="px-4 py-2 text-center text-gray-600 text-xs">{performer.presentDays}</td>
+                        <td className="px-4 py-2 text-center text-xs">
+                          {performer.lateCheckins > 0 ? (
+                            <span className="text-rose-600 font-medium">{performer.lateCheckins}</span>
+                          ) : (
+                            <span className="text-emerald-600 font-medium">0</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2 text-center text-gray-600 text-xs">{performer.leaveDays}</td>
+                        <td className="px-4 py-2 text-center text-amber-600 text-xs whitespace-nowrap">
+                          {performer.breakHours > 0 ? formatHoursToHoursMinutes(performer.breakHours) : '-'}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </Card>
         </div>
       )}
@@ -3841,7 +3999,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-indigo-500 font-bold">•</span>
-                    <span>You can delete users (soft delete - sets isActive to false) but cannot delete your own account.</span>
+                    <span>You can activate/deactivate employees at any time (use the status filter to view inactive employees) but cannot change your own account's status.</span>
                   </li>
                 </ul>
               </section>

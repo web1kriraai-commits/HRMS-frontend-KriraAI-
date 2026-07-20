@@ -26,7 +26,7 @@ export const getRefreshScopeForPath = (pathname: string, role: Role): RefreshSco
 
   switch (pathname) {
     case '/admin-users':
-      return { users: true };
+      return { users: true, attendance: true, leaves: true, holidays: true, settings: true };
 
     case '/admin-audit':
       return { users: true };
@@ -79,6 +79,17 @@ export const getRefreshScopeForPath = (pathname: string, role: Role): RefreshSco
         settings: true,
       };
 
+    case '/hr-dashboard':
+      return {
+        today: true,
+        attendance: true,
+        users: true,
+        leaves: true,
+        holidays: true,
+        notifications: true,
+        settings: true,
+      };
+
     case '/hr-approvals':
       return {
         leaves: true,
@@ -108,7 +119,7 @@ export const getRefreshScopeForPath = (pathname: string, role: Role): RefreshSco
       };
 
     case '/':
-      if (role === Role.ADMIN || role === Role.HR) {
+      if (role === Role.ADMIN) {
         return {
           today: true,
           attendance: true,
@@ -119,6 +130,7 @@ export const getRefreshScopeForPath = (pathname: string, role: Role): RefreshSco
           settings: true,
         };
       }
+      // HR and Employee use the employee dashboard on home
       return {
         today: true,
         attendance: true,

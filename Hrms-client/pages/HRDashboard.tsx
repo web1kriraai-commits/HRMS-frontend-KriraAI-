@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useApp } from '../context/AppContext';
+import { useApp, transformUser } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { LeaveStatus, Role, LeaveCategory, User } from '../types';
 import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, resolveLatePenaltyStartTime, formatPenaltyDisplay, getLateCheckInPenaltyInfo } from '../services/utils';
 import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
-import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, RotateCcw, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2, Key, Loader2, Landmark } from 'lucide-react';
+import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, RotateCcw, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2, Key, Loader2, Landmark, UserCheck, UserX } from 'lucide-react';
 import { attendanceAPI, holidayAPI, userAPI } from '../services/api';
 import { EarlyOvertimePanel } from '../components/EarlyOvertimePanel';
 import { OvertimeManagePanel } from '../components/OvertimeManagePanel';
@@ -61,6 +61,45 @@ export const HRDashboard: React.FC = () => {
   const [resetPasswordModalOpen, setResetPasswordModalOpen] = useState(false);
   const [selectedUserForReset, setSelectedUserForReset] = useState<User | null>(null);
   const [newEmployeePassword, setNewEmployeePassword] = useState('');
+
+  // Full employee list (active + inactive) for management, plus an active/inactive filter
+  const [manageUsers, setManageUsers] = useState<User[]>([]);
+  const [userStatusFilter, setUserStatusFilter] = useState<'active' | 'inactive' | 'all'>('active');
+
+  const loadManageUsers = React.useCallback(async () => {
+    try {
+      const data = await userAPI.getAllUsersForManagement();
+      setManageUsers((Array.isArray(data) ? data : []).map(transformUser));
+    } catch (error) {
+      console.error('Failed to load users for management:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadManageUsers();
+  }, [loadManageUsers]);
+
+  const userManagementList = manageUsers.length > 0 ? manageUsers : users;
+  const filteredManagementUsers = useMemo(() => {
+    const list = userManagementList.filter(u => u.role === Role.HR || u.role === Role.EMPLOYEE);
+    if (userStatusFilter === 'active') return list.filter(u => u.isActive);
+    if (userStatusFilter === 'inactive') return list.filter(u => !u.isActive);
+    return list;
+  }, [userManagementList, userStatusFilter]);
+
+  const handleToggleUserStatus = async (user: User) => {
+    const nextActive = !user.isActive;
+    const actionLabel = nextActive ? 'activate' : 'deactivate';
+    if (!confirm(`Are you sure you want to ${actionLabel} ${user.name}?`)) return;
+    try {
+      await userAPI.toggleUserStatus(user.id, nextActive);
+      appAlert(`${user.name} ${nextActive ? 'activated' : 'deactivated'} successfully`);
+      await loadManageUsers();
+      await refreshData();
+    } catch (error: any) {
+      appAlert(error.message || 'Failed to update employee status');
+    }
+  };
 
   // Calculate salary breakdown when joining date or bonds change
 
@@ -693,6 +732,7 @@ export const HRDashboard: React.FC = () => {
       setIsCreateUserModalOpen(false);
       setSalaryBreakdownRows([]);
       setSalaryBreakdownData({});
+      await loadManageUsers();
       appAlert("Employee created successfully! Temporary password: tempPassword123");
     } catch (error: any) {
       appAlert(error.message || "Failed to create user");
@@ -2422,15 +2462,30 @@ export const HRDashboard: React.FC = () => {
       {/* All Users Table - HR and Employee Only */}
       <section>
         <Card className="overflow-hidden p-0">
-          <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+          <div className="p-5 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 rounded-xl bg-emerald-100 flex items-center justify-center">
                 <Users className="h-5 w-5 text-emerald-600" />
               </div>
               <div>
                 <h3 className="font-bold text-gray-800">All Users</h3>
-                <p className="text-xs text-gray-500">{users.filter(u => u.role === Role.HR || u.role === Role.EMPLOYEE).length} users (HR & Employee)</p>
+                <p className="text-xs text-gray-500">{filteredManagementUsers.length} users (HR & Employee)</p>
               </div>
+            </div>
+            <div className="inline-flex items-center rounded-lg border border-gray-200 bg-white p-0.5 shrink-0">
+              {(['active', 'inactive', 'all'] as const).map(status => (
+                <button
+                  key={status}
+                  type="button"
+                  onClick={() => setUserStatusFilter(status)}
+                  className={`px-2.5 py-1 rounded-md text-xs font-semibold capitalize transition-colors ${userStatusFilter === status
+                    ? 'bg-indigo-600 text-white'
+                    : 'text-gray-500 hover:bg-gray-100'
+                    }`}
+                >
+                  {status}
+                </button>
+              ))}
             </div>
           </div>
           <div className="overflow-x-auto max-h-[600px]">
@@ -2447,19 +2502,20 @@ export const HRDashboard: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {users.filter(u => u.role === Role.HR || u.role === Role.EMPLOYEE).length === 0 ? (
+                {filteredManagementUsers.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-5 py-8 text-center text-gray-400">
-                      No users found
+                      {userStatusFilter === 'all' ? 'No users found' : `No ${userStatusFilter} users found`}
                     </td>
                   </tr>
                 ) : (
-                  users.filter(u => u.role === Role.HR || u.role === Role.EMPLOYEE).map(user => {
+                  filteredManagementUsers.map(user => {
                     // Check bond status for display
                     const bondInfo = calculateBondRemaining(user.bonds, user.joiningDate);
+                    const canToggleStatus = user.role === Role.EMPLOYEE && user.id !== auth.user?.id;
 
                     return (
-                      <tr key={user.id} className="hover:bg-gray-50">
+                      <tr key={user.id} className={`hover:bg-gray-50 ${!user.isActive ? 'opacity-75' : ''}`}>
                         <td className="px-5 py-4">
                           <div className="flex items-center gap-3">
                             <div className={`h-9 w-9 rounded-lg flex items-center justify-center text-white font-bold text-sm ${user.role === Role.HR ? 'bg-blue-500' : 'bg-emerald-500'
@@ -2534,23 +2590,16 @@ export const HRDashboard: React.FC = () => {
                             >
                               <PenTool size={16} />
                             </button>
-                            {user.id !== auth.user?.id && (
+                            {canToggleStatus && (
                               <button
-                                onClick={async () => {
-                                  if (confirm(`Are you sure you want to delete ${user.name}?`)) {
-                                    try {
-                                      await userAPI.deleteUser(user.id);
-                                      appAlert(`User ${user.name} deleted successfully`);
-                                      await refreshData();
-                                    } catch (error: any) {
-                                      appAlert(error.message || 'Failed to delete user');
-                                    }
-                                  }
-                                }}
-                                className="text-gray-400 hover:text-red-500 transition-colors p-2 rounded-lg hover:bg-red-50"
-                                title="Delete User"
+                                onClick={() => handleToggleUserStatus(user)}
+                                className={`p-2 rounded-lg transition-colors ${user.isActive
+                                  ? 'text-gray-400 hover:text-red-600 hover:bg-red-50'
+                                  : 'text-gray-400 hover:text-green-600 hover:bg-green-50'
+                                  }`}
+                                title={user.isActive ? 'Deactivate Employee' : 'Activate Employee'}
                               >
-                                <Trash2 size={16} />
+                                {user.isActive ? <UserX size={16} /> : <UserCheck size={16} />}
                               </button>
                             )}
                           </div>

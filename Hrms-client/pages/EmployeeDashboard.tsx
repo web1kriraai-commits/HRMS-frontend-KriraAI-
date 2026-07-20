@@ -3,16 +3,13 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { BreakType, LeaveCategory, LeaveStatus, User, Role } from '../types';
-import { AdminDashboard } from './AdminDashboard';
 import { MonthlyOvertimeSummary } from '../components/MonthlyOvertimeSummary';
 import { resolveGeneralOvertimeMinutes } from '../services/utils';
 import { getTodayStr, formatDuration, formatTime, formatDate, convertToDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, calculateDailyTimeStats, ABSENCE_PENALTY_EFFECTIVE_DATE, COMPULSORY_BREAK_EFFECTIVE_DATE, getLocalISOString, getAbsenceStartDate, hasApprovedHalfDayLeaveOnDate, isBeforeEarliestCheckIn, HALF_DAY_EXTRA_THRESHOLD_SECONDS, calculateTotalBreakSeconds, hasMinimumTotalBreakTime, MIN_TOTAL_BREAK_SECONDS, getDateStrInTimezone, resolveCheckInTimeForDate, resolveCheckoutTimeForDate, formatCheckoutTimeLabel, isClockOutTimeAllowed, hasCheckoutOverrideForDate, formatHoursMinutesShort, getLeaveDayCredit, applyLeaveCreditToWorkedSeconds, getEffectiveLeaveCategory, getEmployeeBondPeriod, calculateBondLeaveSummary, BOND_LEAVE_EFFECTIVE_DATE, getLateCheckInPenaltyInfo, resolveLatePenaltyStartTime } from '../services/utils';
-import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare, ChevronDown, ChevronLeft, ChevronRight, Check } from 'lucide-react';
+import { Clock, Coffee, AlertCircle, Bell, Calendar, X, RotateCcw, Timer, MessageSquare, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { attendanceAPI, leaveAPI, holidayAPI, notificationAPI } from '../services/api';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { appAlert } from '../services/appAlert';
-import { EarlyOvertimePanel } from '../components/EarlyOvertimePanel';
-import { OvertimeManagePanel } from '../components/OvertimeManagePanel';
 
 /** Half-day minimum net worked time (matches server: Math.floor(495/2)*60). */
 const HALF_DAY_MIN_SHIFT_SECONDS = Math.floor(495 / 2) * 60;
@@ -63,7 +60,7 @@ const formatDisplayDays = (val: number) => {
 };
 
 export const EmployeeDashboard: React.FC = () => {
-  const { auth, attendanceRecords, clockIn, clockOut, startBreak, endBreak, requestLeave, leaveRequests, notifications, companyHolidays, systemSettings, refreshData, updateLeaveStatus, requestEarlyLeaveOvertime, users } = useApp();
+  const { auth, attendanceRecords, clockIn, clockOut, startBreak, endBreak, requestLeave, leaveRequests, notifications, companyHolidays, systemSettings, refreshData, updateLeaveStatus, requestEarlyLeaveOvertime } = useApp();
   const user = auth.user;
   const canRequestPaidLeave = user ? user.paidLeaveAccess !== false : true;
 
@@ -367,17 +364,6 @@ export const EmployeeDashboard: React.FC = () => {
   const myNotifications = notifications.filter(n => n.userId === user?.id);
   const myAttendanceHistory = attendanceRecords.filter(r => r.userId === user?.id).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-  /** HR can approve Employee leave requests (not their own / not Admin). */
-  const pendingLeaveApprovals = useMemo(() => {
-    if (user?.role !== Role.HR) return [];
-    return leaveRequests.filter(l => {
-      if (l.status !== LeaveStatus.PENDING && l.status !== 'Pending') return false;
-      const requester = users.find(u => u.id === l.userId);
-      if (!requester) return true;
-      return requester.role === Role.EMPLOYEE;
-    });
-  }, [user?.role, leaveRequests, users]);
-
   const attendanceHistoryTotalPages = Math.max(1, Math.ceil(myAttendanceHistory.length / ATTENDANCE_HISTORY_PAGE_SIZE));
   const paginatedAttendanceHistory = useMemo(() => {
     const start = (attendanceHistoryPage - 1) * ATTENDANCE_HISTORY_PAGE_SIZE;
@@ -531,8 +517,6 @@ export const EmployeeDashboard: React.FC = () => {
     `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`
   );
   const [leaveShowAll, setLeaveShowAll] = useState(false);
-  const [approvalComments, setApprovalComments] = useState<Record<string, string>>({});
-
 
   const attendanceMap = useMemo(() => {
     const map = new Map();
@@ -2379,10 +2363,6 @@ export const EmployeeDashboard: React.FC = () => {
           )}
         </Card>
 
-        {user?.role === Role.HR && (
-          <AdminDashboard embeddedSection="monthly-performance" />
-        )}
-
         {/* Leave Listing */}
         <Card title={`My Leaves${leaveShowAll ? ' — All' : leaveFilterMonth ? ` — ${new Date(leaveFilterMonth + '-01').toLocaleString('en-US', { month: 'long', year: 'numeric' })}` : ''}`} className="w-full">
           {myLeaves.length === 0 ? (
@@ -2556,111 +2536,6 @@ export const EmployeeDashboard: React.FC = () => {
             </div>
           )}
         </Card>
-
-        {/* HR: 3 lists — Leave, Early Checkout, Overtime */}
-        {user?.role === Role.HR && (
-          <section className="w-full space-y-6">
-            <h2 className="text-xl font-bold text-gray-800">Pending Requests</h2>
-
-            {/* 1. Leave Requests */}
-            <div>
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-bold text-gray-800">1. Leave Requests</h3>
-                <span className="bg-blue-100 text-blue-800 text-xs font-semibold px-2.5 py-0.5 rounded-full">
-                  {pendingLeaveApprovals.length}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {pendingLeaveApprovals.length === 0 && (
-                  <p className="text-gray-400 text-sm italic col-span-2">No pending leave requests.</p>
-                )}
-                {pendingLeaveApprovals.map(req => (
-                  <Card key={req.id} className="border-l-4 border-l-yellow-400">
-                    <div className="flex flex-col gap-4">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <h4 className="font-bold text-gray-900">{req.userName}</h4>
-                          <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded mt-1 inline-block">
-                            {req.category}
-                          </span>
-                          <p className="text-sm text-gray-600 mt-2">
-                            {formatDate(req.startDate)} - {formatDate(req.endDate)}
-                          </p>
-                          <p className="text-sm text-gray-500 mt-2 italic">"{req.reason}"</p>
-                          {req.attachmentUrl && (
-                            <a
-                              href={req.attachmentUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-xs text-blue-500 underline mt-1 block"
-                            >
-                              View Attachment
-                            </a>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="border-t pt-3">
-                        <input
-                          type="text"
-                          className="w-full text-xs p-2 border rounded mb-2"
-                          placeholder="Optional HR Comment..."
-                          value={approvalComments[req.id] || ''}
-                          onChange={(e) =>
-                            setApprovalComments({ ...approvalComments, [req.id]: e.target.value })
-                          }
-                        />
-                        <div className="flex gap-2 justify-end">
-                          <Button
-                            size="sm"
-                            variant="success"
-                            onClick={() =>
-                              updateLeaveStatus(
-                                req.id,
-                                LeaveStatus.APPROVED,
-                                approvalComments[req.id] || 'Approved by HR'
-                              )
-                            }
-                          >
-                            <Check size={16} className="mr-1" /> Approve
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="danger"
-                            onClick={() =>
-                              updateLeaveStatus(
-                                req.id,
-                                LeaveStatus.REJECTED,
-                                approvalComments[req.id] || 'Rejected by HR'
-                              )
-                            }
-                          >
-                            <X size={16} className="mr-1" /> Reject
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  </Card>
-                ))}
-              </div>
-            </div>
-
-            {/* 2. Early Checkout Requests */}
-            <div>
-              <h3 className="text-lg font-bold text-gray-800 mb-4">2. Early Checkout Requests</h3>
-              <EarlyOvertimePanel variant="full" showTitle={false} />
-            </div>
-
-            {/* 3. Overtime Requests */}
-            <div>
-              <h3 className="text-lg font-bold text-gray-800 mb-1">3. Overtime Requests</h3>
-              <p className="text-sm text-gray-500 mb-4">
-                Extra time from completed working hours to checkout — Manage to allocate OT buckets
-              </p>
-              <OvertimeManagePanel variant="full" showTitle={false} />
-            </div>
-          </section>
-        )}
 
       {/* Early Checkout Request Modal */}
       {showCheckoutRequestModal && (

@@ -376,6 +376,19 @@ export const userAPI = {
     return apiRequest('/users');
   },
 
+  // Admin/HR only: returns every user regardless of active status (for the employee management screen)
+  getAllUsersForManagement: async () => {
+    return apiRequest('/users/manage/all');
+  },
+
+  // Admin/HR only: activate or deactivate an employee account
+  toggleUserStatus: async (id: string, isActive: boolean) => {
+    return apiRequest<{ message: string; user: any }>(`/users/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isActive }),
+    });
+  },
+
   getUsersByRole: async (role: string) => {
     return apiRequest(`/users/role/${role}`);
   },

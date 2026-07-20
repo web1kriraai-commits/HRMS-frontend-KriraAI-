@@ -99,7 +99,7 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 // Helper to transform API user to frontend User type
-const transformUser = (apiUser: any): User => ({
+export const transformUser = (apiUser: any): User => ({
   id: apiUser.id || apiUser._id,
   name: apiUser.name,
   username: apiUser.username,
