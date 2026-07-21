@@ -2000,7 +2000,7 @@ export const EmployeeDashboard: React.FC = () => {
                 <p className="text-[10px] text-slate-400 font-medium mb-3 leading-snug">
                   {bondPeriod.label}
                   <span className="block text-slate-300 mt-0.5">
-                    {formatDate(bondPeriod.startDate)} – {formatDate(bondPeriod.displayEndDate)}
+                    {convertToDDMMYYYY(bondPeriod.startDate)} – {convertToDDMMYYYY(bondPeriod.displayEndDate)}
                   </span>
                   <span className="block text-slate-300 mt-0.5">
                     Leave counted from {formatDate(BOND_LEAVE_EFFECTIVE_DATE)}

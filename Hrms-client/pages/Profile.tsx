@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { User, Mail, Building2, Calendar, CreditCard, UserCircle, Phone, FileText, Landmark, AtSign, BadgeCheck } from 'lucide-react';
-import { formatDate, calculateBondRemaining } from '../services/utils';
+import { formatDate, convertToDDMMYYYY, calculateBondRemaining } from '../services/utils';
 
 export const Profile: React.FC = () => {
     const { auth } = useApp();
@@ -354,15 +354,15 @@ export const Profile: React.FC = () => {
                                                     <div>
                                                         <p className="text-xs text-gray-500 font-semibold">Start Date</p>
                                                         <p className="text-sm font-medium text-gray-900 mt-0.5">
-                                                            {bond.startDate ? formatDate(bond.startDate) : 'N/A'}
+                                                            {bond.startDate ? convertToDDMMYYYY(bond.startDate) : 'N/A'}
                                                         </p>
                                                     </div>
                                                     <div>
                                                         <p className="text-xs text-gray-500 font-semibold">End Date</p>
                                                         <p className="text-sm font-medium text-gray-900 mt-0.5">
                                                             {index === allBonds.length - 1 && actualBondEndDate
-                                                                ? formatDate(actualBondEndDate)
-                                                                : bond.endDate ? formatDate(bond.endDate) : 'N/A'}
+                                                                ? convertToDDMMYYYY(actualBondEndDate)
+                                                                : bond.endDate ? convertToDDMMYYYY(bond.endDate) : 'N/A'}
                                                         </p>
                                                     </div>
                                                 </div>

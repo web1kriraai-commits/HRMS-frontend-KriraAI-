@@ -117,6 +117,7 @@ export interface Bond {
   type: 'Internship' | 'Job' | 'Other';
   periodMonths: number;
   startDate: string; // dd-mm-yyyy format
+  endDate?: string; // dd-mm-yyyy format
   order: number;
   salary?: number; // Salary for Job bond or Stipend for Internship bond
 }

@@ -27,6 +27,12 @@ import {
     Filter
 } from 'lucide-react';
 import { formatDate, getTodayStr, getEffectiveLeaveCategory, calculateAbsentDaysForMonth, calculateBondLeaveSummary } from '../services/utils';
+import {
+  getDailySalary,
+  getLopDeductionForDays,
+  getMonthlySalary,
+} from '../services/salarySlipCalc';
+import { resolveAnnualPackage } from '../services/salaryBreakdownUtils';
 import { userAPI } from '../services/api';
 import { appAlert } from '../services/appAlert';
 
@@ -246,6 +252,14 @@ export const LeaveManagement: React.FC = () => {
                     holidayDateSet
                 );
 
+                const annualPackage = resolveAnnualPackage(user.package);
+                const monthlySalary = getMonthlySalary(annualPackage);
+                const dailySalary = getDailySalary(annualPackage);
+                const unpaidLeaveDaysInMonth = monthApprovedLeaves
+                    .filter(l => l.effectiveCategory === LeaveCategory.UNPAID)
+                    .reduce((sum, l) => sum + l.daysCount, 0);
+                const estimatedLop = getLopDeductionForDays(annualPackage, unpaidLeaveDaysInMonth);
+
                 return {
                     id: user.id,
                     name: user.name,
@@ -253,6 +267,11 @@ export const LeaveManagement: React.FC = () => {
                     role: user.role,
                     department: user.department,
                     paidLeaveAccess: user.paidLeaveAccess !== false,
+                    annualPackage,
+                    monthlySalary,
+                    dailySalary,
+                    unpaidLeaveDaysInMonth,
+                    estimatedLop,
                     paidAllocated: bondSummary.allocated,
                     usedLeaveBond: bondSummary.totalTaken,
                     usedLeaveFromPool: bondSummary.used,
@@ -520,6 +539,7 @@ export const LeaveManagement: React.FC = () => {
                                 <th className="px-4 py-4 text-center">Used Leave</th>
                                 <th className="px-4 py-4 text-center">Remaining</th>
                                 <th className="px-4 py-4 text-center">Extra</th>
+                                <th className="px-4 py-4 text-center">LOP (Month)</th>
                                 <th className="px-6 py-4 text-center">History</th>
                             </tr>
                         </thead>
@@ -534,6 +554,9 @@ export const LeaveManagement: React.FC = () => {
                                             <div>
                                                 <p className="font-semibold text-slate-700 group-hover:text-blue-500 transition-colors">{stat.name}</p>
                                                 <p className="text-[10px] text-slate-400 font-medium uppercase tracking-wide">{stat.department}</p>
+                                                <p className="text-[9px] text-slate-400 mt-0.5">
+                                                    ₹{stat.monthlySalary.toLocaleString('en-IN', { maximumFractionDigits: 0 })}/mo · ₹{stat.dailySalary.toLocaleString('en-IN', { maximumFractionDigits: 0 })}/day LOP
+                                                </p>
                                             </div>
                                         </div>
                                     </td>
@@ -562,6 +585,16 @@ export const LeaveManagement: React.FC = () => {
                                         <span className={`font-bold px-3 py-1 rounded-lg text-xs border ${stat.extraLeave > 0 ? 'text-emerald-600 bg-emerald-50 border-emerald-100' : 'text-slate-400 bg-slate-50 border-slate-100'}`}>
                                             {formatDisplayDays(stat.extraLeave)}
                                         </span>
+                                    </td>
+                                    <td className="px-4 py-4 text-center">
+                                        <span className={`font-bold px-3 py-1 rounded-lg text-xs border ${stat.estimatedLop > 0 ? 'text-amber-700 bg-amber-50 border-amber-100' : 'text-slate-400 bg-slate-50 border-slate-100'}`}>
+                                            {stat.unpaidLeaveDaysInMonth > 0
+                                                ? `₹${stat.estimatedLop.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+                                                : '—'}
+                                        </span>
+                                        {stat.unpaidLeaveDaysInMonth > 0 && (
+                                            <p className="text-[9px] text-slate-400 mt-0.5">{formatDisplayDays(stat.unpaidLeaveDaysInMonth)} unpaid day(s)</p>
+                                        )}
                                     </td>
                                     <td className="px-6 py-4 text-center">
                                         <button

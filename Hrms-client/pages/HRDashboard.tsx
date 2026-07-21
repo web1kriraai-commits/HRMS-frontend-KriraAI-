@@ -4,8 +4,10 @@ import { useApp, transformUser } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { LeaveStatus, Role, LeaveCategory, User } from '../types';
-import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, resolveLatePenaltyStartTime, formatPenaltyDisplay, getLateCheckInPenaltyInfo } from '../services/utils';
-import { calculateSalaryBreakdown, SalaryBreakdownRow } from '../services/salaryBreakdownUtils';
+import { formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isPenaltyEffective, calculateLatenessPenaltySeconds, resolveLatePenaltyStartTime, formatPenaltyDisplay, getLateCheckInPenaltyInfo, bondsToFormEntries, buildBondsUpdatePayload, BondFormEntry } from '../services/utils';
+import { BondPeriodForm } from '../components/BondPeriodForm';
+import { calculateSalaryBreakdown, SalaryBreakdownRow, buildSalaryBreakdownDataFromPackage, resolveAnnualPackage } from '../services/salaryBreakdownUtils';
+import { DEFAULT_ANNUAL_PACKAGE, getMonthlySalary } from '../services/salarySlipCalc';
 import { Check, X, Calendar, Plus, ChevronDown, ChevronUp, AlertCircle, Clock, UserPlus, PenTool, Coffee, TrendingUp, TrendingDown, CheckCircle, RotateCcw, Timer, LogIn, LogOut, Users, FileText, BookOpen, HelpCircle, ArrowRight, Trash2, Key, Loader2, Landmark, UserCheck, UserX } from 'lucide-react';
 import { attendanceAPI, holidayAPI, userAPI } from '../services/api';
 import { EarlyOvertimePanel } from '../components/EarlyOvertimePanel';
@@ -43,8 +45,8 @@ export const HRDashboard: React.FC = () => {
     email: '',
     department: '',
     joiningDate: '',
-    package: '',
-    bonds: [] as Array<{ type: string; periodMonths: string; startDate: string; salary: string }>,
+    package: String(DEFAULT_ANNUAL_PACKAGE),
+    bonds: [] as Array<BondFormEntry>,
     aadhaarNumber: '',
     guardianName: '',
     mobileNumber: '',
@@ -122,6 +124,9 @@ export const HRDashboard: React.FC = () => {
   const [leaveFilterDate, setLeaveFilterDate] = useState('');
   const [leaveFilterMonth, setLeaveFilterMonth] = useState('');
   const [bondModalUser, setBondModalUser] = useState<User | null>(null);
+  const [bondEditForm, setBondEditForm] = useState<BondFormEntry[]>([]);
+  const [isBondEditMode, setIsBondEditMode] = useState(false);
+  const [isSavingBonds, setIsSavingBonds] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editUserForm, setEditUserForm] = useState({
     name: '',
@@ -130,7 +135,7 @@ export const HRDashboard: React.FC = () => {
     paidLeaveAllocation: '',
     joiningDate: '',
     package: '',
-    bonds: [] as Array<{ type: string; periodMonths: string; startDate: string; salary: string }>,
+    bonds: [] as Array<BondFormEntry>,
     aadhaarNumber: '',
     guardianName: '',
     mobileNumber: '',
@@ -144,30 +149,19 @@ export const HRDashboard: React.FC = () => {
   // Calculate salary breakdown when joining date or bonds change
   useEffect(() => {
     if (newUser.joiningDate && newUser.bonds.length > 0) {
+      const annualPackage = resolveAnnualPackage(parseFloat(newUser.package));
       const bonds = newUser.bonds
         .filter(b => b.periodMonths && parseInt(b.periodMonths) > 0)
         .map(b => ({
           type: b.type,
           periodMonths: parseInt(b.periodMonths),
-          salary: parseFloat(b.salary) || 0
+          salary: getMonthlySalary(annualPackage)
         }));
 
       if (bonds.length > 0) {
         const rows = calculateSalaryBreakdown(newUser.joiningDate, bonds);
         setSalaryBreakdownRows(rows);
-
-        // Preserve existing custom salary values, only initialize new months
-        setSalaryBreakdownData(prev => {
-          const updatedData: { [key: string]: number } = { ...prev };
-          rows.forEach((row) => {
-            const key = `${row.month}-${row.year}`;
-            // Only set default value if this month doesn't exist yet
-            if (updatedData[key] === undefined) {
-              updatedData[key] = row.salary;
-            }
-          });
-          return updatedData;
-        });
+        setSalaryBreakdownData(buildSalaryBreakdownDataFromPackage(rows, annualPackage));
       } else {
         setSalaryBreakdownRows([]);
         setSalaryBreakdownData({});
@@ -178,22 +172,28 @@ export const HRDashboard: React.FC = () => {
     }
   }, [newUser.joiningDate, newUser.bonds]);
 
+  useEffect(() => {
+    if (salaryBreakdownRows.length === 0) return;
+    const annualPackage = resolveAnnualPackage(parseFloat(newUser.package));
+    setSalaryBreakdownData(buildSalaryBreakdownDataFromPackage(salaryBreakdownRows, annualPackage));
+  }, [newUser.package]);
+
   // Calculate salary breakdown for edit form
   useEffect(() => {
     if (editUserForm.joiningDate && editUserForm.bonds.length > 0) {
+      const annualPackage = resolveAnnualPackage(parseFloat(editUserForm.package));
       const bonds = editUserForm.bonds
         .filter(b => b.periodMonths && parseInt(b.periodMonths) > 0)
         .map(b => ({
           type: b.type,
           periodMonths: parseInt(b.periodMonths),
-          salary: parseFloat(b.salary) || 0
+          salary: getMonthlySalary(annualPackage)
         }));
 
       if (bonds.length > 0) {
         const rows = calculateSalaryBreakdown(editUserForm.joiningDate, bonds);
         setEditSalaryBreakdownRows(rows);
 
-        // Load existing salary data from editingUser if available
         if (editingUser && editingUser.salaryBreakdown && editingUser.salaryBreakdown.length > 0) {
           const existingData: { [key: string]: number } = {};
           editingUser.salaryBreakdown.forEach((item: any) => {
@@ -201,18 +201,7 @@ export const HRDashboard: React.FC = () => {
           });
           setEditSalaryBreakdownData(existingData);
         } else {
-          // Preserve existing custom values, only initialize new months
-          setEditSalaryBreakdownData(prev => {
-            const updatedData: { [key: string]: number } = { ...prev };
-            rows.forEach((row) => {
-              const key = `${row.month}-${row.year}`;
-              // Only set default value if this month doesn't exist yet
-              if (updatedData[key] === undefined) {
-                updatedData[key] = row.salary;
-              }
-            });
-            return updatedData;
-          });
+          setEditSalaryBreakdownData(buildSalaryBreakdownDataFromPackage(rows, annualPackage));
         }
       } else {
         setEditSalaryBreakdownRows([]);
@@ -223,6 +212,22 @@ export const HRDashboard: React.FC = () => {
       setEditSalaryBreakdownData({});
     }
   }, [editUserForm.joiningDate, editUserForm.bonds, editingUser]);
+
+  useEffect(() => {
+    if (editSalaryBreakdownRows.length === 0) return;
+    const annualPackage = resolveAnnualPackage(parseFloat(editUserForm.package));
+    setEditSalaryBreakdownData(buildSalaryBreakdownDataFromPackage(editSalaryBreakdownRows, annualPackage));
+  }, [editUserForm.package]);
+
+  useEffect(() => {
+    if (bondModalUser) {
+      setBondEditForm(bondsToFormEntries(bondModalUser.bonds || [], bondModalUser.joiningDate));
+      setIsBondEditMode(false);
+    } else {
+      setBondEditForm([]);
+      setIsBondEditMode(false);
+    }
+  }, [bondModalUser]);
 
   // Helper to calculate break seconds from breaks array
   const getBreakSeconds = (breaks: any[]) => {
@@ -670,45 +675,8 @@ export const HRDashboard: React.FC = () => {
         role: Role.EMPLOYEE,
         isActive: true,
         joiningDate: newUser.joiningDate ? convertToDDMMYYYY(newUser.joiningDate) : undefined,
-        package: parseFloat(newUser.package) || 0,
-        bonds: newUser.bonds.filter(b => {
-          // Include bond if periodMonths is provided
-          return b.periodMonths && parseInt(b.periodMonths) > 0;
-        }).map((b, bondIndex, filteredBonds) => {
-          const periodMonths = parseInt(b.periodMonths) || 0;
-
-          // Calculate start date for each bond
-          let bondStartDate: string;
-          if (bondIndex === 0) {
-            // First bond starts from joining date
-            bondStartDate = newUser.joiningDate || '';
-          } else {
-            // Subsequent bonds start from previous bond's end date + 1 day
-            let previousEndDate: Date | null = null;
-            for (let i = 0; i < bondIndex; i++) {
-              const prevBond = filteredBonds[i];
-              const prevPeriodMonths = parseInt(prevBond.periodMonths) || 0;
-              const prevStart = i === 0
-                ? (parseDDMMYYYY(newUser.joiningDate) || new Date())
-                : (previousEndDate || new Date());
-              previousEndDate = new Date(prevStart);
-              previousEndDate.setMonth(previousEndDate.getMonth() + prevPeriodMonths);
-            }
-            if (previousEndDate) {
-              previousEndDate.setDate(previousEndDate.getDate() + 1); // Add 1 day
-              bondStartDate = convertToDDMMYYYY(previousEndDate.toISOString().split('T')[0]);
-            } else {
-              bondStartDate = newUser.joiningDate || '';
-            }
-          }
-
-          return {
-            type: b.type || 'Job',
-            periodMonths: periodMonths,
-            startDate: bondStartDate,
-            salary: b.salary ? parseFloat(b.salary) : 0
-          };
-        }),
+        package: resolveAnnualPackage(parseFloat(newUser.package)),
+        bonds: buildBondsUpdatePayload(newUser.bonds, newUser.joiningDate),
         salaryBreakdown: salaryBreakdownRows.map(row => ({
           month: row.month,
           year: row.year,
@@ -722,6 +690,7 @@ export const HRDashboard: React.FC = () => {
         email: '',
         department: '',
         joiningDate: '',
+        package: String(DEFAULT_ANNUAL_PACKAGE),
         bonds: [],
         aadhaarNumber: '',
         guardianName: '',
@@ -2436,13 +2405,7 @@ export const HRDashboard: React.FC = () => {
                                     bankIfscCode: user.bankIfscCode || '',
                                     joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
                                     package: (user.package || 0).toString(),
-                                    bonds: (user.bonds || []).map(b => ({
-                                      type: b.type,
-                                      periodMonths: b.periodMonths.toString(),
-                                      startDate: b.startDate,
-                                      endDate: '',
-                                      salary: (b.salary || 0).toString()
-                                    }))
+                                    bonds: bondsToFormEntries(user.bonds || [], user.joiningDate),
                                   });
                                 }}
                                 className="p-2 hover:bg-indigo-50 text-indigo-600 rounded-lg transition-colors group"
@@ -2581,13 +2544,7 @@ export const HRDashboard: React.FC = () => {
                                   bankIfscCode: user.bankIfscCode || '',
                                   joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
                                   package: (user.package || 0).toString(),
-                                  bonds: (user.bonds || []).map(b => ({
-                                    type: b.type,
-                                    periodMonths: b.periodMonths.toString(),
-                                    startDate: b.startDate,
-                                    endDate: '',
-                                    salary: (b.salary || 0).toString()
-                                  }))
+                                  bonds: bondsToFormEntries(user.bonds || [], user.joiningDate),
                                 });
                               }}
                               className="text-gray-400 hover:text-blue-500 transition-colors p-2 rounded-lg hover:bg-blue-50"
@@ -2761,17 +2718,40 @@ export const HRDashboard: React.FC = () => {
       {/* Bond Details Modal */}
       {bondModalUser && (() => {
         const bondInfo = calculateBondRemaining(bondModalUser.bonds, bondModalUser.joiningDate);
-        if (!bondInfo.currentBond && bondInfo.totalRemaining.display === '-') {
-          return null;
-        }
 
-        // Calculate total duration in months
         const totalMonths = bondInfo.allBonds.map(b => b.periodMonths || 0).reduce((sum, current) => sum + current, 0);
         const totalYears = Math.floor(totalMonths / 12);
         const remainingMonths = totalMonths % 12;
         const totalDurationDisplay = totalYears > 0
           ? `${totalYears} year${totalYears > 1 ? 's' : ''} ${remainingMonths > 0 ? `${remainingMonths} month${remainingMonths > 1 ? 's' : ''}` : ''}`
           : `${totalMonths} month${totalMonths > 1 ? 's' : ''}`;
+
+        const handleSaveBonds = async () => {
+          const payload = buildBondsUpdatePayload(
+            bondEditForm,
+            bondModalUser.joiningDate ? convertToYYYYMMDD(bondModalUser.joiningDate) : undefined
+          );
+          if (payload.length === 0) {
+            appAlert('Please add at least one bond with valid start and end dates.');
+            return;
+          }
+          setIsSavingBonds(true);
+          try {
+            await userAPI.updateUser(bondModalUser.id, { bonds: payload });
+            appAlert('Bond details updated successfully!');
+            setIsBondEditMode(false);
+            await refreshData();
+            const updatedUsers = await userAPI.getAllUsersForManagement();
+            const updatedUser = updatedUsers.find((u: any) => u._id === bondModalUser.id || u.id === bondModalUser.id);
+            if (updatedUser) {
+              setBondModalUser(transformUser(updatedUser));
+            }
+          } catch (error: any) {
+            appAlert(error.message || 'Failed to update bond details');
+          } finally {
+            setIsSavingBonds(false);
+          }
+        };
 
         return (
           <>
@@ -2795,113 +2775,152 @@ export const HRDashboard: React.FC = () => {
                 </div>
 
                 <div className="space-y-6">
-                  {/* Joining Date */}
                   {bondModalUser.joiningDate && (
                     <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
                       <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-1">Joining Date</p>
-                      <p className="text-lg font-bold text-blue-900">{bondModalUser.joiningDate}</p>
+                      <p className="text-lg font-bold text-blue-900">{convertToDDMMYYYY(bondModalUser.joiningDate)}</p>
                     </div>
                   )}
 
-                  {/* Total Duration */}
-                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                    <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Total Bond Duration</p>
-                    <p className="text-xl font-bold text-gray-900">{totalDurationDisplay}</p>
-                  </div>
-
-                  {/* All Bonds */}
-                  {bondInfo.allBonds.length > 0 && (
-                    <div>
-                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">
-                        All Bonds ({bondInfo.allBonds.length})
-                      </p>
-                      <div className="space-y-3">
-                        {bondInfo.allBonds.map((bond, index) => (
-                          <div key={index} className="bg-white border-2 border-gray-200 rounded-lg p-4">
-                            <div className="flex items-start justify-between mb-2">
-                              <div>
-                                <p className="font-bold text-gray-900 text-lg">{bond.type}</p>
-                                <p className="text-sm text-gray-600 mt-1">
-                                  Period: {bond.periodMonths} month{bond.periodMonths > 1 ? 's' : ''}
-                                </p>
-                              </div>
-                              <span className={`px-2 py-1 rounded text-xs font-semibold ${bond.remaining.isExpired
-                                ? 'bg-red-100 text-red-700'
-                                : bond.remaining.isActive
-                                  ? 'bg-green-100 text-green-700'
-                                  : 'bg-gray-100 text-gray-700'
-                                }`}>
-                                {bond.remaining.isExpired ? 'Expired' : bond.remaining.isActive ? 'Active' : 'Future'}
-                              </span>
-                            </div>
-                            <div className="grid grid-cols-2 gap-3 mt-3 text-sm">
-                              <div>
-                                <p className="text-xs text-gray-500">Start Date</p>
-                                <p className="font-semibold text-gray-800">{bond.startDate || bondModalUser.joiningDate || '-'}</p>
-                              </div>
-                              <div>
-                                <p className="text-xs text-gray-500">End Date</p>
-                                <p className="font-semibold text-gray-800">
-                                  {bond.endDate ? convertToDDMMYYYY(bond.endDate.toISOString().split('T')[0]) : '-'}
-                                </p>
-                              </div>
-                            </div>
-                            {bond.salary && bond.salary > 0 && (
-                              <div className="mt-3 pt-3 border-t border-gray-200">
-                                <p className="text-xs text-gray-500">{bond.type === 'Internship' ? 'Stipend' : 'Salary'}</p>
-                                <p className="font-semibold text-green-600">₹{bond.salary.toLocaleString('en-IN')}</p>
-                              </div>
-                            )}
-                            {bond.remaining.isActive && (
-                              <div className="mt-3 pt-3 border-t border-gray-200">
-                                <p className="text-xs text-gray-500">Remaining</p>
-                                <p className="font-semibold text-blue-600">{bond.remaining.display}</p>
-                              </div>
-                            )}
-                          </div>
-                        ))}
+                  {!isBondEditMode && bondInfo.allBonds.length > 0 && (
+                    <>
+                      <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                        <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Total Bond Duration</p>
+                        <p className="text-xl font-bold text-gray-900">{totalDurationDisplay}</p>
                       </div>
-                    </div>
+
+                      <div>
+                        <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-3">
+                          All Bonds ({bondInfo.allBonds.length})
+                        </p>
+                        <div className="space-y-3">
+                          {bondInfo.allBonds.map((bond, index) => (
+                            <div key={index} className="bg-white border-2 border-gray-200 rounded-lg p-4">
+                              <div className="flex items-start justify-between mb-2">
+                                <div>
+                                  <p className="font-bold text-gray-900 text-lg">{bond.type}</p>
+                                  <p className="text-sm text-gray-600 mt-1">
+                                    Period: {bond.periodMonths} month{bond.periodMonths > 1 ? 's' : ''}
+                                  </p>
+                                </div>
+                                <span className={`px-2 py-1 rounded text-xs font-semibold ${bond.remaining.isExpired
+                                  ? 'bg-red-100 text-red-700'
+                                  : bond.remaining.isActive
+                                    ? 'bg-green-100 text-green-700'
+                                    : 'bg-gray-100 text-gray-700'
+                                  }`}>
+                                  {bond.remaining.isExpired ? 'Expired' : bond.remaining.isActive ? 'Active' : 'Future'}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-3 mt-3 text-sm">
+                                <div>
+                                  <p className="text-xs text-gray-500">Start Date</p>
+                                  <p className="font-semibold text-gray-800">
+                                    {convertToDDMMYYYY(bond.startDate || bondModalUser.joiningDate || '-')}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-gray-500">End Date</p>
+                                  <p className="font-semibold text-gray-800">
+                                    {bond.endDate ? convertToDDMMYYYY(bond.endDate) : '-'}
+                                  </p>
+                                </div>
+                              </div>
+                              {bond.salary && bond.salary > 0 && (
+                                <div className="mt-3 pt-3 border-t border-gray-200">
+                                  <p className="text-xs text-gray-500">{bond.type === 'Internship' ? 'Stipend' : 'Salary'}</p>
+                                  <p className="font-semibold text-green-600">₹{bond.salary.toLocaleString('en-IN')}</p>
+                                </div>
+                              )}
+                              {bond.remaining.isActive && (
+                                <div className="mt-3 pt-3 border-t border-gray-200">
+                                  <p className="text-xs text-gray-500">Remaining</p>
+                                  <p className="font-semibold text-blue-600">{bond.remaining.display}</p>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {bondInfo.firstCompletionDate && (
+                        <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
+                          <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-1">
+                            {bondInfo.firstCompletionBondType} Bond Completion Date
+                          </p>
+                          <p className="text-xl font-bold text-purple-900">
+                            {convertToDDMMYYYY(bondInfo.firstCompletionDate)}
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
+                        <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">
+                          {bondInfo.currentBond ? `${bondInfo.currentBond.type} Bond Remaining` : 'Total Remaining'}
+                        </p>
+                        <p className="text-xl font-bold text-emerald-900">{bondInfo.currentBondRemaining?.display || bondInfo.totalRemaining.display}</p>
+                      </div>
+
+                      {bondInfo.currentSalary > 0 && (
+                        <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+                          <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-1">
+                            Current {bondInfo.currentBond?.type === 'Internship' ? 'Stipend' : 'Salary'}
+                          </p>
+                          <p className="text-xl font-bold text-green-900">₹{bondInfo.currentSalary.toLocaleString('en-IN')}</p>
+                        </div>
+                      )}
+                    </>
                   )}
 
-                  {/* First Completion Date */}
-                  {bondInfo.firstCompletionDate && (
-                    <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
-                      <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-1">
-                        {bondInfo.firstCompletionBondType} Bond Completion Date
-                      </p>
-                      <p className="text-xl font-bold text-purple-900">
-                        {convertToDDMMYYYY(bondInfo.firstCompletionDate.toISOString().split('T')[0])}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Current Bond Remaining */}
-                  <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
-                    <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">
-                      {bondInfo.currentBond ? `${bondInfo.currentBond.type} Bond Remaining` : 'Total Remaining'}
-                    </p>
-                    <p className="text-xl font-bold text-emerald-900">{bondInfo.currentBondRemaining?.display || bondInfo.totalRemaining.display}</p>
-                  </div>
-
-                  {/* Current Salary/Stipend */}
-                  {bondInfo.currentSalary > 0 && (
-                    <div className="bg-green-50 rounded-lg p-4 border border-green-200">
-                      <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-1">
-                        Current {bondInfo.currentBond?.type === 'Internship' ? 'Stipend' : 'Salary'}
-                      </p>
-                      <p className="text-xl font-bold text-green-900">₹{bondInfo.currentSalary.toLocaleString('en-IN')}</p>
+                  {isBondEditMode && (
+                    <div className="border-t border-gray-200 pt-4">
+                      <BondPeriodForm
+                        bonds={bondEditForm}
+                        onChange={setBondEditForm}
+                        joiningDate={bondModalUser.joiningDate ? convertToYYYYMMDD(bondModalUser.joiningDate) : undefined}
+                        compact
+                      />
                     </div>
                   )}
                 </div>
 
-                <div className="mt-6 flex justify-end">
-                  <Button
-                    variant="primary"
-                    onClick={() => setBondModalUser(null)}
-                  >
-                    Close
-                  </Button>
+                <div className="mt-6 flex justify-end gap-2">
+                  {isBondEditMode ? (
+                    <>
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          setIsBondEditMode(false);
+                          setBondEditForm(bondsToFormEntries(bondModalUser.bonds || [], bondModalUser.joiningDate));
+                        }}
+                        disabled={isSavingBonds}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="primary"
+                        onClick={handleSaveBonds}
+                        disabled={isSavingBonds}
+                      >
+                        {isSavingBonds ? 'Saving...' : 'Save Bonds'}
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        variant="secondary"
+                        onClick={() => setIsBondEditMode(true)}
+                      >
+                        Edit Bonds
+                      </Button>
+                      <Button
+                        variant="primary"
+                        onClick={() => setBondModalUser(null)}
+                      >
+                        Close
+                      </Button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -2967,44 +2986,10 @@ export const HRDashboard: React.FC = () => {
                     updates.joiningDate = convertToDDMMYYYY(editUserForm.joiningDate);
                   }
 
-                  updates.package = parseFloat(editUserForm.package) || 0;
+                  updates.package = resolveAnnualPackage(parseFloat(editUserForm.package));
 
                   if (editUserForm.bonds.length > 0) {
-                    updates.bonds = editUserForm.bonds.filter(b => {
-                      return b.periodMonths && parseInt(b.periodMonths) > 0;
-                    }).map((b, bondIndex, filteredBonds) => {
-                      const periodMonths = parseInt(b.periodMonths) || 0;
-
-                      // Calculate start date for each bond
-                      let bondStartDate: string;
-                      if (bondIndex === 0) {
-                        bondStartDate = editUserForm.joiningDate || '';
-                      } else {
-                        let previousEndDate: Date | null = null;
-                        for (let i = 0; i < bondIndex; i++) {
-                          const prevBond = filteredBonds[i];
-                          const prevPeriodMonths = parseInt(prevBond.periodMonths) || 0;
-                          const prevStart = i === 0
-                            ? (parseDDMMYYYY(editUserForm.joiningDate) || new Date())
-                            : (previousEndDate || new Date());
-                          previousEndDate = new Date(prevStart);
-                          previousEndDate.setMonth(previousEndDate.getMonth() + prevPeriodMonths);
-                        }
-                        if (previousEndDate) {
-                          previousEndDate.setDate(previousEndDate.getDate() + 1);
-                          bondStartDate = convertToDDMMYYYY(previousEndDate.toISOString().split('T')[0]);
-                        } else {
-                          bondStartDate = editUserForm.joiningDate || '';
-                        }
-                      }
-
-                      return {
-                        type: b.type || 'Job',
-                        periodMonths: periodMonths,
-                        startDate: bondStartDate,
-                        salary: b.salary ? parseFloat(b.salary) : 0
-                      };
-                    });
+                    updates.bonds = buildBondsUpdatePayload(editUserForm.bonds, editUserForm.joiningDate);
                   }
 
                   await userAPI.updateUser(editingUser.id, updates);
@@ -3162,178 +3147,12 @@ export const HRDashboard: React.FC = () => {
                     </div>
                   </div>
                 </div>
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-xs font-bold text-gray-600 uppercase">Bond Periods</label>
-                    <button
-                      type="button"
-                      onClick={() => setEditUserForm({
-                        ...editUserForm,
-                        bonds: [...editUserForm.bonds, { type: 'Internship', periodMonths: '', startDate: '', salary: '' }]
-                      })}
-                      className="text-xs text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
-                    >
-                      <Plus size={14} /> Add Bond
-                    </button>
-                  </div>
-                  {editUserForm.bonds.length === 0 ? (
-                    <p className="text-xs text-gray-400 italic">No bonds added. Click "Add Bond" to add bond periods.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {editUserForm.bonds.map((bond, index) => (
-                        <div key={index} className="p-3 border border-gray-200 rounded-lg bg-gray-50 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-gray-700">Bond {index + 1}</span>
-                            <button
-                              type="button"
-                              onClick={() => setEditUserForm({
-                                ...editUserForm,
-                                bonds: editUserForm.bonds.filter((_, i) => i !== index)
-                              })}
-                              className="text-red-500 hover:text-red-700"
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <label className="block text-xs text-gray-600 mb-1">Type</label>
-                              <select
-                                className="w-full p-2 border border-gray-200 rounded text-xs"
-                                value={bond.type}
-                                onChange={e => {
-                                  const updated = [...editUserForm.bonds];
-                                  updated[index].type = e.target.value;
-                                  setEditUserForm({ ...editUserForm, bonds: updated });
-                                }}
-                              >
-                                <option value="Internship">Internship</option>
-                                <option value="Job">Job</option>
-                                <option value="Other">Other</option>
-                              </select>
-                            </div>
-                            <div>
-                              <label className="block text-xs text-gray-600 mb-1">Period (Months)</label>
-                              <input
-                                type="number"
-                                min="1"
-                                className="w-full p-2 border border-gray-200 rounded text-xs"
-                                value={bond.periodMonths}
-                                onChange={e => {
-                                  const updated = [...editUserForm.bonds];
-                                  updated[index].periodMonths = e.target.value;
-                                  setEditUserForm({ ...editUserForm, bonds: updated });
-                                }}
-                                placeholder="e.g., 6"
-                              />
-                            </div>
-                          </div>
-                          {editUserForm.joiningDate && (() => {
-                            let bondStartDate: Date;
-                            if (index === 0) {
-                              bondStartDate = parseDDMMYYYY(editUserForm.joiningDate) || new Date(editUserForm.joiningDate);
-                            } else {
-                              let previousEndDate: Date | null = null;
-                              for (let i = 0; i < index; i++) {
-                                const prevBond = editUserForm.bonds[i];
-                                if (prevBond.periodMonths && parseInt(prevBond.periodMonths) > 0) {
-                                  const prevStart = i === 0
-                                    ? (parseDDMMYYYY(editUserForm.joiningDate) || new Date(editUserForm.joiningDate))
-                                    : previousEndDate || new Date(editUserForm.joiningDate);
-                                  previousEndDate = new Date(prevStart);
-                                  previousEndDate.setMonth(previousEndDate.getMonth() + parseInt(prevBond.periodMonths));
-                                }
-                              }
-                              if (previousEndDate) {
-                                bondStartDate = new Date(previousEndDate);
-                                bondStartDate.setDate(bondStartDate.getDate() + 1);
-                              } else {
-                                bondStartDate = parseDDMMYYYY(editUserForm.joiningDate) || new Date(editUserForm.joiningDate);
-                              }
-                            }
-
-                            return (
-                              <div>
-                                <p className="text-xs text-gray-500 mb-1">
-                                  Start Date: {convertToDDMMYYYY(bondStartDate.toISOString().split('T')[0])}
-                                  {index === 0 && ' (Joining Date)'}
-                                  {index > 0 && ' (Previous bond end + 1 day)'}
-                                </p>
-                                {bond.periodMonths && parseInt(bond.periodMonths) > 0 && (() => {
-                                  const periodMonths = parseInt(bond.periodMonths);
-                                  const endDate = new Date(bondStartDate);
-                                  endDate.setMonth(endDate.getMonth() + periodMonths);
-
-                                  const today = new Date();
-                                  today.setHours(0, 0, 0, 0);
-                                  endDate.setHours(0, 0, 0, 0);
-
-                                  if (endDate >= today) {
-                                    const diffTime = endDate.getTime() - today.getTime();
-                                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                                    const months = Math.floor(diffDays / 30);
-                                    const days = diffDays % 30;
-
-                                    let display = '';
-                                    if (months > 0 && days > 0) {
-                                      display = `${months} month${months > 1 ? 's' : ''} ${days} day${days > 1 ? 's' : ''}`;
-                                    } else if (months > 0) {
-                                      display = `${months} month${months > 1 ? 's' : ''}`;
-                                    } else {
-                                      display = `${days} day${days > 1 ? 's' : ''}`;
-                                    }
-
-                                    return (
-                                      <div className="mt-2">
-                                        <p className="text-xs text-gray-500 mb-1">End Date: {convertToDDMMYYYY(endDate.toISOString().split('T')[0])}</p>
-                                        <p className="text-xs text-blue-600 font-semibold">
-                                          Remaining: {display}
-                                        </p>
-                                      </div>
-                                    );
-                                  } else {
-                                    const diffTime = today.getTime() - endDate.getTime();
-                                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                                    return (
-                                      <div className="mt-2">
-                                        <p className="text-xs text-gray-500 mb-1">End Date: {convertToDDMMYYYY(endDate.toISOString().split('T')[0])}</p>
-                                        <p className="text-xs text-red-600 font-semibold">
-                                          Expired {diffDays} day{diffDays > 1 ? 's' : ''} ago
-                                        </p>
-                                      </div>
-                                    );
-                                  }
-                                })()}
-                              </div>
-                            );
-                          })()}
-                          {!editUserForm.joiningDate && (
-                            <p className="text-xs text-gray-500 mb-1">Start Date: Set joining date first</p>
-                          )}
-                          <div>
-                            <label className="block text-xs text-gray-600 mb-1">
-                              {bond.type === 'Internship' ? 'Stipend' : bond.type === 'Job' ? 'Salary' : 'Amount'} (₹)
-                            </label>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              className="w-full p-2 border border-gray-200 rounded text-xs"
-                              value={bond.salary || ''}
-                              onChange={e => {
-                                const updated = [...editUserForm.bonds];
-                                updated[index].salary = e.target.value;
-                                setEditUserForm({ ...editUserForm, bonds: updated });
-                              }}
-                              placeholder={bond.type === 'Internship' ? 'e.g., 10000' : 'e.g., 25000'}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <p className="text-xs text-gray-400 mt-2">Add multiple bonds (e.g., 6 months internship + 1 year job)</p>
-                </div>
+                <BondPeriodForm
+                  bonds={editUserForm.bonds}
+                  onChange={bonds => setEditUserForm({ ...editUserForm, bonds })}
+                  joiningDate={editUserForm.joiningDate}
+                  compact
+                />
                 <div className="flex gap-3 justify-end mt-6">
                   <Button
                     type="button"
@@ -3559,151 +3378,18 @@ export const HRDashboard: React.FC = () => {
 
                   {/* Section 2: Bond Configuration */}
                   <div className="bg-gray-50 rounded-2xl p-5 border border-gray-100">
-                    <div className="flex items-center justify-between mb-4">
+                    <div className="mb-4">
                       <h4 className="text-sm font-bold text-gray-900 uppercase tracking-wide flex items-center gap-2">
                         <FileText size={16} className="text-indigo-500" /> Bond Configuration
                       </h4>
-                      <button
-                        type="button"
-                        onClick={() => setNewUser({
-                          ...newUser,
-                          bonds: [...newUser.bonds, { type: 'Internship', periodMonths: '', startDate: '', salary: '' }]
-                        })}
-                        className="text-xs font-semibold bg-white border border-gray-200 text-indigo-600 hover:bg-indigo-50 hover:border-indigo-200 px-3 py-1.5 rounded-lg transition-all flex items-center gap-1 shadow-sm"
-                      >
-                        <Plus size={14} /> Add Bond Period
-                      </button>
+                      <p className="text-xs text-gray-500 mt-1">Define employment bonds with start/end dates</p>
                     </div>
 
-                    {newUser.bonds.length === 0 ? (
-                      <div className="text-center py-8 border-2 border-dashed border-gray-200 rounded-xl bg-white">
-                        <p className="text-sm text-gray-500">No bonds added yet.</p>
-                        <p className="text-xs text-gray-400 mt-1">Click "Add Bond Period" to configure employment terms.</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {newUser.bonds.map((bond, index) => (
-                          <div key={index} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm relative group animate-in slide-in-from-top-2 duration-200">
-                            <div className="flex items-center justify-between mb-3">
-                              <span className="text-xs font-bold text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                                Period {index + 1}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => setNewUser({
-                                  ...newUser,
-                                  bonds: newUser.bonds.filter((_, i) => i !== index)
-                                })}
-                                className="text-gray-400 hover:text-red-500 transition-colors bg-gray-50 p-1.5 rounded-lg opacity-0 group-hover:opacity-100"
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                              <div>
-                                <label className="block text-xs font-semibold text-gray-600 mb-1">Employment Type</label>
-                                <div className="relative">
-                                  <select
-                                    className="w-full p-2 border border-gray-200 rounded-lg text-sm appearance-none bg-gray-50 focus:bg-white transition-colors"
-                                    value={bond.type}
-                                    onChange={e => {
-                                      const updated = [...newUser.bonds];
-                                      updated[index].type = e.target.value;
-                                      setNewUser({ ...newUser, bonds: updated });
-                                    }}
-                                  >
-                                    <option value="Internship">Internship</option>
-                                    <option value="Job">Full Time Job</option>
-                                    <option value="Other">Other</option>
-                                  </select>
-                                  <ChevronDown size={14} className="absolute right-3 top-3 text-gray-400 pointer-events-none" />
-                                </div>
-                              </div>
-                              <div>
-                                <label className="block text-xs font-semibold text-gray-600 mb-1">Duration (Months)</label>
-                                <input
-                                  type="number"
-                                  min="1"
-                                  className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:bg-white transition-colors"
-                                  value={bond.periodMonths}
-                                  onChange={e => {
-                                    const updated = [...newUser.bonds];
-                                    updated[index].periodMonths = e.target.value;
-                                    setNewUser({ ...newUser, bonds: updated });
-                                  }}
-                                  placeholder="e.g. 6"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-xs font-semibold text-gray-600 mb-1">
-                                  {bond.type === 'Internship' ? 'Stipend' : 'Salary'} (₹/month)
-                                </label>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  className="w-full p-2 border border-gray-200 rounded-lg text-sm bg-gray-50 focus:bg-white transition-colors"
-                                  value={bond.salary || ''}
-                                  onChange={e => {
-                                    const updated = [...newUser.bonds];
-                                    updated[index].salary = e.target.value;
-                                    setNewUser({ ...newUser, bonds: updated });
-                                  }}
-                                  placeholder="e.g. 15000"
-                                />
-                              </div>
-                            </div>
-
-                            {/* Auto-calculated Dates */}
-                            {newUser.joiningDate && (() => {
-                              // Calculate start date for this bond
-                              let bondStartDate: Date;
-                              if (index === 0) {
-                                // First bond starts from joining date
-                                bondStartDate = parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate);
-                              } else {
-                                // Subsequent bonds start from previous bond's end date + 1 day
-                                let previousEndDate: Date | null = null;
-                                for (let i = 0; i < index; i++) {
-                                  const prevBond = newUser.bonds[i];
-                                  if (prevBond.periodMonths && parseInt(prevBond.periodMonths) > 0) {
-                                    const prevStart = i === 0
-                                      ? (parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate))
-                                      : previousEndDate || new Date(newUser.joiningDate);
-                                    previousEndDate = new Date(prevStart);
-                                    previousEndDate.setMonth(previousEndDate.getMonth() + parseInt(prevBond.periodMonths));
-                                  }
-                                }
-                                if (previousEndDate) {
-                                  bondStartDate = new Date(previousEndDate);
-                                  bondStartDate.setDate(bondStartDate.getDate() + 1); // Add 1 day
-                                } else {
-                                  bondStartDate = parseDDMMYYYY(newUser.joiningDate) || new Date(newUser.joiningDate);
-                                }
-                              }
-
-                              return (
-                                <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500 bg-gray-50/50 -mx-4 -mb-4 px-4 py-2 rounded-b-xl">
-                                  <span>Starts: <span className="font-semibold text-gray-700">{convertToDDMMYYYY(bondStartDate.toISOString().split('T')[0])}</span></span>
-                                  {bond.periodMonths && parseInt(bond.periodMonths) > 0 && (() => {
-                                    const periodMonths = parseInt(bond.periodMonths);
-                                    const endDate = new Date(bondStartDate);
-                                    endDate.setMonth(endDate.getMonth() + periodMonths);
-                                    const today = new Date();
-                                    today.setHours(0, 0, 0, 0);
-                                    endDate.setHours(0, 0, 0, 0);
-
-                                    return (
-                                      <span>Ends: <span className="font-semibold text-gray-700">{convertToDDMMYYYY(endDate.toISOString().split('T')[0])}</span></span>
-                                    );
-                                  })()}
-                                </div>
-                              );
-                            })()}
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                    <BondPeriodForm
+                      bonds={newUser.bonds}
+                      onChange={bonds => setNewUser({ ...newUser, bonds })}
+                      joiningDate={newUser.joiningDate}
+                    />
                   </div>
 
                   {/* Section 3: Salary Breakdown */}

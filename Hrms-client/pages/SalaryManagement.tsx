@@ -1,6 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
 import { Download, IndianRupee, Save } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
@@ -12,12 +10,18 @@ import { appAlert } from '../services/appAlert';
 import { userAPI } from '../services/api';
 import {
   SalarySlipFormData,
+  SalaryCompanyKey,
   MONTH_NAMES,
+  SALARY_COMPANY_OPTIONS,
+  applyCompanyToForm,
   createDefaultFormData,
   formatPayDate,
   formDataToSlipPayload,
+  getSalaryPdfFilename,
+  resolveCompanyKeyFromForm,
 } from '../services/salarySlipDefaults';
-import { buildAutoSalarySlipForm, getMonthlySalary } from '../services/salarySlipCalc';
+import { buildAutoSalarySlipForm, getBondSalaryContextForMonth } from '../services/salarySlipCalc';
+import { downloadSalarySlipPdf } from '../services/salarySlipPdf';
 
 const textFields: Array<{ key: keyof SalarySlipFormData; label: string; span?: boolean }> = [
   { key: 'companyName', label: 'Company Name' },
@@ -33,12 +37,10 @@ const textFields: Array<{ key: keyof SalarySlipFormData; label: string; span?: b
 
 const earningFields: Array<{ key: keyof SalarySlipFormData; ytdKey: keyof SalarySlipFormData; label: string }> = [
   { key: 'basic', ytdKey: 'ytdBasic', label: 'Basic (Package)' },
-  { key: 'fixedAllowance', ytdKey: 'ytdFixedAllowance', label: 'Fixed Allowance' },
 ];
 
 const deductionFields: Array<{ key: keyof SalarySlipFormData; ytdKey: keyof SalarySlipFormData; label: string }> = [
   { key: 'lopDeduction', ytdKey: 'ytdLopDeduction', label: 'LOP Deduction' },
-  { key: 'pTax', ytdKey: 'ytdPTax', label: 'Professional Tax' },
   { key: 'tds', ytdKey: 'ytdTds', label: 'TDS' },
 ];
 
@@ -99,6 +101,7 @@ export const SalaryManagement: React.FC = () => {
         setForm({
           ...autoForm,
           doj: employee.joiningDate ? formatDate(employee.joiningDate) : autoForm.doj,
+          companyKey: resolveCompanyKeyFromForm(autoForm),
         });
       } catch {
         const autoForm = buildAutoSalarySlipForm({
@@ -111,6 +114,7 @@ export const SalaryManagement: React.FC = () => {
         setForm({
           ...autoForm,
           doj: employee.joiningDate ? formatDate(employee.joiningDate) : autoForm.doj,
+          companyKey: resolveCompanyKeyFromForm(autoForm),
         });
       } finally {
         setIsLoading(false);
@@ -126,11 +130,18 @@ export const SalaryManagement: React.FC = () => {
         month: prev.month,
         year: prev.year,
         payDate: formatPayDate(prev.month, prev.year),
+        companyKey: prev.companyKey,
+        companyName: prev.companyName,
+        companyAddress: prev.companyAddress,
       }));
       return;
     }
 
     loadSlipForPeriod(employeeId, form.month, form.year);
+  };
+
+  const handleCompanyChange = (companyKey: SalaryCompanyKey) => {
+    setForm((prev) => applyCompanyToForm(prev, companyKey));
   };
 
   useEffect(() => {
@@ -171,26 +182,7 @@ export const SalaryManagement: React.FC = () => {
 
     setIsDownloading(true);
     try {
-      const canvas = await html2canvas(previewRef.current, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: '#ffffff',
-      });
-
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      const imgWidth = pageWidth - 20;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      const x = 10;
-      const y = imgHeight > pageHeight - 20 ? 10 : (pageHeight - imgHeight) / 2;
-
-      pdf.addImage(imgData, 'PNG', x, y, imgWidth, Math.min(imgHeight, pageHeight - 20));
-
-      const monthLabel = MONTH_NAMES[form.month - 1] || form.month;
-      const safeName = form.empName.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, ' ');
-      pdf.save(`SALARYSLIP KriraAI ${safeName} ${monthLabel} ${form.year}.pdf`);
+      await downloadSalarySlipPdf(previewRef.current, getSalaryPdfFilename(form));
     } catch (error) {
       console.error('Failed to generate salary slip PDF:', error);
       appAlert('Failed to generate PDF. Please try again.');
@@ -258,13 +250,27 @@ export const SalaryManagement: React.FC = () => {
             Salary Management
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Salary is calculated from annual package. Monthly = Package / 12. LOP deduction = (Monthly / 30.42) x unpaid leave days.
+            Salary is calculated from the employee&apos;s active bond (stipend/salary) for the selected month. LOP deduction uses the bond monthly amount.
           </p>
         </div>
       </div>
 
       <Card title="Salary Slip Selection" bodyClassName="p-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div>
+            <label className={labelClass}>Company</label>
+            <select
+              className={inputClass}
+              value={resolveCompanyKeyFromForm(form)}
+              onChange={(event) => handleCompanyChange(event.target.value as SalaryCompanyKey)}
+            >
+              {SALARY_COMPANY_OPTIONS.map(({ key, label }) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
           <div>
             <label className={labelClass}>Select Employee</label>
             <select
@@ -282,16 +288,35 @@ export const SalaryManagement: React.FC = () => {
           </div>
           {payPeriodSelectors}
         </div>
-        {selectedEmployee && (
+        {selectedEmployee && (() => {
+          const bondContext = getBondSalaryContextForMonth(selectedEmployee, form.month, form.year);
+          return (
           <p className="text-xs text-gray-500 mt-3">
-            Annual package: <strong>₹{(selectedEmployee.package || 0).toLocaleString('en-IN')}</strong>
-            {' · '}
-            Monthly salary: <strong>₹{getMonthlySalary(selectedEmployee.package || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</strong>
-            {!selectedEmployee.package && (
-              <span className="text-amber-600 ml-2">Set annual package in employee profile (e.g. 372000).</span>
+            {bondContext.isWithinBondPeriod ? (
+              <>
+                {bondContext.bondLabel && (
+                  <>
+                    Active bond: <strong>{bondContext.bondLabel}</strong>
+                    {' · '}
+                  </>
+                )}
+                Monthly {bondContext.bondType === 'Internship' ? 'stipend' : 'salary'}:{' '}
+                <strong>₹{bondContext.monthlyAmount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</strong>
+                {bondContext.isPartialMonth && (
+                  <span className="text-orange-600 font-semibold"> · Partial month</span>
+                )}
+                {' · '}
+                LOP per day:{' '}
+                <strong>₹{(bondContext.monthlyAmount / 30.42).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</strong>
+              </>
+            ) : (
+              <span className="text-orange-600 font-semibold">
+                Selected month is outside this employee&apos;s bond period.
+              </span>
             )}
           </p>
-        )}
+          );
+        })()}
       </Card>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">

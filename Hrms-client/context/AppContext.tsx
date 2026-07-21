@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode, useMe
 import { User, Attendance, LeaveRequest, Role, LeaveStatus, Break, BreakType, AuthState, CompanyHoliday, Notification, LeaveCategory, SystemSettings } from '../types';
 import { downloadCSV, formatDate, formatDuration, getTodayStr, convertToDDMMYYYY, convertToYYYYMMDD, calculateBondRemaining, parseDDMMYYYY, isLateCheckIn, isPenaltyEffective, calculateLatenessPenaltySeconds, resolveLatePenaltyStartTime, DEFAULT_LATE_PENALTY_START_TIME } from '../services/utils';
 import * as api from '../services/api';
+import { DEFAULT_ANNUAL_PACKAGE } from '../services/salarySlipCalc';
 import { FULL_REFRESH_SCOPE, RefreshScope, getRefreshScopeForPath } from './routeRefreshScopes';
 
 interface AppContextType {
@@ -116,7 +117,7 @@ export const transformUser = (apiUser: any): User => ({
   manualExtraTimeAdjustment: apiUser.manualExtraTimeAdjustment || 0,
   manualUnpaidLeaveAdjustment: apiUser.manualUnpaidLeaveAdjustment || 0,
   manualHalfDayLeaveAdjustment: apiUser.manualHalfDayLeaveAdjustment || 0,
-  package: Number(apiUser.package) || 0,
+  package: Number(apiUser.package) > 0 ? Number(apiUser.package) : DEFAULT_ANNUAL_PACKAGE,
   joiningDate: apiUser.joiningDate || undefined, // Keep in dd-mm-yyyy format as stored
   bonds: apiUser.bonds && Array.isArray(apiUser.bonds) ? apiUser.bonds.map((b: any) => ({
     type: b.type || 'Job',

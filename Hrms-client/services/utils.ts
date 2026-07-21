@@ -1224,6 +1224,102 @@ export const parseDDMMYYYY = (dateStr: string | Date): Date | null => {
   }
 };
 
+export interface BondFormEntry {
+  type: string;
+  periodMonths: string;
+  startDate: string;
+  endDate: string;
+  salary: string;
+}
+
+export const createEmptyBondFormEntry = (): BondFormEntry => ({
+  type: 'Internship',
+  periodMonths: '',
+  startDate: '',
+  endDate: '',
+  salary: ''
+});
+
+export const calculatePeriodMonthsFromDates = (startDateStr: string, endDateStr: string): number => {
+  const start = parseDDMMYYYY(startDateStr) || (startDateStr ? new Date(startDateStr) : null);
+  const end = parseDDMMYYYY(endDateStr) || (endDateStr ? new Date(endDateStr) : null);
+  if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) return 0;
+
+  let months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+  if (end.getDate() >= start.getDate()) {
+    months += 1;
+  }
+  return Math.max(1, months);
+};
+
+export const computeEndDateFromStartAndMonths = (startDateStr: string, periodMonths: number): string => {
+  const start = parseDDMMYYYY(startDateStr) || new Date(startDateStr);
+  if (!start || isNaN(start.getTime()) || periodMonths <= 0) return '';
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + periodMonths);
+  return convertToDDMMYYYY(end);
+};
+
+export const bondsToFormEntries = (
+  bonds: Array<{ type: string; periodMonths: number; startDate?: string; endDate?: string; salary?: number }>,
+  joiningDate?: string
+): BondFormEntry[] => {
+  return bonds.map((bond, index) => {
+    let startDate = bond.startDate ? convertToYYYYMMDD(bond.startDate) : '';
+    let endDate = bond.endDate ? convertToYYYYMMDD(bond.endDate) : '';
+
+    if (!startDate && index === 0 && joiningDate) {
+      startDate = convertToYYYYMMDD(joiningDate);
+    }
+
+    if (!endDate && startDate && bond.periodMonths) {
+      endDate = convertToYYYYMMDD(computeEndDateFromStartAndMonths(startDate, bond.periodMonths));
+    }
+
+    return {
+      type: bond.type || 'Job',
+      periodMonths: bond.periodMonths?.toString() || '',
+      startDate,
+      endDate,
+      salary: (bond.salary || 0).toString()
+    };
+  });
+};
+
+export const buildBondsUpdatePayload = (
+  formBonds: BondFormEntry[],
+  joiningDate?: string
+): Array<{ type: string; periodMonths: number; startDate: string; endDate: string; salary?: number }> => {
+  return formBonds
+    .filter(b => (b.startDate && b.endDate) || (b.periodMonths && parseInt(b.periodMonths) > 0))
+    .map((b, index) => {
+      let startDate = b.startDate ? convertToDDMMYYYY(b.startDate) : '';
+      let endDate = b.endDate ? convertToDDMMYYYY(b.endDate) : '';
+      let periodMonths = parseInt(b.periodMonths) || 0;
+
+      if (!startDate && index === 0 && joiningDate) {
+        startDate = convertToDDMMYYYY(joiningDate);
+      }
+
+      if (startDate && endDate) {
+        if (!periodMonths) {
+          periodMonths = calculatePeriodMonthsFromDates(startDate, endDate);
+        }
+      } else if (startDate && periodMonths) {
+        endDate = computeEndDateFromStartAndMonths(startDate, periodMonths);
+      }
+
+      return {
+        type: b.type || 'Job',
+        periodMonths,
+        startDate,
+        endDate,
+        salary: parseFloat(b.salary) || 0
+      };
+    })
+    .filter(b => b.startDate && b.endDate && b.periodMonths > 0);
+};
+
 // Calculate remaining bond period for multiple bonds
 // Returns information about current active bond and total remaining time
 export const calculateBondRemaining = (bonds?: Bond[], joiningDate?: string) => {
@@ -1279,10 +1375,17 @@ export const calculateBondRemaining = (bonds?: Bond[], joiningDate?: string) => 
       bondStartDate = today;
     }
 
-    // Calculate end date
-    const endDate = new Date(bondStartDate);
-    endDate.setMonth(endDate.getMonth() + bond.periodMonths);
-    endDate.setHours(23, 59, 59, 999);
+    // Use stored end date when available, otherwise derive from period months
+    let endDate: Date;
+    const storedEndDate = bond.endDate ? parseDDMMYYYY(bond.endDate) : null;
+    if (storedEndDate && !isNaN(storedEndDate.getTime())) {
+      endDate = storedEndDate;
+      endDate.setHours(23, 59, 59, 999);
+    } else {
+      endDate = new Date(bondStartDate);
+      endDate.setMonth(endDate.getMonth() + bond.periodMonths);
+      endDate.setHours(23, 59, 59, 999);
+    }
 
     // Check if this bond is currently active
     const isActive = today >= bondStartDate && today <= endDate;

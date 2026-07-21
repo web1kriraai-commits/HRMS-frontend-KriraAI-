@@ -3,6 +3,8 @@
  * Handles calculation of monthly salary breakdown based on bonds and joining dates
  */
 
+import { DEFAULT_ANNUAL_PACKAGE, getMonthlySalary } from './salarySlipCalc';
+
 export interface SalaryBreakdownRow {
     month: number; // 1-12
     year: number;
@@ -87,6 +89,40 @@ export function getMonthName(month: number): string {
  * - Each bond period is calculated in full months
  * - Subsequent bonds start the day after previous bond ends
  */
+/** Monthly salary from annual package; uses company default when package is unset. */
+export function resolveAnnualPackage(packageValue?: number | null): number {
+  if (Number.isFinite(packageValue) && (packageValue ?? 0) > 0) {
+    return packageValue as number;
+  }
+  return DEFAULT_ANNUAL_PACKAGE;
+}
+
+/** Full or pro-rata monthly amount for a breakdown row from annual CTC. */
+export function getBreakdownAmountForRow(row: SalaryBreakdownRow, annualPackage: number): number {
+  const monthly = getMonthlySalary(annualPackage);
+  if (!row.isPartialMonth) return Math.round(monthly * 100) / 100;
+
+  const start = parseDate(row.startDate);
+  const end = parseDate(row.endDate);
+  if (!start || !end) return Math.round(monthly * 100) / 100;
+
+  const daysInMonth = getMonthEndDate(start.getFullYear(), start.getMonth() + 1).getDate();
+  const daysWorked = Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+  return Math.round((monthly / daysInMonth) * daysWorked * 100) / 100;
+}
+
+/** Build month-key → amount map from package for all projection rows. */
+export function buildSalaryBreakdownDataFromPackage(
+  rows: SalaryBreakdownRow[],
+  annualPackage: number
+): Record<string, number> {
+  const data: Record<string, number> = {};
+  rows.forEach((row) => {
+    data[`${row.month}-${row.year}`] = getBreakdownAmountForRow(row, annualPackage);
+  });
+  return data;
+}
+
 export function calculateSalaryBreakdown(
     joiningDate: string, // yyyy-mm-dd or dd-mm-yyyy
     bonds: Array<{ type: string; periodMonths: number; salary?: number }>

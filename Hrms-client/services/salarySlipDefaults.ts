@@ -1,4 +1,94 @@
+export type SalaryCompanyKey = 'kriraai' | 'ondial';
+
+export const SALARY_COMPANIES: Record<
+  SalaryCompanyKey,
+  {
+    label: string;
+    companyName: string;
+    companyAddress: string;
+    logoSrc: string;
+    pdfPrefix: string;
+  }
+> = {
+  kriraai: {
+    label: 'KriraAI',
+    companyName: 'KriraAI Pvt. Ltd.',
+    companyAddress:
+      'C2-1310, Pragati IT Park, opp. AR Mall, Mota Varachha Road, Uttran, Surat',
+    logoSrc: '/images/kriraai-logo.svg',
+    pdfPrefix: 'KriraAI',
+  },
+  ondial: {
+    label: 'Ondial',
+    companyName: 'Ondial Pvt. Ltd.',
+    companyAddress:
+      'C2-1310, Pragati IT Park, opp. AR Mall, Mota Varachha Road, Uttran, Surat',
+    // Icon paths sourced from https://www.ondial.ai/fav.svg
+    logoSrc: '/images/ondial-logo.svg',
+    pdfPrefix: 'Ondial',
+  },
+};
+
+export const SALARY_COMPANY_OPTIONS = (Object.keys(SALARY_COMPANIES) as SalaryCompanyKey[]).map(
+  (key) => ({ key, label: SALARY_COMPANIES[key].label })
+);
+
+const SALARY_COMPANY_STORAGE_PREFIX = 'hrms_salary_slip_company_';
+
+export const getStoredSalaryCompany = (userId: string): SalaryCompanyKey => {
+  try {
+    const stored = localStorage.getItem(`${SALARY_COMPANY_STORAGE_PREFIX}${userId}`);
+    if (stored === 'ondial' || stored === 'kriraai') return stored;
+  } catch {
+    // ignore
+  }
+  return 'kriraai';
+};
+
+export const setStoredSalaryCompany = (userId: string, companyKey: SalaryCompanyKey) => {
+  try {
+    localStorage.setItem(`${SALARY_COMPANY_STORAGE_PREFIX}${userId}`, companyKey);
+  } catch {
+    // ignore
+  }
+};
+
+export const resolveCompanyKeyFromForm = (
+  form: Pick<SalarySlipFormData, 'companyKey' | 'companyName'>
+): SalaryCompanyKey => {
+  if (form.companyKey && form.companyKey in SALARY_COMPANIES) {
+    return form.companyKey;
+  }
+  const nameLower = (form.companyName || '').toLowerCase();
+  if (nameLower.includes('ondial')) return 'ondial';
+  return 'kriraai';
+};
+
+export const applyCompanyToForm = (
+  form: SalarySlipFormData,
+  companyKey: SalaryCompanyKey
+): SalarySlipFormData => {
+  const company = SALARY_COMPANIES[companyKey];
+  return {
+    ...form,
+    companyKey,
+    companyName: company.companyName,
+    companyAddress: company.companyAddress,
+  };
+};
+
+export const getSalaryPdfFilename = (form: SalarySlipFormData) => {
+  const company = SALARY_COMPANIES[resolveCompanyKeyFromForm(form)];
+  const monthLabel = MONTH_NAMES[form.month - 1] || form.month;
+  const safeName = (form.empName || 'Employee')
+    .replace(/[^\w\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  return `SALARYSLIP ${company.pdfPrefix} ${safeName} ${monthLabel} ${form.year}.pdf`;
+};
+
 export interface SalarySlipFormData {
+  companyKey?: SalaryCompanyKey;
   companyName: string;
   companyAddress: string;
   selectedEmployeeId: string;
@@ -23,12 +113,15 @@ export interface SalarySlipFormData {
   ytdPTax: number;
   tds: number;
   ytdTds: number;
+  bondType?: string;
+  isWithinBondPeriod?: boolean;
+  isPartialBondMonth?: boolean;
 }
 
 export const DEFAULT_COMPANY = {
-  companyName: 'KriraAI Pvt. Ltd.',
-  companyAddress:
-    'C2-1310, Pragati IT Park, opp. AR Mall, Mota Varachha Road, Uttran, Surat',
+  companyKey: 'kriraai' as SalaryCompanyKey,
+  companyName: SALARY_COMPANIES.kriraai.companyName,
+  companyAddress: SALARY_COMPANIES.kriraai.companyAddress,
 };
 
 export const MONTH_NAMES = [
@@ -48,6 +141,12 @@ export const MONTH_NAMES = [
 
 export const getDaysInMonth = (month: number, year: number) =>
   new Date(year, month, 0).getDate();
+
+export const isFutureSalaryPeriod = (month: number, year: number, referenceDate = new Date()) => {
+  const currentYear = referenceDate.getFullYear();
+  const currentMonth = referenceDate.getMonth() + 1;
+  return year > currentYear || (year === currentYear && month > currentMonth);
+};
 
 export const formatPayDate = (month: number, year: number) => {
   const lastDay = getDaysInMonth(month, year);
@@ -192,6 +291,10 @@ export const slipRecordToFormData = (
     year: slip.year,
     companyName: slip.companyName ?? base.companyName,
     companyAddress: slip.companyAddress ?? base.companyAddress,
+    companyKey: resolveCompanyKeyFromForm({
+      companyKey: slip.companyKey,
+      companyName: slip.companyName ?? base.companyName,
+    }),
     selectedEmployeeId: overrides?.selectedEmployeeId ?? '',
     empName: slip.empName ?? '',
     empNo: slip.empNo ?? '',

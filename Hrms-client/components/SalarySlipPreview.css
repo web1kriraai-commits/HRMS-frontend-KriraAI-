@@ -228,9 +228,9 @@
   text-align: right;
 }
 
-.salary-table th.th-divider-right,
-.salary-table td.td-divider-right {
-  border-right: 1px solid #e0e0e0;
+.salary-table td.col-amt {
+  font-weight: 700;
+  color: #1a1a1a;
 }
 
 .salary-table th.th-ded {
@@ -239,7 +239,7 @@
 
 .salary-table td {
   padding: 8px 14px;
-  border-bottom: 1px solid #f0f0f0;
+  border: none;
   color: #333;
   font-size: 13px;
 }
@@ -266,10 +266,21 @@
   width: 14%;
 }
 
+.salary-table tr.spacer-row td {
+  padding: 14px 14px;
+  border: none;
+  background: #ffffff;
+  height: 28px;
+}
+
+.salary-table tr.spacer-row td:first-child {
+  padding-left: 24px;
+}
+
 .salary-table tr.total-row td {
   background: #f5f5f5;
+  border: none;
   border-top: 1px solid #e0e0e0;
-  border-bottom: 1px solid #e0e0e0;
   padding: 10px 14px;
 }
 
@@ -329,22 +340,18 @@
 
 /* ── Amount in Words ── */
 .amount-in-words {
-  padding: 4px 24px 12px;
+  padding: 4px 24px 8px;
   margin: 0;
   font-size: 13px;
+  color: #555;
+  text-align: right;
+}
+
+.amount-in-words-label {
   color: #555;
 }
 
 .amount-in-words strong {
   font-weight: 600;
   color: #1a1a1a;
-}
-
-/* ── Footer ── */
-.footer-note {
-  padding: 8px 24px 20px;
-  margin: 0;
-  font-size: 11px;
-  color: #aaa;
-  text-align: center;
 }

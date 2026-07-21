@@ -1,5 +1,5 @@
 import { LeaveCategory, LeaveRequest, LeaveStatus, User, SalarySlipRecord } from '../types';
-import { calculateLeaveDays, getEffectiveLeaveCategory } from './utils';
+import { calculateBondRemaining, calculateLeaveDays, getEffectiveLeaveCategory, parseDDMMYYYY } from './utils';
 import {
   SalarySlipFormData,
   createDefaultFormData,
@@ -11,6 +11,9 @@ import {
 export const DAYS_PER_MONTH = 30.42;
 export const MONTHS_PER_YEAR = 12;
 
+/** Standard annual CTC for all employees (3.72 lakh INR) */
+export const DEFAULT_ANNUAL_PACKAGE = 372000;
+
 export const roundMoney = (value: number) => Math.round(value * 100) / 100;
 
 /** Annual CTC → monthly salary */
@@ -18,9 +21,140 @@ export const getMonthlySalary = (annualPackage: number) =>
   Number.isFinite(annualPackage) && annualPackage > 0 ? annualPackage / MONTHS_PER_YEAR : 0;
 
 /** Monthly salary → one day salary for LOP deduction */
+export const getDailySalaryFromMonthly = (monthlySalary: number) =>
+  monthlySalary > 0 ? monthlySalary / DAYS_PER_MONTH : 0;
+
+/** Monthly salary → one day salary for LOP deduction */
 export const getDailySalary = (annualPackage: number) => {
   const monthly = getMonthlySalary(annualPackage);
-  return monthly > 0 ? monthly / DAYS_PER_MONTH : 0;
+  return getDailySalaryFromMonthly(monthly);
+};
+
+/** LOP deduction for a number of unpaid leave days at the given annual package. */
+export const getLopDeductionForDays = (annualPackage: number, lopDays: number) =>
+  roundMoney(getDailySalary(annualPackage) * lopDays);
+
+export const getLopDeductionForMonthlySalary = (monthlySalary: number, lopDays: number) =>
+  roundMoney(getDailySalaryFromMonthly(monthlySalary) * lopDays);
+
+export interface BondSalaryContext {
+  monthlyAmount: number;
+  bondType: string | null;
+  bondLabel: string | null;
+  isWithinBondPeriod: boolean;
+  isPartialMonth: boolean;
+  designation: string;
+}
+
+const getMonthDateRange = (month: number, year: number) => {
+  const start = new Date(year, month - 1, 1);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(year, month - 1, getDaysInMonth(month, year));
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+};
+
+const getOverlapDays = (
+  rangeStart: Date,
+  rangeEnd: Date,
+  periodStart: Date,
+  periodEnd: Date
+) => {
+  const overlapStart = new Date(Math.max(rangeStart.getTime(), periodStart.getTime()));
+  const overlapEnd = new Date(Math.min(rangeEnd.getTime(), periodEnd.getTime()));
+  if (overlapStart > overlapEnd) return 0;
+  return Math.floor((overlapEnd.getTime() - overlapStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+};
+
+/** Resolve monthly pay and bond context for a calendar month. */
+export const getBondSalaryContextForMonth = (
+  employee: User,
+  month: number,
+  year: number
+): BondSalaryContext => {
+  const breakdownRow = employee.salaryBreakdown?.find(
+    (row) => row.month === month && row.year === year
+  );
+
+  if (breakdownRow) {
+    const breakdownAmount = roundMoney(Number(breakdownRow.amount) || 0);
+    if (breakdownAmount > 0) {
+      const bondType = breakdownRow.bondType || null;
+      return {
+        monthlyAmount: breakdownAmount,
+        bondType,
+        bondLabel: bondType ? `${bondType} Bond` : null,
+        isWithinBondPeriod: true,
+        isPartialMonth: Boolean(breakdownRow.isPartialMonth),
+        designation:
+          bondType === 'Internship'
+            ? 'Internship'
+            : bondType === 'Job'
+              ? employee.department || 'Employee'
+              : bondType || employee.department || 'Employee',
+      };
+    }
+  }
+
+  if (employee.bonds?.length) {
+    const bondInfo = calculateBondRemaining(employee.bonds, employee.joiningDate);
+    const { start: monthStart, end: monthEnd } = getMonthDateRange(month, year);
+    const daysInMonth = getDaysInMonth(month, year);
+
+    for (const bond of bondInfo.allBonds) {
+      const bondStart = parseDDMMYYYY(bond.startDate);
+      const bondEnd = bond.endDate;
+      if (!bondStart || !bondEnd || isNaN(bondStart.getTime()) || isNaN(bondEnd.getTime())) {
+        continue;
+      }
+
+      bondStart.setHours(0, 0, 0, 0);
+      const overlapDays = getOverlapDays(monthStart, monthEnd, bondStart, bondEnd);
+      if (overlapDays <= 0) continue;
+
+      const packageFallback = getMonthlySalary(
+        getEmployeeAnnualPackage(employee, month, year)
+      );
+      const fullMonthly = bond.salary && bond.salary > 0 ? bond.salary : packageFallback;
+      const monthlyAmount =
+        overlapDays < daysInMonth
+          ? roundMoney((fullMonthly / daysInMonth) * overlapDays)
+          : roundMoney(fullMonthly);
+
+      return {
+        monthlyAmount,
+        bondType: bond.type,
+        bondLabel: `${bond.type} Bond`,
+        isWithinBondPeriod: true,
+        isPartialMonth: overlapDays < daysInMonth,
+        designation:
+          bond.type === 'Internship'
+            ? 'Internship'
+            : bond.type === 'Job'
+              ? employee.department || 'Employee'
+              : bond.type,
+      };
+    }
+
+    return {
+      monthlyAmount: 0,
+      bondType: null,
+      bondLabel: null,
+      isWithinBondPeriod: false,
+      isPartialMonth: false,
+      designation: 'NA',
+    };
+  }
+
+  const annualPackage = getEmployeeAnnualPackage(employee, month, year);
+  return {
+    monthlyAmount: roundMoney(getMonthlySalary(annualPackage)),
+    bondType: null,
+    bondLabel: null,
+    isWithinBondPeriod: true,
+    isPartialMonth: false,
+    designation: employee.department || 'Employee',
+  };
 };
 
 export const leaveOverlapsMonth = (
@@ -37,7 +171,7 @@ export const leaveOverlapsMonth = (
 const matchesEmployee = (leaveUserId: string, employeeId: string) =>
   String(leaveUserId) === String(employeeId);
 
-/** Annual package (CTC). Falls back to salary breakdown × 12 if set monthly there. */
+/** Annual package (CTC). Falls back to salary breakdown × 12, then company default. */
 export const getEmployeeAnnualPackage = (employee: User, month: number, year: number) => {
   if (Number.isFinite(employee.package) && (employee.package ?? 0) > 0) {
     return employee.package as number;
@@ -45,7 +179,8 @@ export const getEmployeeAnnualPackage = (employee: User, month: number, year: nu
   const breakdown = employee.salaryBreakdown?.find(
     (row) => row.month === month && row.year === year
   );
-  return breakdown?.amount ? breakdown.amount * MONTHS_PER_YEAR : 0;
+  if (breakdown?.amount) return breakdown.amount * MONTHS_PER_YEAR;
+  return DEFAULT_ANNUAL_PACKAGE;
 };
 
 const isUnpaidLeaveForLop = (leave: LeaveRequest) => {
@@ -137,14 +272,13 @@ export const buildAutoSalarySlipForm = (params: {
   const { employee, month, year, leaveRequests, holidayDateSet, priorSlips = [], savedSlip } =
     params;
   const monthDays = getDaysInMonth(month, year);
-  const annualPackage = getEmployeeAnnualPackage(employee, month, year);
-  const monthlySalary = getMonthlySalary(annualPackage);
+  const bondContext = getBondSalaryContextForMonth(employee, month, year);
+  const monthlySalary = bondContext.monthlyAmount;
   const lopDays = roundMoney(
     calculateLopDaysInMonth(leaveRequests, employee.id, month, year, holidayDateSet)
   );
   const paidDays = Math.max(0, roundMoney(monthDays - lopDays));
-  const dailySalary = getDailySalary(annualPackage);
-  const lopDeduction = roundMoney(dailySalary * lopDays);
+  const lopDeduction = getLopDeductionForMonthlySalary(monthlySalary, lopDays);
   const ytdBefore = calculateYtdTotals(priorSlips, month, year);
 
   const autoForm: SalarySlipFormData = {
@@ -152,7 +286,7 @@ export const buildAutoSalarySlipForm = (params: {
     selectedEmployeeId: employee.id,
     empName: employee.name,
     empNo: employee.username || '',
-    designation: savedSlip?.designation || 'NA',
+    designation: savedSlip?.designation || bondContext.designation,
     doj: employee.joiningDate || '',
     payDate: formatPayDate(month, year),
     pfNo: savedSlip?.pfNo || 'NA',
@@ -173,11 +307,37 @@ export const buildAutoSalarySlipForm = (params: {
     ytdPTax: roundMoney(ytdBefore.ytdPTax + (Number(savedSlip?.pTax) || 0)),
     tds: roundMoney(Number(savedSlip?.tds) || 0),
     ytdTds: roundMoney(ytdBefore.ytdTds + (Number(savedSlip?.tds) || 0)),
+    bondType: bondContext.bondType || undefined,
+    isWithinBondPeriod: bondContext.isWithinBondPeriod,
+    isPartialBondMonth: bondContext.isPartialMonth,
   };
 
   if (savedSlip) {
+    const hasSavedAmounts = Number(savedSlip.basic) > 0;
+    const savedFinancials = hasSavedAmounts
+      ? {
+          paidDays: Number(savedSlip.paidDays) || autoForm.paidDays,
+          lopDays: Number(savedSlip.lopDays) || autoForm.lopDays,
+          basic: roundMoney(Number(savedSlip.basic)),
+          ytdBasic: roundMoney(Number(savedSlip.ytdBasic) || autoForm.ytdBasic),
+          fixedAllowance: roundMoney(Number(savedSlip.fixedAllowance) || 0),
+          ytdFixedAllowance: roundMoney(
+            Number(savedSlip.ytdFixedAllowance) || autoForm.ytdFixedAllowance
+          ),
+          lopDeduction: roundMoney(Number(savedSlip.lopDeduction) || autoForm.lopDeduction),
+          ytdLopDeduction: roundMoney(
+            Number(savedSlip.ytdLopDeduction) || autoForm.ytdLopDeduction
+          ),
+          pTax: roundMoney(Number(savedSlip.pTax) || 0),
+          ytdPTax: roundMoney(Number(savedSlip.ytdPTax) || autoForm.ytdPTax),
+          tds: roundMoney(Number(savedSlip.tds) || 0),
+          ytdTds: roundMoney(Number(savedSlip.ytdTds) || autoForm.ytdTds),
+        }
+      : {};
+
     return {
       ...autoForm,
+      ...savedFinancials,
       companyName: savedSlip.companyName || autoForm.companyName,
       companyAddress: savedSlip.companyAddress || autoForm.companyAddress,
       empName: savedSlip.empName || autoForm.empName,

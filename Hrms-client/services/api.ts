@@ -408,7 +408,7 @@ export const userAPI = {
     manualUnpaidLeaveAdjustment?: number;
     manualHalfDayLeaveAdjustment?: number;
     joiningDate?: string;
-    bonds?: Array<{ type: string; periodMonths: number; startDate: string; salary?: number }>;
+    bonds?: Array<{ type: string; periodMonths: number; startDate: string; endDate?: string; salary?: number }>;
     name?: string;
     email?: string;
     department?: string;
