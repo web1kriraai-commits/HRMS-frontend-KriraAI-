@@ -18,6 +18,8 @@ import {
   formatPayDate,
   formDataToSlipPayload,
   getSalaryPdfFilename,
+  inputValueToPayDate,
+  payDateToInputValue,
   resolveCompanyKeyFromForm,
 } from '../services/salarySlipDefaults';
 import { buildAutoSalarySlipForm, getBondSalaryContextForMonth } from '../services/salarySlipCalc';
@@ -30,7 +32,6 @@ const textFields: Array<{ key: keyof SalarySlipFormData; label: string; span?: b
   { key: 'empNo', label: 'Employee ID' },
   { key: 'designation', label: 'Designation' },
   { key: 'doj', label: 'Date of Joining' },
-  { key: 'payDate', label: 'Pay Date' },
   { key: 'pfNo', label: 'PF A/C Number' },
   { key: 'uan', label: 'UAN' },
 ];
@@ -194,53 +195,6 @@ export const SalaryManagement: React.FC = () => {
   const yearOptions = useMemo(() => [2024, 2025, 2026, 2027], []);
   const selectedEmployee = employees.find((user) => user.id === form.selectedEmployeeId);
 
-  const payPeriodSelectors = (
-    <>
-      <div>
-        <label className={labelClass}>Month</label>
-        <select
-          className={inputClass}
-          value={form.month}
-          onChange={(event) => {
-            const month = Number(event.target.value);
-            setForm((prev) => ({
-              ...prev,
-              month,
-              payDate: formatPayDate(month, prev.year),
-            }));
-          }}
-        >
-          {MONTH_NAMES.map((name, index) => (
-            <option key={name} value={index + 1}>
-              {name}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div>
-        <label className={labelClass}>Year</label>
-        <select
-          className={inputClass}
-          value={form.year}
-          onChange={(event) => {
-            const year = Number(event.target.value);
-            setForm((prev) => ({
-              ...prev,
-              year,
-              payDate: formatPayDate(prev.month, year),
-            }));
-          }}
-        >
-          {yearOptions.map((year) => (
-            <option key={year} value={year}>
-              {year}
-            </option>
-          ))}
-        </select>
-      </div>
-    </>
-  );
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -256,8 +210,8 @@ export const SalaryManagement: React.FC = () => {
       </div>
 
       <Card title="Salary Slip Selection" bodyClassName="p-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div>
+        <div className="flex flex-nowrap items-end gap-3 overflow-x-auto">
+          <div className="min-w-[8rem] flex-1">
             <label className={labelClass}>Company</label>
             <select
               className={inputClass}
@@ -271,7 +225,7 @@ export const SalaryManagement: React.FC = () => {
               ))}
             </select>
           </div>
-          <div>
+          <div className="min-w-[12rem] flex-[1.4]">
             <label className={labelClass}>Select Employee</label>
             <select
               className={inputClass}
@@ -286,7 +240,62 @@ export const SalaryManagement: React.FC = () => {
               ))}
             </select>
           </div>
-          {payPeriodSelectors}
+          <div className="min-w-[8rem] flex-1">
+            <label className={labelClass}>Month</label>
+            <select
+              className={inputClass}
+              value={form.month}
+              onChange={(event) => {
+                const month = Number(event.target.value);
+                setForm((prev) => ({
+                  ...prev,
+                  month,
+                  payDate: formatPayDate(month, prev.year),
+                }));
+              }}
+            >
+              {MONTH_NAMES.map((name, index) => (
+                <option key={name} value={index + 1}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="min-w-[5.5rem] flex-1">
+            <label className={labelClass}>Year</label>
+            <select
+              className={inputClass}
+              value={form.year}
+              onChange={(event) => {
+                const year = Number(event.target.value);
+                setForm((prev) => ({
+                  ...prev,
+                  year,
+                  payDate: formatPayDate(prev.month, year),
+                }));
+              }}
+            >
+              {yearOptions.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="min-w-[9rem] flex-1">
+            <label className={labelClass}>Pay Date</label>
+            <input
+              type="date"
+              className={inputClass}
+              value={payDateToInputValue(form.payDate)}
+              onChange={(event) =>
+                setForm((prev) => ({
+                  ...prev,
+                  payDate: inputValueToPayDate(event.target.value) || prev.payDate,
+                }))
+              }
+            />
+          </div>
         </div>
         {selectedEmployee && (() => {
           const bondContext = getBondSalaryContextForMonth(selectedEmployee, form.month, form.year);
@@ -457,7 +466,6 @@ export const SalaryManagement: React.FC = () => {
           <Card
             title="Salary Slip Preview"
             bodyClassName="p-4 bg-white"
-            action={payPeriodSelectors}
           >
             <div className="overflow-x-auto flex justify-center">
               <SalarySlipPreview form={form} previewRef={previewRef} />

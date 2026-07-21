@@ -148,11 +148,50 @@ export const isFutureSalaryPeriod = (month: number, year: number, referenceDate 
   return year > currentYear || (year === currentYear && month > currentMonth);
 };
 
+export const isCurrentSalaryPeriod = (month: number, year: number, referenceDate = new Date()) => {
+  const currentYear = referenceDate.getFullYear();
+  const currentMonth = referenceDate.getMonth() + 1;
+  return year === currentYear && month === currentMonth;
+};
+
+export const isSalarySlipPeriodAvailable = (
+  month: number,
+  year: number,
+  referenceDate = new Date()
+) =>
+  !isFutureSalaryPeriod(month, year, referenceDate) &&
+  !isCurrentSalaryPeriod(month, year, referenceDate);
+
+export const getLatestAvailableSalaryPeriod = (referenceDate = new Date()) => {
+  const currentYear = referenceDate.getFullYear();
+  const currentMonth = referenceDate.getMonth() + 1;
+  if (currentMonth === 1) {
+    return { month: 12, year: currentYear - 1 };
+  }
+  return { month: currentMonth - 1, year: currentYear };
+};
+
 export const formatPayDate = (month: number, year: number) => {
   const lastDay = getDaysInMonth(month, year);
   const day = String(lastDay).padStart(2, '0');
   const mon = String(month).padStart(2, '0');
   return `${day}/${mon}/${year}`;
+};
+
+/** Convert DD/MM/YYYY pay date to YYYY-MM-DD for date inputs */
+export const payDateToInputValue = (payDate: string) => {
+  const match = payDate.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!match) return '';
+  const [, day, month, year] = match;
+  return `${year}-${month}-${day}`;
+};
+
+/** Convert YYYY-MM-DD date input value to DD/MM/YYYY pay date */
+export const inputValueToPayDate = (inputValue: string) => {
+  if (!inputValue) return '';
+  const [year, month, day] = inputValue.split('-');
+  if (!year || !month || !day) return '';
+  return `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}`;
 };
 
 export const createDefaultFormData = (): SalarySlipFormData => {

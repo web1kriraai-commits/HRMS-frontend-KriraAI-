@@ -15,7 +15,10 @@ import {
   applyCompanyToForm,
   getSalaryPdfFilename,
   getStoredSalaryCompany,
+  getLatestAvailableSalaryPeriod,
+  isCurrentSalaryPeriod,
   isFutureSalaryPeriod,
+  isSalarySlipPeriodAvailable,
   setStoredSalaryCompany,
 } from '../services/salarySlipDefaults';
 import { buildAutoSalarySlipForm } from '../services/salarySlipCalc';
@@ -32,9 +35,11 @@ export const EmployeeSalarySlip: React.FC = () => {
   const previewRef = useRef<HTMLDivElement>(null);
   const now = new Date();
   const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth() + 1;
-  const [month, setMonth] = useState(currentMonth);
-  const [year, setYear] = useState(Math.min(2027, Math.max(2024, currentYear)));
+  const latestAvailablePeriod = getLatestAvailableSalaryPeriod(now);
+  const [month, setMonth] = useState(latestAvailablePeriod.month);
+  const [year, setYear] = useState(
+    Math.min(2027, Math.max(2024, latestAvailablePeriod.year))
+  );
   const [companyKey, setCompanyKey] = useState<SalaryCompanyKey>(() =>
     user ? getStoredSalaryCompany(user.id) : 'kriraai'
   );
@@ -44,6 +49,7 @@ export const EmployeeSalarySlip: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isFuturePeriod, setIsFuturePeriod] = useState(false);
+  const [isCurrentPeriod, setIsCurrentPeriod] = useState(false);
   const [isOutsideBondPeriod, setIsOutsideBondPeriod] = useState(false);
   const [noSlipFound, setNoSlipFound] = useState(false);
 
@@ -55,7 +61,7 @@ export const EmployeeSalarySlip: React.FC = () => {
   const availableMonths = useMemo(() => {
     return MONTH_NAMES.map((name, index) => {
       const value = index + 1;
-      const disabled = isFutureSalaryPeriod(value, year);
+      const disabled = !isSalarySlipPeriodAvailable(value, year);
       return { name, value, disabled };
     }).filter((item) => !item.disabled);
   }, [year]);
@@ -73,11 +79,18 @@ export const EmployeeSalarySlip: React.FC = () => {
   );
 
   useEffect(() => {
-    if (isFutureSalaryPeriod(month, year)) {
-      const latestMonth = year === currentYear ? currentMonth : 12;
-      setMonth(latestMonth);
+    if (!isSalarySlipPeriodAvailable(month, year)) {
+      const latest = getLatestAvailableSalaryPeriod();
+      if (year === latest.year) {
+        setMonth(latest.month);
+      } else if (year < latest.year) {
+        setMonth(12);
+      } else {
+        setMonth(latest.month);
+        setYear(latest.year);
+      }
     }
-  }, [year, month, currentYear, currentMonth]);
+  }, [year, month]);
 
   useEffect(() => {
     if (!user) return;
@@ -86,6 +99,15 @@ export const EmployeeSalarySlip: React.FC = () => {
       if (isFutureSalaryPeriod(month, year)) {
         setForm(null);
         setIsFuturePeriod(true);
+        setIsCurrentPeriod(false);
+        setNoSlipFound(false);
+        return;
+      }
+
+      if (isCurrentSalaryPeriod(month, year)) {
+        setForm(null);
+        setIsFuturePeriod(false);
+        setIsCurrentPeriod(true);
         setNoSlipFound(false);
         return;
       }
@@ -93,6 +115,7 @@ export const EmployeeSalarySlip: React.FC = () => {
       setIsLoading(true);
       setNoSlipFound(false);
       setIsFuturePeriod(false);
+      setIsCurrentPeriod(false);
       setIsOutsideBondPeriod(false);
       setForm(null);
 
@@ -166,8 +189,8 @@ export const EmployeeSalarySlip: React.FC = () => {
   };
 
   const handleDownloadPdf = async () => {
-    if (!previewRef.current || !form || isFutureSalaryPeriod(month, year)) {
-      appAlert('Salary slips for future periods cannot be downloaded.');
+    if (!previewRef.current || !form || !isSalarySlipPeriodAvailable(month, year)) {
+      appAlert('Salary slip is not available for this period.');
       return;
     }
 
@@ -261,7 +284,18 @@ export const EmployeeSalarySlip: React.FC = () => {
             Salary slips for future months are not available.
           </p>
           <p className="text-sm text-gray-400 mt-2">
-            Please select the current month or an earlier period.
+            Please select a completed month.
+          </p>
+        </Card>
+      )}
+
+      {!isLoading && isCurrentPeriod && (
+        <Card bodyClassName="p-8 text-center">
+          <p className="text-gray-500">
+            Salary slip for {MONTH_NAMES[month - 1]} {year} is not available.
+          </p>
+          <p className="text-sm text-gray-400 mt-2">
+            Salary slips are published after the month ends. Please check again next month.
           </p>
         </Card>
       )}
@@ -277,7 +311,7 @@ export const EmployeeSalarySlip: React.FC = () => {
         </Card>
       )}
 
-      {!isLoading && !isFuturePeriod && !isOutsideBondPeriod && noSlipFound && (
+      {!isLoading && !isFuturePeriod && !isCurrentPeriod && !isOutsideBondPeriod && noSlipFound && (
         <Card bodyClassName="p-8 text-center">
           <p className="text-gray-500">
             No salary slip found for {MONTH_NAMES[month - 1]} {year}.
@@ -288,7 +322,7 @@ export const EmployeeSalarySlip: React.FC = () => {
         </Card>
       )}
 
-      {!isLoading && !isFuturePeriod && !isOutsideBondPeriod && form && (
+      {!isLoading && !isFuturePeriod && !isCurrentPeriod && !isOutsideBondPeriod && form && (
         <div className="space-y-4">
           <Card title="Salary Slip Preview" bodyClassName="p-4 bg-white">
             <div className="overflow-x-auto flex justify-center">
