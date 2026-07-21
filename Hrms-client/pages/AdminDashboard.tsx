@@ -184,6 +184,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
     department: '',
     role: 'Employee',
     joiningDate: '',
+    package: '',
     bonds: [] as Array<{ type: string; periodMonths: string; startDate: string }>,
     aadhaarNumber: '',
     guardianName: '',
@@ -605,6 +606,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
     email: string;
     department: string;
     joiningDate: string;
+    package: string;
     bonds: Array<{ type: string; periodMonths: string; startDate: string; salary: string }>;
     aadhaarNumber?: string;
     guardianName?: string;
@@ -621,6 +623,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
     department: '',
     paidLeaveAllocation: '',
     joiningDate: '',
+    package: '',
     bonds: [],
     aadhaarNumber: '',
     guardianName: '',
@@ -3171,6 +3174,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                                     email: user.email,
                                     department: user.department,
                                     joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
+                                    package: (user.package || 0).toString(),
                                     bonds: (user.bonds || []).map(b => ({
                                       type: b.type,
                                       periodMonths: b.periodMonths.toString(),
@@ -4435,6 +4439,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                       bankAccountNumber: accountDigits,
                       bankIfscCode: newUser.bankIfscCode.trim().toUpperCase(),
                       joiningDate: newUser.joiningDate ? convertToDDMMYYYY(newUser.joiningDate) : undefined,
+                      package: parseFloat(newUser.package) || 0,
                       bonds: newUser.bonds.filter(b => {
                         return b.periodMonths && parseInt(b.periodMonths) > 0;
                       }).map((b, bondIndex, filteredBonds) => {
@@ -4537,6 +4542,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Joining Date</label>
                         <input type="date" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''} onChange={e => setNewUser({ ...newUser, joiningDate: e.target.value })} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Annual Package / CTC (Rs.)</label>
+                        <input type="number" min="0" step="0.01" className="w-full p-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 transition-all bg-gray-50 focus:bg-white" value={newUser.package} onChange={e => setNewUser({ ...newUser, package: e.target.value })} placeholder="e.g. 372000" />
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Mobile Number *</label>
@@ -5010,6 +5019,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                     updates.joiningDate = convertToDDMMYYYY(editUserForm.joiningDate);
                   }
 
+                  updates.package = parseFloat(editUserForm.package) || 0;
+
                   if (editUserForm.bonds.length > 0) {
                     updates.bonds = editUserForm.bonds.filter(b => {
                       return b.periodMonths && parseInt(b.periodMonths) > 0;
@@ -5155,6 +5166,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ embeddedSection 
                     className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
                     value={editUserForm.joiningDate}
                     onChange={e => setEditUserForm({ ...editUserForm, joiningDate: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Annual Package / CTC (Rs.)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.package}
+                    onChange={e => setEditUserForm({ ...editUserForm, package: e.target.value })}
+                    placeholder="e.g. 372000"
                   />
                 </div>
                 <div>

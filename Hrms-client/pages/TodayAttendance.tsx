@@ -1,9 +1,9 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
-import { getTodayStr, formatTime, ABSENCE_PENALTY_EFFECTIVE_DATE, calculateDailyTimeStats, formatDuration as utilsFormatDuration, getAbsenceStartDate, getLocalISOString, calculateTotalBreakSeconds, getLateCheckInPenaltyInfo, formatPenaltyDisplay } from '../services/utils';
+import { getTodayStr, formatTime, ABSENCE_PENALTY_EFFECTIVE_DATE, calculateDailyTimeStats, formatDuration as utilsFormatDuration, getAbsenceStartDate, getLocalISOString, calculateTotalBreakSeconds, getLateCheckInPenaltyInfo, formatPenaltyDisplay, getWallClockHM } from '../services/utils';
 import { Attendance, Role } from '../types';
-import { Clock, UserCheck, UserMinus, Calendar, AlertCircle, TrendingUp, TrendingDown, Umbrella, ChevronLeft, ChevronRight, Search, X, Coffee } from 'lucide-react';
+import { Clock, UserCheck, UserMinus, Calendar, AlertCircle, TrendingUp, TrendingDown, Umbrella, ChevronLeft, ChevronRight, Search, X, Coffee, Pencil } from 'lucide-react';
 import { attendanceAPI } from '../services/api';
 import { appAlert } from '../services/appAlert';
 
@@ -25,7 +25,24 @@ export const TodayAttendance: React.FC = () => {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [showBulkModal, setShowBulkModal] = useState(false);
     const [bulkDept, setBulkDept] = useState('');
+    const [showManageModal, setShowManageModal] = useState(false);
+    const [manageForm, setManageForm] = useState({
+        userId: '',
+        userName: '',
+        recordId: '' as string | undefined,
+        checkIn: '',
+        checkOut: '',
+        breakDuration: '',
+        notes: '',
+        isPenaltyDisabled: false,
+    });
     const [liveTick, setLiveTick] = useState(Date.now());
+
+    const toTimeInputValue = (isoStr?: string) => {
+        if (!isoStr) return '';
+        const { hour, minute } = getWallClockHM(new Date(isoStr), systemSettings.timezone);
+        return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    };
 
     const getRecordBreakSeconds = (record: Attendance | undefined, includeLive = false) => {
         if (!record?.breaks?.length) return 0;
@@ -176,6 +193,58 @@ export const TodayAttendance: React.FC = () => {
         }
     };
 
+    const openManageModal = (user: { id: string; name: string }, record?: Attendance) => {
+        const breakSeconds = record ? getRecordBreakSeconds(record, false) : 0;
+        setManageForm({
+            userId: user.id,
+            userName: user.name,
+            recordId: record?.id,
+            checkIn: toTimeInputValue(record?.checkIn),
+            checkOut: toTimeInputValue(record?.checkOut),
+            breakDuration: breakSeconds > 0 ? String(Math.round(breakSeconds / 60)) : '',
+            notes: record?.notes || '',
+            isPenaltyDisabled: record?.isPenaltyDisabled || false,
+        });
+        setShowManageModal(true);
+    };
+
+    const handleManageAttendance = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!manageForm.checkIn && !manageForm.checkOut && !manageForm.isPenaltyDisabled) {
+            appAlert('Please provide at least Check In, Check Out, or disable late penalty.');
+            return;
+        }
+
+        setIsSubmitting(true);
+        try {
+            const payload = {
+                checkIn: manageForm.checkIn || undefined,
+                checkOut: manageForm.checkOut || undefined,
+                breakDurationMinutes: manageForm.breakDuration ? parseInt(manageForm.breakDuration, 10) : undefined,
+                notes: manageForm.notes || undefined,
+                isPenaltyDisabled: manageForm.isPenaltyDisabled,
+            };
+
+            if (manageForm.recordId) {
+                await adminUpdateAttendance(manageForm.recordId, payload);
+            } else {
+                await attendanceAPI.adminCreateOrUpdate({
+                    userId: manageForm.userId,
+                    date: selectedDate,
+                    ...payload,
+                });
+                await refreshData();
+            }
+
+            appAlert('Attendance updated successfully.');
+            setShowManageModal(false);
+        } catch (error: any) {
+            appAlert(error.message || 'Failed to update attendance');
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
     const handleAdminBulkAddManualHours = async (e: React.FormEvent) => {
         e.preventDefault();
         const totalHours = Number(manualHoursInput || 0) + (Number(manualMinutesInput || 0) / 60);
@@ -319,6 +388,7 @@ export const TodayAttendance: React.FC = () => {
                                 <th className="px-6 py-3 text-center">Manual Hrs</th>
                                  <th className="px-6 py-3 text-center text-rose-600">Penalty Amt</th>
                                 <th className="px-6 py-3 text-center">Penalty</th>
+                                <th className="px-6 py-3 text-center">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -529,11 +599,21 @@ export const TodayAttendance: React.FC = () => {
                                             )}
                                         </div>
                                     </td>
+                                    <td className="px-6 py-4 text-center">
+                                        <button
+                                            onClick={() => openManageModal(user, record)}
+                                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors"
+                                            title="Manage attendance"
+                                        >
+                                            <Pencil size={12} />
+                                            Manage
+                                        </button>
+                                    </td>
                                 </tr>
                             )})}
                              {filteredStats.length === 0 && (
                                 <tr>
-                                    <td colSpan={11} className="text-center py-12">
+                                    <td colSpan={12} className="text-center py-12">
                                         <div className="flex flex-col items-center justify-center text-gray-500">
                                             <div className="p-4 bg-gray-50 rounded-full mb-3">
                                                 <Search size={32} className="text-gray-300" />
@@ -671,6 +751,104 @@ export const TodayAttendance: React.FC = () => {
                                         disabled={isSubmitting || (!manualHoursInput && !manualMinutesInput)}
                                     >
                                         {isSubmitting ? 'Saving...' : 'Confirm'}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </>
+            )}
+
+            {/* Manage Attendance Modal */}
+            {showManageModal && (
+                <>
+                    <div
+                        className="fixed inset-0 bg-black/50 z-50"
+                        onClick={() => setShowManageModal(false)}
+                    />
+                    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+                        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-scale-in border-t-8 border-amber-500">
+                            <div className="flex items-center justify-between mb-4">
+                                <div>
+                                    <h3 className="text-xl font-bold text-gray-900">Manage Attendance</h3>
+                                    <p className="text-xs text-amber-600 font-medium">{manageForm.userName} • {displayDate}</p>
+                                </div>
+                                <button onClick={() => setShowManageModal(false)} className="text-gray-400 hover:text-gray-600">
+                                    <X size={20} />
+                                </button>
+                            </div>
+
+                            <form onSubmit={handleManageAttendance} className="space-y-4">
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Check In</label>
+                                        <input
+                                            type="time"
+                                            value={manageForm.checkIn}
+                                            onChange={(e) => setManageForm({ ...manageForm, checkIn: e.target.value })}
+                                            className="w-full p-3 border border-gray-300 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Check Out</label>
+                                        <input
+                                            type="time"
+                                            value={manageForm.checkOut}
+                                            onChange={(e) => setManageForm({ ...manageForm, checkOut: e.target.value })}
+                                            className="w-full p-3 border border-gray-300 rounded-xl text-sm font-semibold focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Break Duration (minutes)</label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        max="480"
+                                        placeholder="e.g. 30"
+                                        value={manageForm.breakDuration}
+                                        onChange={(e) => setManageForm({ ...manageForm, breakDuration: e.target.value })}
+                                        className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                                    />
+                                    <p className="text-[10px] text-gray-400 mt-1">Total break time for the day. Requires check-in to apply.</p>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Notes / Reason</label>
+                                    <textarea
+                                        value={manageForm.notes}
+                                        onChange={(e) => setManageForm({ ...manageForm, notes: e.target.value })}
+                                        placeholder="Reason for correction..."
+                                        className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500 resize-none"
+                                        rows={2}
+                                    />
+                                </div>
+
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={manageForm.isPenaltyDisabled}
+                                        onChange={(e) => setManageForm({ ...manageForm, isPenaltyDisabled: e.target.checked })}
+                                        className="rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                                    />
+                                    <span className="text-sm text-gray-700">Disable late check-in penalty</span>
+                                </label>
+
+                                <div className="pt-2 flex gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowManageModal(false)}
+                                        className="flex-1 py-3 px-4 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200 transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        className="flex-1 py-3 px-4 bg-amber-500 text-white rounded-xl font-bold hover:bg-amber-600 transition-colors shadow-lg shadow-amber-200 disabled:opacity-50"
+                                        disabled={isSubmitting}
+                                    >
+                                        {isSubmitting ? 'Saving...' : 'Save Changes'}
                                     </button>
                                 </div>
                             </form>

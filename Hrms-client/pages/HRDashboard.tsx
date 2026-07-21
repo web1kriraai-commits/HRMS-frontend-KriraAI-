@@ -43,6 +43,7 @@ export const HRDashboard: React.FC = () => {
     email: '',
     department: '',
     joiningDate: '',
+    package: '',
     bonds: [] as Array<{ type: string; periodMonths: string; startDate: string; salary: string }>,
     aadhaarNumber: '',
     guardianName: '',
@@ -128,6 +129,7 @@ export const HRDashboard: React.FC = () => {
     department: '',
     paidLeaveAllocation: '',
     joiningDate: '',
+    package: '',
     bonds: [] as Array<{ type: string; periodMonths: string; startDate: string; salary: string }>,
     aadhaarNumber: '',
     guardianName: '',
@@ -668,6 +670,7 @@ export const HRDashboard: React.FC = () => {
         role: Role.EMPLOYEE,
         isActive: true,
         joiningDate: newUser.joiningDate ? convertToDDMMYYYY(newUser.joiningDate) : undefined,
+        package: parseFloat(newUser.package) || 0,
         bonds: newUser.bonds.filter(b => {
           // Include bond if periodMonths is provided
           return b.periodMonths && parseInt(b.periodMonths) > 0;
@@ -2432,6 +2435,7 @@ export const HRDashboard: React.FC = () => {
                                     bankAccountNumber: user.bankAccountNumber || '',
                                     bankIfscCode: user.bankIfscCode || '',
                                     joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
+                                    package: (user.package || 0).toString(),
                                     bonds: (user.bonds || []).map(b => ({
                                       type: b.type,
                                       periodMonths: b.periodMonths.toString(),
@@ -2576,6 +2580,7 @@ export const HRDashboard: React.FC = () => {
                                   bankAccountNumber: user.bankAccountNumber || '',
                                   bankIfscCode: user.bankIfscCode || '',
                                   joiningDate: user.joiningDate ? convertToYYYYMMDD(user.joiningDate) : '',
+                                  package: (user.package || 0).toString(),
                                   bonds: (user.bonds || []).map(b => ({
                                     type: b.type,
                                     periodMonths: b.periodMonths.toString(),
@@ -2962,6 +2967,8 @@ export const HRDashboard: React.FC = () => {
                     updates.joiningDate = convertToDDMMYYYY(editUserForm.joiningDate);
                   }
 
+                  updates.package = parseFloat(editUserForm.package) || 0;
+
                   if (editUserForm.bonds.length > 0) {
                     updates.bonds = editUserForm.bonds.filter(b => {
                       return b.periodMonths && parseInt(b.periodMonths) > 0;
@@ -3082,6 +3089,18 @@ export const HRDashboard: React.FC = () => {
                     className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
                     value={editUserForm.joiningDate}
                     onChange={e => setEditUserForm({ ...editUserForm, joiningDate: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Annual Package / CTC (Rs.)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="w-full p-2.5 border border-gray-200 rounded-lg text-sm"
+                    value={editUserForm.package}
+                    onChange={e => setEditUserForm({ ...editUserForm, package: e.target.value })}
+                    placeholder="e.g. 372000"
                   />
                 </div>
                 <div>
@@ -3419,6 +3438,18 @@ export const HRDashboard: React.FC = () => {
                           className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
                           value={newUser.joiningDate ? convertToYYYYMMDD(newUser.joiningDate) : ''}
                           onChange={e => setNewUser({ ...newUser, joiningDate: e.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700 uppercase mb-1.5">Annual Package / CTC (Rs.)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          className="w-full p-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                          value={newUser.package}
+                          onChange={e => setNewUser({ ...newUser, package: e.target.value })}
+                          placeholder="e.g. 372000"
                         />
                       </div>
                       <div>

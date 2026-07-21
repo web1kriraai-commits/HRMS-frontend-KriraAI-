@@ -116,6 +116,7 @@ export const transformUser = (apiUser: any): User => ({
   manualExtraTimeAdjustment: apiUser.manualExtraTimeAdjustment || 0,
   manualUnpaidLeaveAdjustment: apiUser.manualUnpaidLeaveAdjustment || 0,
   manualHalfDayLeaveAdjustment: apiUser.manualHalfDayLeaveAdjustment || 0,
+  package: Number(apiUser.package) || 0,
   joiningDate: apiUser.joiningDate || undefined, // Keep in dd-mm-yyyy format as stored
   bonds: apiUser.bonds && Array.isArray(apiUser.bonds) ? apiUser.bonds.map((b: any) => ({
     type: b.type || 'Job',

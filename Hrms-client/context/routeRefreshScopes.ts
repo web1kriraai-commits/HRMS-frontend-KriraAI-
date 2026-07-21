@@ -38,7 +38,10 @@ export const getRefreshScopeForPath = (pathname: string, role: Role): RefreshSco
       return { users: true };
 
     case '/salary-management':
-      return { users: true };
+      return { users: true, leaves: true, holidays: true };
+
+    case '/my-salary-slip':
+      return { users: true, leaves: true, holidays: true };
 
     case '/admin-guidance':
       return {};

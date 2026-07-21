@@ -29,37 +29,25 @@ export interface SalarySlipRecord {
   year: number;
   companyName?: string;
   companyAddress?: string;
-  preparedByName?: string;
-  preparedByTitle?: string;
   empName?: string;
   empNo?: string;
-  department?: string;
-  doj?: string;
-  bank?: string;
-  bankAccountNo?: string;
   designation?: string;
+  doj?: string;
+  payDate?: string;
   pfNo?: string;
-  esicNo?: string;
-  stdDays?: number;
-  workedDays?: number;
-  leaveBalance?: number;
+  uan?: string;
+  paidDays?: number;
+  lopDays?: number;
   basic?: number;
-  da?: number;
-  totalWage?: number;
-  hra?: number;
-  medicalReimbursement?: number;
-  conveyance?: number;
-  lta?: number;
-  education?: number;
-  specialAllowance?: number;
-  pf?: number;
-  esic?: number;
+  ytdBasic?: number;
+  fixedAllowance?: number;
+  ytdFixedAllowance?: number;
+  lopDeduction?: number;
+  ytdLopDeduction?: number;
   pTax?: number;
-  lwf?: number;
+  ytdPTax?: number;
   tds?: number;
-  advance?: number;
-  exGratia?: number;
-  lessAdvance?: number;
+  ytdTds?: number;
   savedAt?: string;
   savedBy?: string;
 }
@@ -84,6 +72,8 @@ export interface User {
   manualExtraTimeAdjustment?: number;
   manualUnpaidLeaveAdjustment?: number;
   manualHalfDayLeaveAdjustment?: number;
+  /** Annual salary package / CTC in INR (monthly = package / 12) */
+  package?: number;
   joiningDate?: string; // dd-mm-yyyy format - Employee joining date
   bonds?: Bond[]; // Array of bonds
   aadhaarNumber?: string; // Aadhaar card number

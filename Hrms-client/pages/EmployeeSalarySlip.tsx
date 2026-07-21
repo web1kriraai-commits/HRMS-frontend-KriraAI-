@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import { Download, IndianRupee } from 'lucide-react';
@@ -6,79 +6,99 @@ import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { SalarySlipPreview } from '../components/SalarySlipPreview';
-import { formatDate } from '../services/utils';
 import { appAlert } from '../services/appAlert';
-import { User } from '../types';
+import { userAPI } from '../services/api';
+import { formatDate } from '../services/utils';
 import {
   SalarySlipFormData,
   MONTH_NAMES,
-  DEFAULT_COMPANY,
-  getDaysInMonth,
-  createDefaultFormData,
 } from '../services/salarySlipDefaults';
-
-/** Temporary static monthly salary until payroll amounts are managed in the system */
-const STATIC_MONTHLY_SALARY = 10000;
+import { buildAutoSalarySlipForm } from '../services/salarySlipCalc';
+import { SalarySlipRecord } from '../types';
 
 const inputClass =
   'w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
 const labelClass = 'block text-xs font-medium text-gray-600 mb-1';
 
-const buildEmployeeSlipForm = (user: User, month: number, year: number): SalarySlipFormData => {
-  const base = createDefaultFormData();
-  return {
-    ...base,
-    ...DEFAULT_COMPANY,
-    selectedEmployeeId: user.id,
-    empName: user.name || '',
-    empNo: user.username || '',
-    department: user.department || '',
-    doj: user.joiningDate ? formatDate(user.joiningDate) : '',
-    bank: user.bankName || 'NA',
-    bankAccountNo: user.bankAccountNumber || 'NA',
-    designation: 'NA',
-    pfNo: 'NA',
-    esicNo: 'NA',
-    stdDays: getDaysInMonth(month, year),
-    workedDays: getDaysInMonth(month, year),
-    leaveBalance: 0,
-    month,
-    year,
-    basic: STATIC_MONTHLY_SALARY,
-    da: 0,
-    totalWage: 0,
-    hra: 0,
-    medicalReimbursement: 0,
-    conveyance: 0,
-    lta: 0,
-    education: 0,
-    specialAllowance: 0,
-    pf: 0,
-    esic: 0,
-    pTax: 0,
-    lwf: 0,
-    tds: 0,
-    advance: 0,
-    exGratia: 0,
-    lessAdvance: 0,
-  };
-};
-
 export const EmployeeSalarySlip: React.FC = () => {
-  const { auth } = useApp();
+  const { auth, leaveRequests, companyHolidays } = useApp();
   const user = auth.user;
   const previewRef = useRef<HTMLDivElement>(null);
   const now = new Date();
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [year, setYear] = useState(Math.min(2027, Math.max(2024, now.getFullYear())));
+  const [form, setForm] = useState<SalarySlipFormData | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [noSlipFound, setNoSlipFound] = useState(false);
 
   const yearOptions = useMemo(() => [2024, 2025, 2026, 2027], []);
 
-  const form = useMemo(() => {
-    if (!user) return null;
-    return buildEmployeeSlipForm(user, month, year);
-  }, [user, month, year]);
+  const holidayDateSet = useMemo(
+    () =>
+      new Set(
+        companyHolidays.map((holiday) =>
+          typeof holiday.date === 'string'
+            ? holiday.date.split('T')[0]
+            : new Date(holiday.date).toISOString().split('T')[0]
+        )
+      ),
+    [companyHolidays]
+  );
+
+  useEffect(() => {
+    if (!user) return;
+
+    const loadSlip = async () => {
+      setIsLoading(true);
+      setNoSlipFound(false);
+      try {
+        let savedSlip: SalarySlipRecord | null = null;
+        try {
+          const response = await userAPI.getMySalarySlip(month, year);
+          savedSlip = response.salarySlip || null;
+        } catch {
+          savedSlip = null;
+        }
+
+        let priorSlips: SalarySlipRecord[] = user.salarySlips || [];
+        try {
+          const allSlips = await userAPI.getMySalarySlips();
+          priorSlips = (allSlips.salarySlips || []) as SalarySlipRecord[];
+        } catch {
+          // use profile slips
+        }
+
+        const autoForm = buildAutoSalarySlipForm({
+          employee: user,
+          month,
+          year,
+          leaveRequests,
+          holidayDateSet,
+          priorSlips,
+          savedSlip,
+        });
+
+        if (!autoForm.basic && autoForm.lopDays === 0) {
+          setForm(null);
+          setNoSlipFound(true);
+          return;
+        }
+
+        setForm({
+          ...autoForm,
+          doj: user.joiningDate ? formatDate(user.joiningDate) : autoForm.doj,
+        });
+      } catch {
+        setForm(null);
+        setNoSlipFound(true);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadSlip();
+  }, [user, month, year, leaveRequests, holidayDateSet]);
 
   const handleDownloadPdf = async () => {
     if (!previewRef.current || !form) return;
@@ -132,7 +152,7 @@ export const EmployeeSalarySlip: React.FC = () => {
           My Salary Slip
         </h1>
         <p className="text-sm text-gray-500 mt-1">
-          Select a month and year to preview your salary slip. Details are read-only.
+          Select a month and year to preview your salary slip.
         </p>
       </div>
 
@@ -169,7 +189,24 @@ export const EmployeeSalarySlip: React.FC = () => {
         </div>
       </Card>
 
-      {form && (
+      {isLoading && (
+        <div className="flex items-center justify-center min-h-[20vh]">
+          <p className="text-gray-500">Loading salary slip...</p>
+        </div>
+      )}
+
+      {!isLoading && noSlipFound && (
+        <Card bodyClassName="p-8 text-center">
+          <p className="text-gray-500">
+            No salary slip found for {MONTH_NAMES[month - 1]} {year}.
+          </p>
+          <p className="text-sm text-gray-400 mt-2">
+            Please contact HR or Admin if you believe this is an error.
+          </p>
+        </Card>
+      )}
+
+      {!isLoading && form && (
         <div className="space-y-4">
           <Card title="Salary Slip Preview" bodyClassName="p-4 bg-white">
             <div className="overflow-x-auto flex justify-center">

@@ -1,58 +1,45 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
-import { Download, IndianRupee } from 'lucide-react';
+import { Download, IndianRupee, Save } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { SalarySlipPreview } from '../components/SalarySlipPreview';
-import { Role } from '../types';
+import { Role, SalarySlipRecord } from '../types';
 import { formatDate } from '../services/utils';
 import { appAlert } from '../services/appAlert';
+import { userAPI } from '../services/api';
 import {
   SalarySlipFormData,
   MONTH_NAMES,
   createDefaultFormData,
-  getDaysInMonth,
+  formatPayDate,
+  formDataToSlipPayload,
 } from '../services/salarySlipDefaults';
+import { buildAutoSalarySlipForm, getMonthlySalary } from '../services/salarySlipCalc';
 
-const textFields: Array<{ key: keyof SalarySlipFormData; label: string }> = [
+const textFields: Array<{ key: keyof SalarySlipFormData; label: string; span?: boolean }> = [
   { key: 'companyName', label: 'Company Name' },
-  { key: 'companyAddress', label: 'Company Address' },
-  { key: 'preparedByName', label: 'Prepared By Name' },
-  { key: 'preparedByTitle', label: 'Prepared By Title' },
+  { key: 'companyAddress', label: 'Company Address', span: true },
   { key: 'empName', label: 'Employee Name' },
-  { key: 'empNo', label: 'Employee No' },
-  { key: 'department', label: 'Department' },
-  { key: 'doj', label: 'Date of Joining' },
-  { key: 'bank', label: 'Bank Name' },
-  { key: 'bankAccountNo', label: 'Bank Account No' },
+  { key: 'empNo', label: 'Employee ID' },
   { key: 'designation', label: 'Designation' },
-  { key: 'pfNo', label: 'PF No' },
-  { key: 'esicNo', label: 'ESIC No' },
+  { key: 'doj', label: 'Date of Joining' },
+  { key: 'payDate', label: 'Pay Date' },
+  { key: 'pfNo', label: 'PF A/C Number' },
+  { key: 'uan', label: 'UAN' },
 ];
 
-const earningFields: Array<{ key: keyof SalarySlipFormData; label: string }> = [
-  { key: 'basic', label: 'Basic' },
-  { key: 'da', label: 'DA' },
-  { key: 'totalWage', label: 'Total Wage' },
-  { key: 'hra', label: 'HRA' },
-  { key: 'medicalReimbursement', label: 'Medical Reimbursement' },
-  { key: 'conveyance', label: 'Conveyance' },
-  { key: 'lta', label: 'LTA' },
-  { key: 'education', label: 'Education' },
-  { key: 'specialAllowance', label: 'Special Allow.' },
+const earningFields: Array<{ key: keyof SalarySlipFormData; ytdKey: keyof SalarySlipFormData; label: string }> = [
+  { key: 'basic', ytdKey: 'ytdBasic', label: 'Basic (Package)' },
+  { key: 'fixedAllowance', ytdKey: 'ytdFixedAllowance', label: 'Fixed Allowance' },
 ];
 
-const deductionFields: Array<{ key: keyof SalarySlipFormData; label: string }> = [
-  { key: 'pf', label: 'P.F (12%)' },
-  { key: 'esic', label: 'ESIC (1.75%)' },
-  { key: 'pTax', label: 'P.Tax' },
-  { key: 'lwf', label: 'LWF' },
-  { key: 'tds', label: 'T.D.S' },
-  { key: 'advance', label: 'Advance' },
-  { key: 'exGratia', label: 'Ex-Gratia Payment' },
-  { key: 'lessAdvance', label: 'Less: Advance etc' },
+const deductionFields: Array<{ key: keyof SalarySlipFormData; ytdKey: keyof SalarySlipFormData; label: string }> = [
+  { key: 'lopDeduction', ytdKey: 'ytdLopDeduction', label: 'LOP Deduction' },
+  { key: 'pTax', ytdKey: 'ytdPTax', label: 'Professional Tax' },
+  { key: 'tds', ytdKey: 'ytdTds', label: 'TDS' },
 ];
 
 const inputClass =
@@ -60,10 +47,12 @@ const inputClass =
 const labelClass = 'block text-xs font-medium text-gray-600 mb-1';
 
 export const SalaryManagement: React.FC = () => {
-  const { users } = useApp();
+  const { users, leaveRequests, companyHolidays } = useApp();
   const previewRef = useRef<HTMLDivElement>(null);
   const [form, setForm] = useState<SalarySlipFormData>(createDefaultFormData);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   const employees = useMemo(
     () =>
@@ -73,53 +62,103 @@ export const SalaryManagement: React.FC = () => {
     [users]
   );
 
-  const updateField = <K extends keyof SalarySlipFormData>(key: K, value: SalarySlipFormData[K]) => {
-    setForm((prev) => {
-      const next = { ...prev, [key]: value };
+  const holidayDateSet = useMemo(
+    () =>
+      new Set(
+        companyHolidays.map((holiday) =>
+          typeof holiday.date === 'string'
+            ? holiday.date.split('T')[0]
+            : new Date(holiday.date).toISOString().split('T')[0]
+        )
+      ),
+    [companyHolidays]
+  );
 
-      if (key === 'month' || key === 'year') {
-        const month = key === 'month' ? (value as number) : prev.month;
-        const year = key === 'year' ? (value as number) : prev.year;
-        next.stdDays = getDaysInMonth(month, year);
+  const loadSlipForPeriod = useCallback(
+    async (employeeId: string, month: number, year: number) => {
+      if (!employeeId) return;
+      const employee = employees.find((user) => user.id === employeeId);
+      if (!employee) return;
+
+      setIsLoading(true);
+      try {
+        const response = await userAPI.getUserSalarySlips(employeeId);
+        const slips = (response.salarySlips || []) as SalarySlipRecord[];
+        const saved = slips.find((slip) => slip.month === month && slip.year === year);
+
+        const autoForm = buildAutoSalarySlipForm({
+          employee,
+          month,
+          year,
+          leaveRequests,
+          holidayDateSet,
+          priorSlips: slips,
+          savedSlip: saved || null,
+        });
+
+        setForm({
+          ...autoForm,
+          doj: employee.joiningDate ? formatDate(employee.joiningDate) : autoForm.doj,
+        });
+      } catch {
+        const autoForm = buildAutoSalarySlipForm({
+          employee,
+          month,
+          year,
+          leaveRequests,
+          holidayDateSet,
+        });
+        setForm({
+          ...autoForm,
+          doj: employee.joiningDate ? formatDate(employee.joiningDate) : autoForm.doj,
+        });
+      } finally {
+        setIsLoading(false);
       }
-
-      return next;
-    });
-  };
+    },
+    [employees, leaveRequests, holidayDateSet]
+  );
 
   const handleEmployeeChange = (employeeId: string) => {
-    const employee = employees.find((user) => user.id === employeeId);
-
-    if (!employee) {
+    if (!employeeId) {
       setForm((prev) => ({
-        ...prev,
-        selectedEmployeeId: '',
-        empName: '',
-        empNo: '',
-        department: '',
-        doj: '',
-        bank: '',
-        bankAccountNo: '',
-        designation: '',
-        pfNo: 'NA',
-        esicNo: 'NA',
+        ...createDefaultFormData(),
+        month: prev.month,
+        year: prev.year,
+        payDate: formatPayDate(prev.month, prev.year),
       }));
       return;
     }
 
-    setForm((prev) => ({
-      ...prev,
-      selectedEmployeeId: employee.id,
-      empName: employee.name,
-      empNo: employee.username || '',
-      department: employee.department || '',
-      doj: employee.joiningDate ? formatDate(employee.joiningDate) : '',
-      bank: employee.bankName || 'NA',
-      bankAccountNo: employee.bankAccountNumber || 'NA',
-      designation: prev.designation || 'NA',
-      pfNo: 'NA',
-      esicNo: 'NA',
-    }));
+    loadSlipForPeriod(employeeId, form.month, form.year);
+  };
+
+  useEffect(() => {
+    if (form.selectedEmployeeId) {
+      loadSlipForPeriod(form.selectedEmployeeId, form.month, form.year);
+    }
+  }, [form.selectedEmployeeId, form.month, form.year, loadSlipForPeriod]);
+
+  const handleSave = async () => {
+    if (!form.selectedEmployeeId) {
+      appAlert('Please select an employee before saving the salary slip.');
+      return;
+    }
+    if (!form.empName.trim()) {
+      appAlert('Employee name is required.');
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      await userAPI.saveSalarySlip(form.selectedEmployeeId, formDataToSlipPayload(form));
+      appAlert('Salary slip saved successfully.');
+    } catch (error) {
+      console.error('Failed to save salary slip:', error);
+      appAlert('Failed to save salary slip. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleDownloadPdf = async () => {
@@ -161,6 +200,7 @@ export const SalaryManagement: React.FC = () => {
   };
 
   const yearOptions = useMemo(() => [2024, 2025, 2026, 2027], []);
+  const selectedEmployee = employees.find((user) => user.id === form.selectedEmployeeId);
 
   const payPeriodSelectors = (
     <>
@@ -169,7 +209,14 @@ export const SalaryManagement: React.FC = () => {
         <select
           className={inputClass}
           value={form.month}
-          onChange={(event) => updateField('month', Number(event.target.value))}
+          onChange={(event) => {
+            const month = Number(event.target.value);
+            setForm((prev) => ({
+              ...prev,
+              month,
+              payDate: formatPayDate(month, prev.year),
+            }));
+          }}
         >
           {MONTH_NAMES.map((name, index) => (
             <option key={name} value={index + 1}>
@@ -183,7 +230,14 @@ export const SalaryManagement: React.FC = () => {
         <select
           className={inputClass}
           value={form.year}
-          onChange={(event) => updateField('year', Number(event.target.value))}
+          onChange={(event) => {
+            const year = Number(event.target.value);
+            setForm((prev) => ({
+              ...prev,
+              year,
+              payDate: formatPayDate(prev.month, year),
+            }));
+          }}
         >
           {yearOptions.map((year) => (
             <option key={year} value={year}>
@@ -204,7 +258,7 @@ export const SalaryManagement: React.FC = () => {
             Salary Management
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Generate and download employee salary slips in PDF format.
+            Salary is calculated from annual package. Monthly = Package / 12. LOP deduction = (Monthly / 30.42) x unpaid leave days.
           </p>
         </div>
       </div>
@@ -228,21 +282,37 @@ export const SalaryManagement: React.FC = () => {
           </div>
           {payPeriodSelectors}
         </div>
+        {selectedEmployee && (
+          <p className="text-xs text-gray-500 mt-3">
+            Annual package: <strong>₹{(selectedEmployee.package || 0).toLocaleString('en-IN')}</strong>
+            {' · '}
+            Monthly salary: <strong>₹{getMonthlySalary(selectedEmployee.package || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</strong>
+            {!selectedEmployee.package && (
+              <span className="text-amber-600 ml-2">Set annual package in employee profile (e.g. 372000).</span>
+            )}
+          </p>
+        )}
       </Card>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
         <Card title="Salary Slip Form" className="h-full">
           <div className="space-y-6 max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
+            {isLoading && (
+              <p className="text-sm text-blue-600">Calculating salary slip...</p>
+            )}
+
             <section>
               <h4 className="text-sm font-semibold text-gray-800 mb-3">Company Details</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {textFields.slice(0, 4).map(({ key, label }) => (
-                  <div key={key} className={key === 'companyAddress' ? 'md:col-span-2' : ''}>
+                {textFields.slice(0, 2).map(({ key, label, span }) => (
+                  <div key={key} className={span ? 'md:col-span-2' : ''}>
                     <label className={labelClass}>{label}</label>
                     <input
                       className={inputClass}
                       value={String(form[key])}
-                      onChange={(event) => updateField(key, event.target.value)}
+                      onChange={(event) =>
+                        setForm((prev) => ({ ...prev, [key]: event.target.value }))
+                      }
                     />
                   </div>
                 ))}
@@ -252,31 +322,30 @@ export const SalaryManagement: React.FC = () => {
             <section>
               <h4 className="text-sm font-semibold text-gray-800 mb-3">Employee Details</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {textFields.slice(4).map(({ key, label }) => (
+                {textFields.slice(2).map(({ key, label }) => (
                   <div key={key}>
                     <label className={labelClass}>{label}</label>
                     <input
                       className={inputClass}
                       value={String(form[key])}
-                      onChange={(event) => updateField(key, event.target.value)}
+                      onChange={(event) =>
+                        setForm((prev) => ({ ...prev, [key]: event.target.value }))
+                      }
                     />
                   </div>
                 ))}
-                {(['stdDays', 'workedDays', 'leaveBalance'] as const).map((key) => (
+                {(['paidDays', 'lopDays'] as const).map((key) => (
                   <div key={key}>
                     <label className={labelClass}>
-                      {key === 'stdDays'
-                        ? 'STD Days'
-                        : key === 'workedDays'
-                          ? 'Worked Days'
-                          : 'Leave Balance'}
+                      {key === 'paidDays' ? 'Paid Days' : 'LOP Days'}
                     </label>
                     <input
                       type="number"
                       min={0}
-                      className={inputClass}
+                      step="0.5"
+                      className={`${inputClass} bg-gray-50`}
                       value={form[key]}
-                      onChange={(event) => updateField(key, Number(event.target.value) || 0)}
+                      readOnly
                     />
                   </div>
                 ))}
@@ -285,35 +354,73 @@ export const SalaryManagement: React.FC = () => {
 
             <section>
               <h4 className="text-sm font-semibold text-gray-800 mb-3">Earnings (Rs.)</h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {earningFields.map(({ key, label }) => (
-                  <div key={key}>
-                    <label className={labelClass}>{label}</label>
-                    <input
-                      type="number"
-                      min={0}
-                      className={inputClass}
-                      value={form[key]}
-                      onChange={(event) => updateField(key, Number(event.target.value) || 0)}
-                    />
+              <div className="space-y-3">
+                {earningFields.map(({ key, ytdKey, label }) => (
+                  <div key={key} className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelClass}>{label}</label>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        className={inputClass}
+                        value={form[key]}
+                        onChange={(event) =>
+                          setForm((prev) => ({ ...prev, [key]: Number(event.target.value) || 0 }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>{label} YTD</label>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        className={inputClass}
+                        value={form[ytdKey]}
+                        onChange={(event) =>
+                          setForm((prev) => ({ ...prev, [ytdKey]: Number(event.target.value) || 0 }))
+                        }
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
             </section>
 
             <section>
-              <h4 className="text-sm font-semibold text-gray-800 mb-3">Deductions & Adjustments (Rs.)</h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {deductionFields.map(({ key, label }) => (
-                  <div key={key}>
-                    <label className={labelClass}>{label}</label>
-                    <input
-                      type="number"
-                      min={0}
-                      className={inputClass}
-                      value={form[key]}
-                      onChange={(event) => updateField(key, Number(event.target.value) || 0)}
-                    />
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">Deductions (Rs.)</h4>
+              <div className="space-y-3">
+                {deductionFields.map(({ key, ytdKey, label }) => (
+                  <div key={key} className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelClass}>{label}</label>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        className={key === 'lopDeduction' ? `${inputClass} bg-gray-50` : inputClass}
+                        value={form[key]}
+                        readOnly={key === 'lopDeduction'}
+                        onChange={(event) =>
+                          setForm((prev) => ({ ...prev, [key]: Number(event.target.value) || 0 }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>{label} YTD</label>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        className={key === 'lopDeduction' ? `${inputClass} bg-gray-50` : inputClass}
+                        value={form[ytdKey]}
+                        readOnly={key === 'lopDeduction'}
+                        onChange={(event) =>
+                          setForm((prev) => ({ ...prev, [ytdKey]: Number(event.target.value) || 0 }))
+                        }
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -325,45 +432,24 @@ export const SalaryManagement: React.FC = () => {
           <Card
             title="Salary Slip Preview"
             bodyClassName="p-4 bg-white"
-            action={
-              <div className="flex items-end gap-2">
-                <div>
-                  <label className={labelClass}>Month</label>
-                  <select
-                    className="px-2 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    value={form.month}
-                    onChange={(event) => updateField('month', Number(event.target.value))}
-                  >
-                    {MONTH_NAMES.map((name, index) => (
-                      <option key={name} value={index + 1}>
-                        {name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className={labelClass}>Year</label>
-                  <select
-                    className="px-2 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    value={form.year}
-                    onChange={(event) => updateField('year', Number(event.target.value))}
-                  >
-                    {yearOptions.map((year) => (
-                      <option key={year} value={year}>
-                        {year}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            }
+            action={payPeriodSelectors}
           >
             <div className="overflow-x-auto flex justify-center">
               <SalarySlipPreview form={form} previewRef={previewRef} />
             </div>
           </Card>
 
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-3">
+            <Button
+              onClick={handleSave}
+              isLoading={isSaving}
+              size="lg"
+              variant="secondary"
+              className="gap-2"
+            >
+              <Save size={18} />
+              Save Salary Slip
+            </Button>
             <Button
               onClick={handleDownloadPdf}
               isLoading={isDownloading}
@@ -371,7 +457,7 @@ export const SalaryManagement: React.FC = () => {
               className="gap-2"
             >
               <Download size={18} />
-              Download Salary Slip (PDF)
+              Download PDF
             </Button>
           </div>
         </div>
